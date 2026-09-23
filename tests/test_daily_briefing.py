@@ -20,6 +20,7 @@ class BriefingTests(unittest.TestCase):
                  {"id": 8, "title": "Laundry", "due": ""}]
         with patch.object(briefing, "_calendar", return_value=([("09:30", "Lecture")], None)), \
              patch.object(briefing, "_missions", return_value=(tasks, None)), \
+             patch.object(briefing, "_canvas", return_value=([{"name": "Physics lab", "course": "Physics", "due": today, "overdue": False}], None)), \
              patch.object(briefing, "_gmail", return_value=([("school", 2, [("Instructor", "Homework")])], [])), \
              patch.object(briefing, "_focus_today", return_value=25):
             spoken = briefing.run({}, player)
@@ -27,13 +28,15 @@ class BriefingTests(unittest.TestCase):
         self.assertIn("1 missions due", spoken)
         self.assertIn("school: 2 unread", spoken)
         self.assertIn("EE97 lab", player.panel)
-        self.assertIn("Canvas is not connected", player.panel)
+        self.assertIn("Physics lab", player.panel)
+        self.assertIn("1 Canvas items", spoken)
         self.assertEqual(player.title, "DAILY BRIEFING")
 
     def test_missing_sources_are_disclosed(self):
         player = _Player()
         with patch.object(briefing, "_calendar", return_value=([], "Calendar unavailable")), \
              patch.object(briefing, "_missions", return_value=([], "Tasks unavailable")), \
+             patch.object(briefing, "_canvas", return_value=([], "Canvas unavailable")), \
              patch.object(briefing, "_gmail", return_value=([], ["Gmail unavailable"])), \
              patch.object(briefing, "_focus_today", return_value=None):
             spoken = briefing.run({}, player)
