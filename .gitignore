@@ -12,6 +12,8 @@ config/whatsapp_web/          # a LINKED WhatsApp session — committing it hand
 **/token*.json                # Google OAuth tokens (Gmail / Calendar plugins)
 **/client_secret*.json        # Google OAuth client secrets
 *credentials*.json
+config/gmail_token.json
+config/gmail_token.json.tmp
 .env
 .env.*
 
