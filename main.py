@@ -1278,6 +1278,26 @@ class JarvisLive:
             **_extra
         )
 
+    def _enqueue_audio(self, chunk: dict, expected_queue=None) -> None:
+        """Queue fresh microphone audio without crashing the event loop on congestion.
+
+        Called on the asyncio thread (including via call_soon_threadsafe from
+        the sounddevice callback). When the sender falls behind, discard the
+        oldest block instead of allowing stale audio to delay the user's reply.
+        """
+        queue = self.out_queue
+        if queue is None or (expected_queue is not None and queue is not expected_queue):
+            return  # a reconnect replaced the session before this callback ran
+        if queue.full():
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            queue.put_nowait(chunk)
+        except asyncio.QueueFull:
+            pass  # never raise in an audio callback
+
     async def _send_realtime(self):
         while True:
             msg = await self.out_queue.get()
@@ -1360,8 +1380,9 @@ class JarvisLive:
             if not self.ui.muted and not self._phone_active:
                 data = indata.tobytes()
                 loop.call_soon_threadsafe(
-                    self.out_queue.put_nowait,
-                    {"data": data, "mime_type": "audio/pcm"}
+                    self._enqueue_audio,
+                    {"data": data, "mime_type": "audio/pcm"},
+                    self.out_queue,
                 )
                 # Feed the live mic level to the HUD so the waveform reacts to
                 # the user's actual voice while listening. Purely cosmetic — any
@@ -1998,10 +2019,7 @@ class JarvisLive:
             with self._speaking_lock:
                 speaking = self._is_speaking
             if not speaking and not self.ui.muted:
-                try:
-                    self.out_queue.put_nowait(chunk)
-                except asyncio.QueueFull:
-                    pass
+                self._enqueue_audio(chunk)
 
     def _on_phone_connected(self) -> None:
         self.ui.write_log("SYS: Phone connected via Remote Dashboard.")
@@ -2099,7 +2117,7 @@ class JarvisLive:
                 ):
                     self.session          = session
                     self.audio_in_queue   = asyncio.Queue()
-                    self.out_queue        = asyncio.Queue(maxsize=200)
+                    self.out_queue        = asyncio.Queue(maxsize=32)  # ~2 s max at 16 kHz/1024 samples
                     self._turn_done_event = asyncio.Event()
 
                     # Reset transient state that must not carry over from a previous session
