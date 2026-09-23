@@ -70,6 +70,7 @@ It's not just an assistant — it's an extension of your digital life.
 | 💻 Code Helper | Inline code review, debugging, and generation |
 | 🌐 Browser Control | Open URLs, navigate tabs, and interact with the browser by voice |
 | 📨 Native Mac Messages | Resolve Contacts and send iMessage/SMS without clicking the UI — always requires HUD confirmation |
+| 📧 Gmail | Connect your Google account, check recent or unread inbox messages, and send email after reviewing the draft and pressing CONFIRM |
 | 📞 Mac Calls | Start confirmed Phone or FaceTime Audio calls from Contacts; ambiguous names and emergency numbers are blocked |
 | 💬 Other Messengers | Compose and send messages through WhatsApp, Telegram, and more |
 | 🎬 YouTube Control | Search, play, and control YouTube playback by voice |
@@ -293,6 +294,23 @@ On first use of Messages or Contacts on macOS, approve the **Automation** and
 SMS and phone calls also require the Mac and iPhone to be signed into the same
 Apple Account with call and text forwarding enabled.
 
+### Connect Gmail to JARVIS
+
+Gmail uses Google sign-in (OAuth). You do **not** enter your Gmail password or
+create an OpenAI key. The existing `requirements.txt` already lists the Google
+API and OAuth packages; run `python3 setup.py` if they are missing.
+
+1. Follow the [Google Gmail API Python quickstart](https://developers.google.com/workspace/gmail/api/quickstart/python) to create a Google Cloud project, enable the Gmail API, and create an **OAuth Desktop app** client. For a personal Google account, set the consent screen audience to **External** and add your own address as a test user if prompted.
+2. Download that client's JSON file. Rename it `gmail_credentials.json` and put it in this repository's `config/` folder. Do not upload it to GitHub.
+3. Launch JARVIS and say **“Connect Gmail.”** A browser window opens for Google sign-in. Approve the read-only Gmail and send-email permissions. JARVIS saves a private token in `config/gmail_token.json` for later launches.
+4. Say **“Check my five most recent Gmail emails”** or **“Check my unread Gmail emails.”** To read one fully, ask JARVIS to read it after it lists the recent messages.
+5. Say **“Email person@example.com with subject Meeting and say I will be there at noon.”** JARVIS shows the complete draft in the content panel. Review it, then press **CONFIRM** on the HUD to send.
+
+The plugin requests only `gmail.readonly` and `gmail.send`. Email bodies are
+limited to 3,500 characters so the full draft fits in the content panel. OAuth
+credentials and tokens are ignored by Git. If Google asks you to sign in again,
+say **“Connect Gmail”** to renew access.
+
 > ⚠️ **Installation Note:** If you hit a `ModuleNotFoundError` for an OS-specific package, install it with `pip install <module_name>`. The optional **wake word** engine is *not* installed here — grab it in one click from **⚙ → WAKE WORD** inside the app.
 
 ---
@@ -322,7 +340,7 @@ Mark LIV/
 ├── plugins/
 │   ├── quiz.py               # Interactive quiz — JARVIS writes the questions, you answer on screen
 │   ├── document_review.py    # Contracts and policies in plain language, ordered by what matters
-│   ├── _google_core.py       # Shared OAuth for the Gmail/Calendar plugins (not a plugin itself)
+│   ├── gmail.py              # Gmail OAuth, recent inbox, full read, confirmed send
 │   ├── _printer_core.py      # Shared printer connectivity (not a plugin itself)
 │   ├── _template.py          # Copy this to write a new plugin — one file, drop in, done
 │   └── ...                   # Drop-in skills (each self-describes via a PLUGIN dict + run())
