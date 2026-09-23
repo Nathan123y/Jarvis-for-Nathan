@@ -8,7 +8,8 @@ upcoming and overdue work without changing anything in Canvas.
 from __future__ import annotations
 
 import ipaddress
-from datetime import date, datetime, timedelta
+import re
+from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
 from memory.config_manager import get_plugin_config
@@ -21,8 +22,8 @@ PLUGIN = {
         "Canvas', 'check my Canvas assignments', 'show overdue Canvas work', "
         "or 'connect Canvas'. For a combined calendar, Gmail and school update, "
         "use daily_briefing instead. Canvas access is read-only. Never ask the "
-        "user to say their token aloud or paste it in chat. The token goes into "
-        "Jarvis Plugin Settings on their Mac."
+        "user to say their token or calendar feed link aloud or paste it in chat. "
+        "Connection details go into Jarvis Plugin Settings on their Mac."
     ),
     "parameters": {
         "type": "OBJECT",
@@ -40,6 +41,8 @@ PLUGIN_SETTINGS = {
          "placeholder": "https://your-school.instructure.com"},
         {"key": "token", "type": "password", "label": "Your personal Canvas access token",
          "placeholder": "Paste the token here on your Mac; never say it aloud"},
+        {"key": "calendar_feed", "type": "password", "label": "Canvas Calendar Feed link (no API token needed)",
+         "placeholder": "Paste your Calendar Feed link here; keep it private"},
     ],
 }
 
@@ -107,12 +110,92 @@ def _clean(value, limit=110):
     return " ".join(str(value or "").split())[:limit]
 
 
+def _calendar_url(value):
+    """Only fetch the HTTPS Canvas calendar feed, never arbitrary private URLs."""
+    value = str(value or "").strip()
+    parts = urlsplit(value)
+    host = (parts.hostname or "").lower()
+    if (parts.scheme != "https" or not host or parts.username or parts.password
+            or parts.port or parts.fragment or not host.endswith(".instructure.com")
+            or not re.fullmatch(r"/feeds/calendars/[^/]+\.ics", parts.path)
+            or len(value) > 2048):
+        raise ValueError("Paste the HTTPS Canvas Calendar Feed link from Canvas Calendar into Plugin Settings.")
+    return value
+
+
+def _ical_unescape(value):
+    return re.sub(r"\\([nN,;\\])", lambda m: "\n" if m[1].lower() == "n" else m[1], value)
+
+
+def _feed_day(value):
+    value = value.strip()
+    try:
+        if re.fullmatch(r"\d{8}", value):
+            return datetime.strptime(value, "%Y%m%d").date().isoformat()
+        if re.fullmatch(r"\d{8}T\d{6}Z", value):
+            return datetime.strptime(value, "%Y%m%dT%H%M%SZ").replace(
+                tzinfo=timezone.utc).astimezone().date().isoformat()
+        if re.fullmatch(r"\d{8}T\d{6}", value):
+            return datetime.strptime(value, "%Y%m%dT%H%M%S").date().isoformat()
+    except ValueError:
+        pass
+    return ""
+
+
+def _feed_assignments(url):
+    import requests
+    response = requests.get(url, timeout=(4, 8), allow_redirects=False,
+                            headers={"Accept": "text/calendar"}, stream=True)
+    if response.status_code != 200:
+        response.close()
+        raise ValueError("Canvas Calendar Feed could not be read. Check the link in Plugin Settings.")
+    try:
+        payload = bytearray()
+        for chunk in response.iter_content(16384):
+            payload.extend(chunk)
+            if len(payload) > 2_000_000:
+                raise ValueError("Canvas Calendar Feed is too large to read.")
+    finally:
+        response.close()
+    raw = payload.decode("utf-8-sig", errors="replace")
+    if "BEGIN:VCALENDAR" not in raw:
+        raise ValueError("Canvas Calendar Feed returned an unexpected format.")
+    # RFC 5545: a line beginning with whitespace continues the previous line.
+    unfolded = re.sub(r"\r?\n[ \t]", "", raw)
+    today = date.today()
+    deadline = today + timedelta(days=14)
+    items, event = [], None
+    for line in unfolded.splitlines():
+        if line == "BEGIN:VEVENT":
+            event = {}
+        elif line == "END:VEVENT" and event is not None:
+            due = _feed_day(event.get("DTSTART", ""))
+            if due and today <= date.fromisoformat(due) <= deadline and event.get("SUMMARY"):
+                items.append({"name": _clean(_ical_unescape(event["SUMMARY"])),
+                              "course": _clean(_ical_unescape(event.get("LOCATION", "School")), 45),
+                              "due": due, "overdue": False})
+            event = None
+        elif event is not None and ":" in line:
+            key, value = line.split(":", 1)
+            event.setdefault(key.split(";", 1)[0].upper(), value)
+    items.sort(key=lambda item: (item["due"], item["name"]))
+    return items[:20]
+
+
 def fetch_assignments():
     """Return (items, notice); never return access tokens or raw HTTP errors."""
     config = get_plugin_config("canvas")
     token = str(config.get("token") or "").strip()
+    feed = str(config.get("calendar_feed") or "").strip()
     if not token:
-        return [], "Canvas isn't connected. Set its website and token in Jarvis Plugin Settings."
+        if not feed:
+            return [], "Canvas isn't connected. Add your Canvas Calendar Feed link in Jarvis Plugin Settings."
+        try:
+            return _feed_assignments(_calendar_url(feed)), None
+        except ValueError as exc:
+            return [], str(exc)
+        except Exception:
+            return [], "Canvas Calendar Feed couldn't be reached. Check your connection and try again."
     try:
         base = _base_url(config.get("domain"))
         today = date.today()
@@ -166,18 +249,21 @@ def fetch_assignments():
 def run(parameters: dict, player=None, session_memory=None) -> str:
     action = str((parameters or {}).get("action") or "assignments").lower().strip()
     if action == "connect":
-        return ("Open Jarvis settings, then Plugin Settings. Under Canvas, enter your school's "
-                "Canvas website and your own access token, then press Save. Generate the token "
-                "in Canvas Account > Settings > Approved Integrations if your school allows it. "
-                "Keep the token private; don't say it aloud or send it in chat.")
+        return ("In Canvas, open Calendar and click Calendar Feed. Copy the link. In Jarvis, "
+                "open Settings > Plugin Settings > Canvas, paste it into Canvas Calendar Feed "
+                "and press Save. Keep the link private. This shows upcoming calendar dates, "
+                "but cannot tell whether you submitted an assignment. If you also have an "
+                "approved API token, the existing token connection takes priority.")
     if action not in ("assignments", "check"):
         return "Canvas actions: assignments, check, or connect."
     items, notice = fetch_assignments()
     if notice:
         return notice
     if not items:
-        return "Canvas is connected. No incomplete planner items or missing submissions were returned."
-    lines = ["CANVAS ASSIGNMENTS (read-only)"]
+        return "Canvas is connected. No upcoming Canvas items were returned."
+    feed_mode = not str(get_plugin_config("canvas").get("token") or "").strip()
+    lines = ["CANVAS CALENDAR (upcoming dates; submission status unknown)" if feed_mode
+             else "CANVAS ASSIGNMENTS (read-only)"]
     for item in items[:10]:
         when = "Overdue" if item["overdue"] else (item["due"] or "No due date")
         lines.append(f"{when} · {item['name']} · {item['course']}")
@@ -188,7 +274,7 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
             player.show_content("CANVAS SCHOOL", "\n".join(lines)[:3500])
         except Exception:
             pass
-    return (f"Canvas has {len(items)} incomplete or missing items in this view. "
+    return (f"Canvas has {len(items)} {'upcoming calendar items; submission status is unknown' if feed_mode else 'incomplete or missing items'} in this view. "
             f"Next: {items[0]['name']}, "
             f"{'overdue' if items[0]['overdue'] else 'due ' + (items[0]['due'] or 'date not specified')}. "
             "I've put the list on screen.")
