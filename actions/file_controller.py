@@ -1,8 +1,14 @@
 import os
 import shutil
 import platform
+import heapq
+import re
+import subprocess
+import time
+import zipfile
 from pathlib import Path
 from datetime import datetime
+from xml.etree import ElementTree as ET
 
 try:
     import send2trash
@@ -18,6 +24,27 @@ _OS = platform.system()  # "Windows" | "Darwin" | "Linux"
 # Above this size it does not — a 200 MB log would sit in RAM for the rest of
 # the session to protect an edit nobody is going to take back.
 _UNDO_CONTENT_LIMIT = 1_000_000
+_MAX_READ_CHARS = 80_000
+_MAX_SEARCH_FILE = 4 * 1024 * 1024
+_MAX_SEARCH_SECONDS = 15.0
+_MAX_RESULTS = 100
+
+_SKIP_DIRS = {
+    ".git", ".svn", ".hg", "node_modules", "__pycache__", ".Trash",
+    ".cache", "Caches", "DerivedData", ".venv", "venv",
+}
+_TEXT_EXTENSIONS = {
+    ".txt", ".md", ".markdown", ".rst", ".log", ".csv", ".tsv", ".json",
+    ".jsonl", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
+    ".py", ".pyw", ".js", ".jsx", ".ts", ".tsx", ".html", ".htm", ".css",
+    ".scss", ".swift", ".c", ".h", ".cpp", ".hpp", ".java", ".kt", ".sh",
+    ".zsh", ".fish", ".sql", ".tex", ".m", ".r", ".rb", ".go", ".rs",
+}
+_SENSITIVE_NAMES = {
+    ".env", ".netrc", ".npmrc", ".pypirc", ".git-credentials",
+    "id_rsa", "id_ed25519", "api_keys.json", "credentials.json",
+}
+_SENSITIVE_PARTS = {".ssh", "keychains", "cookies", "login data", "passwords"}
 
 
 def _undo_move(src: Path, dst: Path):
@@ -93,6 +120,52 @@ def _restore_from_trash(original: Path) -> str:
 _SAFE_ROOTS: list[Path] = [
     Path.home(),
 ]
+
+if _OS == "Darwin":
+    # External drives are user-controlled data too. The volume root itself is
+    # still protected below; files and folders inside a mounted drive may be
+    # changed when macOS permissions allow it.
+    _SAFE_ROOTS.append(Path("/Volumes"))
+
+
+def _is_sensitive(target: Path) -> bool:
+    parts = {part.casefold() for part in target.parts}
+    name = target.name.casefold()
+    return (name in _SENSITIVE_NAMES
+            or any(part in parts for part in _SENSITIVE_PARTS)
+            or name.endswith((".pem", ".key", ".p12", ".pfx")))
+
+
+def _is_readable_path(target: Path) -> bool:
+    """Full Disk Access decides reach; this prevents credential exfiltration.
+
+    Listing a folder is allowed even if it contains a protected credential
+    file, but reading or content-searching that file is not.
+    """
+    try:
+        return target.expanduser().resolve().is_absolute()
+    except Exception:
+        return False
+
+
+def _can_return_contents(target: Path) -> bool:
+    return _is_readable_path(target) and not _is_sensitive(target)
+
+
+def _protected_root(target: Path) -> bool:
+    try:
+        resolved = target.resolve()
+        roots = {root.resolve() for root in _SAFE_ROOTS}
+        protected = {
+            Path.home().resolve(), _get_desktop().resolve(), _get_downloads().resolve(),
+            _get_documents().resolve(), _get_pictures().resolve(), _get_music().resolve(),
+            _get_videos().resolve(),
+        }
+        if _OS == "Darwin":
+            protected.add(Path("/Volumes").resolve())
+        return resolved in roots or resolved in protected
+    except Exception:
+        return True
 
 def _is_safe_path(target: Path) -> bool:
     """Is the given path inside _SAFE_ROOTS? If not, reject the operation."""
@@ -183,6 +256,101 @@ def _format_size(b: int) -> str:
         b /= 1024
     return f"{b:.1f} TB"
 
+
+def _bounded_walk(root: Path, deadline: float):
+    """Yield files without following symlinks or crawling noisy build folders."""
+    for current, dirs, files in os.walk(root, followlinks=False):
+        if time.monotonic() > deadline:
+            return
+        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
+        for filename in files:
+            if time.monotonic() > deadline:
+                return
+            yield Path(current) / filename
+
+
+def _redact_secrets(text: str) -> str:
+    """Remove likely credentials before file text is sent to the model."""
+    patterns = [
+        (r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----",
+         "[REDACTED PRIVATE KEY]", re.DOTALL),
+        (r"(?im)^\s*(api[_-]?key|secret|token|password|passwd|client[_-]?secret)\s*[:=]\s*[^\r\n]+",
+         r"\1=[REDACTED]", 0),
+        (r"\bAKIA[0-9A-Z]{16}\b", "[REDACTED AWS KEY]", 0),
+        (r"\b(?:ghp|github_pat|sk)-[A-Za-z0-9_-]{20,}\b", "[REDACTED TOKEN]", 0),
+    ]
+    for pattern, replacement, flags in patterns:
+        text = re.sub(pattern, replacement, text, flags=flags)
+    return text
+
+
+def _extract_document_text(target: Path) -> str:
+    """Extract text from common local document formats."""
+    suffix = target.suffix.casefold()
+    if suffix in _TEXT_EXTENSIONS or not suffix:
+        return target.read_text(encoding="utf-8", errors="replace")
+
+    if suffix == ".pdf":
+        try:
+            import pdfplumber
+            with pdfplumber.open(target) as pdf:
+                return "\n\n".join(page.extract_text() or "" for page in pdf.pages)
+        except ImportError:
+            from PyPDF2 import PdfReader
+            return "\n\n".join(page.extract_text() or "" for page in PdfReader(str(target)).pages)
+
+    if suffix == ".docx":
+        try:
+            from docx import Document
+            doc = Document(str(target))
+            return "\n".join(p.text for p in doc.paragraphs)
+        except ImportError:
+            with zipfile.ZipFile(target) as archive:
+                root = ET.fromstring(archive.read("word/document.xml"))
+            return "\n".join("".join(node.itertext()) for node in root.iter()
+                             if node.tag.endswith("}p"))
+
+    if suffix == ".xlsx":
+        from openpyxl import load_workbook
+        workbook = load_workbook(target, read_only=True, data_only=True)
+        chunks = []
+        try:
+            for sheet in workbook.worksheets:
+                chunks.append(f"[{sheet.title}]")
+                for row in sheet.iter_rows(values_only=True):
+                    if any(value is not None for value in row):
+                        chunks.append("\t".join("" if value is None else str(value)
+                                                for value in row))
+        finally:
+            workbook.close()
+        return "\n".join(chunks)
+
+    if suffix == ".pptx":
+        try:
+            from pptx import Presentation
+            presentation = Presentation(str(target))
+            chunks = []
+            for index, slide in enumerate(presentation.slides, 1):
+                chunks.append(f"[Slide {index}]")
+                chunks.extend(shape.text for shape in slide.shapes if hasattr(shape, "text"))
+            return "\n".join(chunks)
+        except ImportError:
+            with zipfile.ZipFile(target) as archive:
+                slides = sorted(name for name in archive.namelist()
+                                if re.fullmatch(r"ppt/slides/slide\d+\.xml", name))
+                return "\n".join(" ".join(ET.fromstring(archive.read(name)).itertext())
+                                  for name in slides)
+
+    if suffix == ".rtf" and _OS == "Darwin":
+        result = subprocess.run(
+            ["textutil", "-convert", "txt", "-stdout", str(target)],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+        if result.returncode == 0:
+            return result.stdout
+
+    raise ValueError(f"Unsupported file type '{suffix or 'unknown'}'.")
+
 def _safe_trash(target: Path) -> str:
 
     if not _SEND2TRASH:
@@ -195,10 +363,11 @@ def _safe_trash(target: Path) -> str:
     return f"Moved to Trash: {target.name}"
 
 
-def list_files(path: str = "desktop", show_hidden: bool = False) -> str:
+def list_files(path: str = "desktop", show_hidden: bool = False,
+               max_results: int = 100) -> str:
     try:
         target = _resolve_path(path)
-        if not _is_safe_path(target):
+        if not _is_readable_path(target):
             return f"Access denied: {target}"
         if not target.exists():
             return f"Path not found: {target}"
@@ -206,7 +375,8 @@ def list_files(path: str = "desktop", show_hidden: bool = False) -> str:
             return f"Not a directory: {target}"
 
         items = []
-        for item in sorted(target.iterdir()):
+        all_items = sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.casefold()))
+        for item in all_items:
             if not show_hidden and item.name.startswith("."):
                 continue
             if item.is_dir():
@@ -214,11 +384,18 @@ def list_files(path: str = "desktop", show_hidden: bool = False) -> str:
             else:
                 size = _format_size(item.stat().st_size)
                 items.append(f"📄 {item.name} ({size})")
+            if len(items) >= max(1, min(int(max_results), _MAX_RESULTS)):
+                break
 
         if not items:
             return f"Directory is empty: {target.name}/"
 
-        return f"Contents of {target.name}/ ({len(items)} items):\n" + "\n".join(items)
+        visible_count = sum(1 for item in all_items
+                            if show_hidden or not item.name.startswith("."))
+        result = f"Contents of {target.name or target}/ ({visible_count} items):\n" + "\n".join(items)
+        if visible_count > len(items):
+            result += f"\n[Showing {len(items)} of {visible_count}; narrow the folder for more.]"
+        return result
 
     except PermissionError:
         return f"Permission denied: {path}"
@@ -226,12 +403,16 @@ def list_files(path: str = "desktop", show_hidden: bool = False) -> str:
         return f"Error listing files: {e}"
 
 
-def create_file(path: str, name: str = "", content: str = "") -> str:
+def create_file(path: str, name: str = "", content: str = "",
+                overwrite: bool = False) -> str:
     try:
         base   = _resolve_path(path)
         target = (base / name) if name else base
         if not _is_safe_path(target):
             return f"Access denied: {target}"
+        if target.exists() and not overwrite:
+            return (f"Already exists: {target.name}. Set overwrite=true only when "
+                    "the user explicitly asks to replace it.")
         target.parent.mkdir(parents=True, exist_ok=True)
         existed = target.exists()
         previous = None
@@ -275,12 +456,7 @@ def delete_file(path: str, name: str = "") -> str:
         if not target.exists():
             return f"Not found: {target.name}"
 
-        # Safe-directory check — protect critical user folders
-        protected = {
-            _get_desktop(), _get_downloads(), _get_documents(),
-            _get_pictures(), _get_music(), _get_videos(), Path.home()
-        }
-        if target.resolve() in {p.resolve() for p in protected}:
+        if _protected_root(target):
             return f"Protected directory, cannot delete: {target.name}"
 
         original = target.resolve()
@@ -314,6 +490,9 @@ def move_file(path: str, name: str = "", destination: str = "") -> str:
         if dst.is_dir():
             dst = dst / src.name
 
+        if dst.exists():
+            return f"Destination already exists: {dst}"
+
         dst.parent.mkdir(parents=True, exist_ok=True)
         origin = src.resolve()
         shutil.move(str(src), str(dst))
@@ -335,13 +514,16 @@ def copy_file(path: str, name: str = "", destination: str = "") -> str:
             return f"Source not found: {src.name}"
         if dst is None:
             return "No destination specified."
-        if not _is_safe_path(src):
+        if not _is_readable_path(src):
             return f"Access denied (source): {src}"
         if not _is_safe_path(dst):
             return f"Access denied (destination): {dst}"
 
         if dst.is_dir():
             dst = dst / src.name
+
+        if dst.exists():
+            return f"Destination already exists: {dst}"
 
         dst.parent.mkdir(parents=True, exist_ok=True)
 
@@ -393,18 +575,22 @@ def rename_file(path: str, name: str = "", new_name: str = "") -> str:
         return f"Could not rename: {e}"
 
 
-def read_file(path: str, name: str = "", max_chars: int = 4000) -> str:
+def read_file(path: str, name: str = "", max_chars: int = 12000) -> str:
     try:
         base   = _resolve_path(path)
         target = (base / name) if name else base
-        if not _is_safe_path(target):
+        if not _is_readable_path(target):
             return f"Access denied: {target}"
         if not target.exists():
             return f"File not found: {target.name}"
         if not target.is_file():
             return f"Not a file: {target.name}"
+        if not _can_return_contents(target):
+            return (f"Protected credential file: {target.name}. Jarvis will not place "
+                    "its contents into an AI request.")
 
-        content = target.read_text(encoding="utf-8", errors="ignore")
+        max_chars = max(1, min(int(max_chars), _MAX_READ_CHARS))
+        content = _redact_secrets(_extract_document_text(target))
         if len(content) > max_chars:
             content = content[:max_chars] + f"\n\n[Truncated — {len(content)} total chars]"
         return content
@@ -414,12 +600,15 @@ def read_file(path: str, name: str = "", max_chars: int = 4000) -> str:
 
 
 def write_file(path: str, name: str = "", content: str = "",
-               append: bool = False) -> str:
+               append: bool = False, overwrite: bool = False) -> str:
     try:
         base   = _resolve_path(path)
         target = (base / name) if name else base
         if not _is_safe_path(target):
             return f"Access denied: {target}"
+        if target.exists() and not append and not overwrite:
+            return (f"Already exists: {target.name}. Use append=true, or set "
+                    "overwrite=true only when the user explicitly asks to replace it.")
         target.parent.mkdir(parents=True, exist_ok=True)
 
         # Snapshot before writing. None means "did not exist", which is a
@@ -454,31 +643,47 @@ def find_files(name: str = "", extension: str = "",
                path: str = "home", max_results: int = 20) -> str:
     try:
         search_path = _resolve_path(path)
-        if not _is_safe_path(search_path):
+        if not _is_readable_path(search_path):
             return f"Access denied: {search_path}"
         if not search_path.exists():
             return f"Search path not found: {path}"
 
-        results    = []
-        dir_count  = 0
-        max_dirs   = 500  # performance + safety limit
+        limit = max(1, min(int(max_results), _MAX_RESULTS))
+        extension = extension.casefold()
+        if extension and not extension.startswith("."):
+            extension = "." + extension
+        candidates: list[Path] = []
 
-        for item in search_path.rglob("*"):
-            if item.is_dir():
-                dir_count += 1
-                if dir_count > max_dirs:
+        # Spotlight makes a home-wide macOS search fast. The bounded walker is
+        # the portable fallback and also covers unindexed external drives.
+        if _OS == "Darwin" and name:
+            escaped = name.replace("\\", "\\\\").replace('"', '\\"')
+            query = f'kMDItemFSName == "*{escaped}*"cd'
+            result = subprocess.run(
+                ["mdfind", "-onlyin", str(search_path), query],
+                capture_output=True, text=True, timeout=10, check=False,
+            )
+            if result.returncode == 0:
+                candidates = [Path(line) for line in result.stdout.splitlines() if line]
+
+        if not candidates:
+            deadline = time.monotonic() + _MAX_SEARCH_SECONDS
+            candidates = list(_bounded_walk(search_path, deadline))
+
+        results = []
+        for item in candidates:
+            try:
+                if not item.is_file():
+                    continue
+                if extension and item.suffix.casefold() != extension:
+                    continue
+                if name and name.casefold() not in item.name.casefold():
+                    continue
+                results.append(f"📄 {item.name} ({_format_size(item.stat().st_size)}) — {item.parent}")
+                if len(results) >= limit:
                     break
+            except (OSError, PermissionError):
                 continue
-            if not item.is_file():
-                continue
-            if extension and item.suffix.lower() != extension.lower():
-                continue
-            if name and name.lower() not in item.name.lower():
-                continue
-            size = _format_size(item.stat().st_size)
-            results.append(f"📄 {item.name} ({size}) — {item.parent}")
-            if len(results) >= max_results:
-                break
 
         if not results:
             query = name or extension or "files"
@@ -490,32 +695,166 @@ def find_files(name: str = "", extension: str = "",
         return f"Search error: {e}"
 
 
+def search_file_contents(query: str, path: str = "home",
+                         extension: str = "", max_results: int = 20) -> str:
+    """Search text inside local files, with strict time and size bounds."""
+    if not query.strip():
+        return "No content search query provided."
+    root = _resolve_path(path)
+    if not _is_readable_path(root):
+        return f"Access denied: {root}"
+    if not root.exists():
+        return f"Search path not found: {root}"
+
+    limit = max(1, min(int(max_results), _MAX_RESULTS))
+    extension = extension.casefold()
+    if extension and not extension.startswith("."):
+        extension = "." + extension
+    needle = query.casefold()
+    deadline = time.monotonic() + _MAX_SEARCH_SECONDS
+    matches = []
+
+    for item in _bounded_walk(root, deadline):
+        try:
+            if _is_sensitive(item) or item.stat().st_size > _MAX_SEARCH_FILE:
+                continue
+            if extension and item.suffix.casefold() != extension:
+                continue
+            if item.suffix.casefold() not in _TEXT_EXTENSIONS:
+                continue
+            text = item.read_text(encoding="utf-8", errors="ignore")
+            folded = text.casefold()
+            position = folded.find(needle)
+            if position < 0:
+                continue
+            start = max(0, position - 90)
+            end = min(len(text), position + len(query) + 130)
+            snippet = _redact_secrets(text[start:end].replace("\n", " ").strip())
+            matches.append(f"📄 {item}\n   …{snippet}…")
+            if len(matches) >= limit:
+                break
+        except (OSError, PermissionError, UnicodeError):
+            continue
+
+    if not matches:
+        return f"No text containing '{query}' found in {root}."
+    return f"Found text in {len(matches)} file(s):\n" + "\n".join(matches)
+
+
+def show_tree(path: str = "home", depth: int = 2,
+              show_hidden: bool = False, max_results: int = 100) -> str:
+    root = _resolve_path(path)
+    if not _is_readable_path(root):
+        return f"Access denied: {root}"
+    if not root.exists() or not root.is_dir():
+        return f"Folder not found: {root}"
+    depth = max(1, min(int(depth), 5))
+    limit = max(1, min(int(max_results), _MAX_RESULTS))
+    lines = [f"📁 {root.name or root}/"]
+
+    def visit(folder: Path, level: int):
+        if level > depth or len(lines) >= limit:
+            return
+        try:
+            children = sorted(folder.iterdir(), key=lambda p: (not p.is_dir(), p.name.casefold()))
+        except (OSError, PermissionError):
+            lines.append("  " * level + "[permission denied]")
+            return
+        for child in children:
+            if len(lines) >= limit:
+                return
+            if not show_hidden and child.name.startswith("."):
+                continue
+            lines.append("  " * level + ("📁 " if child.is_dir() else "📄 ") + child.name)
+            if child.is_dir() and child.name not in _SKIP_DIRS:
+                visit(child, level + 1)
+
+    visit(root, 1)
+    if len(lines) >= limit:
+        lines.append(f"[Stopped at {limit} entries. Narrow the path or depth.]")
+    return "\n".join(lines)
+
+
+def get_recent_files(path: str = "home", count: int = 20) -> str:
+    root = _resolve_path(path)
+    if not _is_readable_path(root):
+        return f"Access denied: {root}"
+    if not root.exists():
+        return f"Path not found: {root}"
+    count = max(1, min(int(count), 50))
+    deadline = time.monotonic() + _MAX_SEARCH_SECONDS
+    recent = []
+    for item in _bounded_walk(root, deadline):
+        try:
+            stat = item.stat()
+            entry = (stat.st_mtime, str(item), stat.st_size)
+            if len(recent) < count:
+                heapq.heappush(recent, entry)
+            elif entry[0] > recent[0][0]:
+                heapq.heapreplace(recent, entry)
+        except (OSError, PermissionError):
+            continue
+    if not recent:
+        return "No files found."
+    lines = [f"Most recently modified files in {root}:"]
+    for modified, filename, size in sorted(recent, reverse=True):
+        stamp = datetime.fromtimestamp(modified).strftime("%Y-%m-%d %H:%M")
+        lines.append(f"  {stamp}  {_format_size(size):>10}  {filename}")
+    return "\n".join(lines)
+
+
+def open_path(path: str, name: str = "", reveal: bool = False) -> str:
+    base = _resolve_path(path)
+    target = (base / name) if name else base
+    if not _is_readable_path(target) or not target.exists():
+        return f"Path not found or inaccessible: {target}"
+    try:
+        if _OS == "Darwin":
+            command = ["open", "-R", str(target)] if reveal else ["open", str(target)]
+        elif _OS == "Windows":
+            if reveal:
+                command = ["explorer", "/select,", str(target)]
+            else:
+                os.startfile(str(target))  # type: ignore[attr-defined]
+                return f"Opened: {target}"
+        else:
+            command = ["xdg-open", str(target.parent if reveal else target)]
+        subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return f"{'Revealed in Finder' if reveal and _OS == 'Darwin' else 'Opened'}: {target}"
+    except Exception as e:
+        return f"Could not open path: {e}"
+
+
 def get_largest_files(path: str = "downloads", count: int = 10) -> str:
-    count = min(count, 50)  # maksimum 50
+    count = max(1, min(count, 50))
     try:
         search_path = _resolve_path(path)
-        if not _is_safe_path(search_path):
+        if not _is_readable_path(search_path):
             return f"Access denied: {search_path}"
         if not search_path.exists():
             return f"Path not found: {path}"
 
         files = []
-        for item in search_path.rglob("*"):
-            if item.is_file():
-                try:
-                    files.append((item.stat().st_size, item))
-                except Exception:
-                    continue
+        deadline = time.monotonic() + _MAX_SEARCH_SECONDS
+        for item in _bounded_walk(search_path, deadline):
+            try:
+                entry = (item.stat().st_size, str(item))
+                if len(files) < count:
+                    heapq.heappush(files, entry)
+                elif entry[0] > files[0][0]:
+                    heapq.heapreplace(files, entry)
+            except (OSError, PermissionError):
+                continue
 
-        files.sort(reverse=True)
-        top = files[:count]
+        top = sorted(files, reverse=True)
 
         if not top:
             return "No files found."
 
         lines = [f"Top {len(top)} largest files in {search_path.name}/:"]
-        for size, f in top:
-            lines.append(f"  {_format_size(size):>10}  {f.name}  ({f.parent})")
+        for size, filename in top:
+            item = Path(filename)
+            lines.append(f"  {_format_size(size):>10}  {item.name}  ({item.parent})")
 
         return "\n".join(lines)
 
@@ -625,7 +964,7 @@ def get_file_info(path: str, name: str = "") -> str:
     try:
         base   = _resolve_path(path)
         target = (base / name) if name else base
-        if not _is_safe_path(target):
+        if not _is_readable_path(target):
             return f"Access denied: {target}"
         if not target.exists():
             return f"Not found: {target.name}"
@@ -661,10 +1000,25 @@ def file_controller(
 
     try:
         if action == "list":
-            return list_files(path)
+            return list_files(
+                path,
+                show_hidden=bool(params.get("show_hidden", False)),
+                max_results=int(params.get("max_results", 100)),
+            )
+
+        elif action == "tree":
+            return show_tree(
+                path,
+                depth=int(params.get("depth", 2)),
+                show_hidden=bool(params.get("show_hidden", False)),
+                max_results=int(params.get("max_results", 100)),
+            )
 
         elif action == "create_file":
-            return create_file(path, name=name, content=params.get("content", ""))
+            return create_file(
+                path, name=name, content=params.get("content", ""),
+                overwrite=bool(params.get("overwrite", False)),
+            )
 
         elif action == "create_folder":
             return create_folder(path, name=name)
@@ -682,13 +1036,14 @@ def file_controller(
             return rename_file(path, name=name, new_name=params.get("new_name", ""))
 
         elif action == "read":
-            return read_file(path, name=name)
+            return read_file(path, name=name, max_chars=int(params.get("max_chars", 12000)))
 
         elif action == "write":
             return write_file(
                 path, name=name,
                 content=params.get("content", ""),
-                append=params.get("append", False)
+                append=bool(params.get("append", False)),
+                overwrite=bool(params.get("overwrite", False)),
             )
 
         elif action == "find":
@@ -698,6 +1053,17 @@ def file_controller(
                 path=path,
                 max_results=min(int(params.get("max_results", 20)), 50),
             )
+
+        elif action == "search_contents":
+            return search_file_contents(
+                query=params.get("query", ""),
+                extension=params.get("extension", ""),
+                path=path,
+                max_results=int(params.get("max_results", 20)),
+            )
+
+        elif action == "recent":
+            return get_recent_files(path=path, count=int(params.get("count", 20)))
 
         elif action == "largest":
             return get_largest_files(
@@ -714,6 +1080,12 @@ def file_controller(
         elif action == "info":
             return get_file_info(path, name=name)
 
+        elif action == "open":
+            return open_path(path, name=name, reveal=False)
+
+        elif action == "reveal":
+            return open_path(path, name=name, reveal=True)
+
         else:
             return f"Unknown action: '{action}'"
 
@@ -724,17 +1096,22 @@ def file_controller(
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "file_controller",
-    "description": "Manages files and folders: list, create, delete, move, copy, rename, read, write, find, disk usage.",
+    "description": (
+        "Browses and searches the Mac, reads common documents, opens or reveals files, "
+        "and safely manages user files. Read-only actions can inspect any macOS location "
+        "allowed by Full Disk Access. Changes are limited to the home folder and mounted "
+        "external drives; credentials are never returned to the model."
+    ),
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "action": {
                 "type": "STRING",
-                "description": "list | create_file | create_folder | delete | move | copy | rename | read | write | find | largest | disk_usage | organize_desktop | info"
+                "description": "list | tree | find | search_contents | recent | read | info | open | reveal | create_file | create_folder | write | copy | move | rename | delete | largest | disk_usage | organize_desktop"
             },
             "path": {
                 "type": "STRING",
-                "description": "File/folder path or shortcut: desktop, downloads, documents, home"
+                "description": "Absolute file/folder path, or shortcut: home, desktop, downloads, documents, pictures, music, videos"
             },
             "destination": {
                 "type": "STRING",
@@ -758,7 +1135,35 @@ TOOL = {
             },
             "count": {
                 "type": "INTEGER",
-                "description": "Number of results for largest"
+                "description": "Number of results for largest/recent"
+            },
+            "query": {
+                "type": "STRING",
+                "description": "Text to find inside files for search_contents"
+            },
+            "max_results": {
+                "type": "INTEGER",
+                "description": "Maximum result count, capped at 100"
+            },
+            "max_chars": {
+                "type": "INTEGER",
+                "description": "Maximum characters returned by read, capped at 80000"
+            },
+            "depth": {
+                "type": "INTEGER",
+                "description": "Folder depth for tree, capped at 5"
+            },
+            "show_hidden": {
+                "type": "BOOLEAN",
+                "description": "Include hidden files in list/tree"
+            },
+            "append": {
+                "type": "BOOLEAN",
+                "description": "Append to a text file instead of replacing it"
+            },
+            "overwrite": {
+                "type": "BOOLEAN",
+                "description": "Replace an existing text file; use only when the user explicitly asks"
             }
         },
         "required": [
