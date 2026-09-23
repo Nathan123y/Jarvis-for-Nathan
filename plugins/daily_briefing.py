@@ -16,7 +16,8 @@ PLUGIN = {
     "name": "daily_briefing",
     "description": (
         "Give the user's on-demand daily/morning briefing: today's Mac Calendar "
-        "events, overdue and upcoming Mission Control tasks, and unread personal "
+        "events, live Canvas assignments, overdue and upcoming Mission Control "
+        "tasks, and unread personal "
         "and school Gmail. Use for 'give me my daily briefing', 'what is my day "
         "looking like', 'morning update', or 'what do I have today'. Unlike "
         "mission_control's task-only briefing, this combines available sources. "
@@ -134,10 +135,21 @@ def _focus_today():
         return None
 
 
+def _canvas():
+    if not get_plugin_enabled("canvas_school"):
+        return [], "Canvas is disabled."
+    try:
+        from plugins.canvas_school import fetch_assignments
+        return fetch_assignments()
+    except Exception:
+        return [], "Canvas assignments could not be read."
+
+
 def run(parameters: dict, player=None, session_memory=None) -> str:
     today = date.today().isoformat()
     events, calendar_notice = _calendar()
     tasks, task_notice = _missions()
+    canvas_items, canvas_notice = _canvas()
     mail, mail_notices = _gmail()
     focus = _focus_today()
 
@@ -167,7 +179,19 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
             lines.append("No open missions saved.")
         elif len(tasks) > len(selected):
             lines.append(f"Showing {len(selected)} of {len(tasks)} open missions.")
-        lines.append("Assignments here come from Mission Control; Canvas is not connected.")
+        lines.append("Mission Control contains tasks you saved manually.")
+
+    lines += ["", "CANVAS ASSIGNMENTS"]
+    if canvas_notice:
+        lines.append(canvas_notice)
+    elif not canvas_items:
+        lines.append("No incomplete or missing Canvas work was returned.")
+    else:
+        for item in canvas_items[:5]:
+            when = "Overdue" if item["overdue"] else item["due"] or "No due date"
+            lines.append(f"{when}  {_clean(item['name'], 90)}  ·  {_clean(item['course'], 40)}")
+        if len(canvas_items) > 5:
+            lines.append(f"Showing 5 of {len(canvas_items)} Canvas items.")
 
     lines += ["", "UNREAD GMAIL"]
     for account, count, subjects in mail:
@@ -191,7 +215,10 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
         mission_phrase = f"{urgent} missions due or overdue"
     calendar_phrase = (f"{len(events)} calendar events" if not calendar_notice
                        else "Calendar unavailable")
+    canvas_phrase = (f"{len(canvas_items)} Canvas items" if not canvas_notice
+                     else "Canvas unavailable")
     mail_phrase = ", ".join(f"{account}: {count}{'+' if count == 4 else ''} unread"
                              for account, count, _ in mail) or "no connected inbox could be read"
     return (f"Here's your briefing for {today}: {calendar_phrase}, {mission_phrase}, "
+            f"{canvas_phrase}, "
             f"and {mail_phrase}. I've put the details on screen.")
