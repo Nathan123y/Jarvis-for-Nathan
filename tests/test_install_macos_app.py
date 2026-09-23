@@ -59,6 +59,21 @@ class MacLauncherTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unrelated app"):
                 install(root, Path(sys.executable), target)
 
+    def test_macos_installs_native_microphone_launcher(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "main.py").touch()
+            target = root / "Jarvis.app"
+            with patch("tools.install_macos_app.platform.system", return_value="Darwin"), \
+                 patch("tools.install_macos_app.subprocess.run") as run:
+                run.return_value.returncode = 0
+                install(root, Path(sys.executable), target, architecture="arm64")
+            with (target / "Contents" / "Resources" / "launch.plist").open("rb") as source:
+                self.assertEqual(plistlib.load(source)["Arch"], "arm64")
+            self.assertEqual(run.call_count, 2)
+            self.assertIn("swiftc", run.call_args_list[0].args[0])
+            self.assertIn("codesign", run.call_args_list[1].args[0][0])
+
 
 if __name__ == "__main__":
     unittest.main()
