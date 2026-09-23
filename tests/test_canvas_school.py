@@ -8,6 +8,32 @@ from plugins import canvas_school as canvas
 
 
 class CanvasTests(unittest.TestCase):
+    def test_next_month_range_includes_whole_month_and_handles_december(self):
+        for today, start, end in ((date(2026, 9, 23), date(2026, 10, 1), date(2026, 10, 31)),
+                                  (date(2026, 12, 23), date(2027, 1, 1), date(2027, 1, 31))):
+            with patch.object(canvas, "date") as clock:
+                clock.today.return_value = today
+                self.assertEqual(canvas._date_range("next_month"), (start, end))
+
+    def test_next_month_feed_reads_dates_beyond_default_two_weeks(self):
+        start, end = canvas._date_range("next_month")
+        day = end.strftime("%Y%m%d")
+        ics = ("BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART;VALUE=DATE:" + day
+               + "\nSUMMARY:Final report\nEND:VEVENT\nEND:VCALENDAR\n")
+        class Response:
+            status_code = 200
+            def iter_content(self, size):
+                yield ics.encode()
+            def close(self):
+                pass
+        requests_stub = types.ModuleType("requests")
+        requests_stub.get = lambda *args, **kwargs: Response()
+        with patch.dict(sys.modules, {"requests": requests_stub}), \
+             patch.object(canvas, "get_plugin_config", return_value={"calendar_feed": "https://sjsu.instructure.com/feeds/calendars/private.ics"}):
+            items, notice = canvas.fetch_assignments("next_month")
+        self.assertIsNone(notice)
+        self.assertEqual(items[0]["due"], end.isoformat())
+
     def test_calendar_feed_without_token_shows_dates_without_completion_claim(self):
         due = (date.today() + timedelta(days=2)).strftime("%Y%m%d")
         ics = ("BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\n"
