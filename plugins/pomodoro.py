@@ -17,6 +17,7 @@ the HUD panel stays language-neutral: emojis + numbers).
 """
 
 import json
+import os
 import threading
 import time
 from datetime import date
@@ -95,11 +96,16 @@ def _load_stats() -> dict:
 
 
 def _save_stats(data: dict) -> None:
+    tmp = STATE_FILE.with_name(STATE_FILE.name + ".tmp")
     try:
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        STATE_FILE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, STATE_FILE)
     except Exception:
-        pass
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _record_focus(minutes: int, task: str) -> None:
@@ -173,16 +179,18 @@ def _run_phase(player, stop: threading.Event, phase: str, minutes: float,
     """Count a single phase down second-by-second, refreshing the HUD panel.
     Returns True if it ran to completion, False if the user stopped it."""
     total = max(0.001, minutes * 60)
-    end = time.time() + total
+    end = time.monotonic() + total
     icon, label = ("🎯", "FOCUS") if phase == "work" else ("☕", "BREAK")
     with _lock:
         _state["phase"] = phase
         _state["phase_end"] = end
 
     while True:
-        remaining = end - time.time()
+        if stop.is_set():
+            return False
+        remaining = end - time.monotonic()
         if remaining <= 0:
-            return True
+            return not stop.is_set()
         frac = 1.0 - remaining / total
         stats = _load_stats()
         body = (f"{icon}  {label}\n\n"
@@ -206,6 +214,9 @@ def _worker(player, stop: threading.Event) -> None:
             if not _run_phase(player, stop, "work", wmin, task):
                 break  # stopped mid-focus → not counted
 
+            if stop.is_set():
+                break
+
             cycle += 1
             with _lock:
                 _state["completed"] += 1
@@ -226,9 +237,11 @@ def _worker(player, stop: threading.Event) -> None:
                  "time to start the next focus block. One short sentence.")
     finally:
         with _lock:
-            _state["running"] = False
-            _state["phase"] = None
-            _state["phase_end"] = 0.0
+            if _state["stop"] is stop:
+                _state["running"] = False
+                _state["phase"] = None
+                _state["phase_end"] = 0.0
+                _state["stop"] = None
         _remember_focus()
         stats = _load_stats()
         _panel(player, "🍅 POMODORO",
@@ -248,7 +261,7 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
             end = _state["phase_end"]
         if not running or not phase:
             return "No pomodoro is running right now. Say 'start a pomodoro' to begin."
-        remaining = _mmss(end - time.time())
+        remaining = _mmss(end - time.monotonic())
         label = "focus block" if phase == "work" else "break"
         return f"You're in a {label} with {remaining} remaining."
 
@@ -273,17 +286,16 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
             running = _state["running"]
             stop = _state["stop"]
             done = _state["completed"]
-        if not running or stop is None:
-            return "No pomodoro session is currently running."
-        stop.set()
+            if not running or stop is None:
+                return "No pomodoro session is currently running."
+            stop.set()
         return (f"Pomodoro stopped. You completed {done} focus "
                 f"{'block' if done == 1 else 'blocks'} this run.")
 
+    if action != "start":
+        return "Use start, stop, status, or stats for the pomodoro timer."
+
     # -------- START --------
-    with _lock:
-        if _state["running"]:
-            phase = _state["phase"] or "focus"
-            return f"A pomodoro is already running — you're in a {phase} phase."
 
     def _clamp(val, default, lo, hi):
         try:
@@ -293,10 +305,13 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
 
     work_min = _clamp(parameters.get("work_minutes"), 25, 1, 180)
     break_min = _clamp(parameters.get("break_minutes"), 5, 1, 60)
-    task = (parameters.get("task") or "").strip()[:60]
+    task = str(parameters.get("task") or "").strip()[:60]
 
     stop = threading.Event()
     with _lock:
+        if _state["running"]:
+            phase = _state["phase"] or "focus"
+            return f"A pomodoro is already running — you're in a {phase} phase."
         _state.update({
             "running": True, "stop": stop, "phase": None, "phase_end": 0.0,
             "work_min": work_min, "break_min": break_min, "long_min": max(break_min, 15),
