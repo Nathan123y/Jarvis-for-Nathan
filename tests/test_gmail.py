@@ -28,7 +28,7 @@ class GmailPluginTests(unittest.TestCase):
     def test_recent_uses_inbox_and_metadata_only(self):
         service = _service_with_inbox()
         with patch.object(gmail, "_service", return_value=service):
-            result = gmail.run({"action": "recent", "count": 5, "unread_only": True})
+            result = gmail.run({"action": "recent", "account": "personal", "count": 5, "unread_only": True})
         self.assertIn("Project update", result)
         self.assertIn("mail_1234", result)
         service.users().messages().list.assert_called_once_with(
@@ -47,7 +47,7 @@ class GmailPluginTests(unittest.TestCase):
             "data": base64.urlsafe_b64encode(b"Please review my document.").decode("ascii")
         }
         with patch.object(gmail, "_service", return_value=service):
-            result = gmail.run({"action": "read", "message_id": "mail_1234"})
+            result = gmail.run({"action": "read", "account": "personal", "message_id": "mail_1234"})
         self.assertIn("Please review my document.", result)
         service.users().messages().get.assert_called_once_with(
             userId="me", id="mail_1234", format="full"
@@ -66,7 +66,7 @@ class GmailPluginTests(unittest.TestCase):
                 patch.object(gmail.confirm, "pending_title", return_value=""), \
                 patch.object(gmail.confirm, "request", side_effect=capture):
             result = gmail.run({
-                "action": "send", "to": "friend@example.com",
+                "action": "send", "account": "personal", "to": "friend@example.com",
                 "subject": "Hello", "body": "See you soon!",
             }, player=player)
 
@@ -87,10 +87,10 @@ class GmailPluginTests(unittest.TestCase):
         service = _service_with_inbox()
         with patch.object(gmail, "_service", return_value=service):
             recipient = gmail.run({
-                "action": "send", "to": "Friend", "subject": "Hi", "body": "Hi",
+                "action": "send", "account": "personal", "to": "Friend", "subject": "Hi", "body": "Hi",
             })
             subject = gmail.run({
-                "action": "send", "to": "friend@example.com",
+                "action": "send", "account": "personal", "to": "friend@example.com",
                 "subject": "Hi\nBcc: other@example.com", "body": "Hi",
             })
         self.assertIn("exact email address", recipient)
@@ -99,9 +99,31 @@ class GmailPluginTests(unittest.TestCase):
 
     def test_unconnected_account_does_not_start_browser_login(self):
         with patch.object(gmail, "_service", side_effect=RuntimeError("Gmail is not connected. Ask me to 'connect Gmail' first.")) as service:
-            result = gmail.run({"action": "recent"})
+            result = gmail.run({"action": "recent", "account": "school"})
         self.assertIn("connect Gmail", result)
-        service.assert_called_once_with(allow_login=False)
+        service.assert_called_once_with("school", allow_login=False)
+
+
+    def test_two_connected_accounts_require_an_explicit_choice(self):
+        with patch.object(gmail, "_connected_accounts", return_value=["personal", "school"]), \
+                patch.object(gmail, "_service") as service:
+            result = gmail.run({"action": "recent"})
+        self.assertIn("Both Gmail accounts are connected", result)
+        service.assert_not_called()
+
+    def test_connect_requires_personal_or_school_label(self):
+        with patch.object(gmail, "_service") as service:
+            result = gmail.run({"action": "connect"})
+        self.assertIn("personal Gmail or school Gmail", result)
+        service.assert_not_called()
+
+    def test_single_connected_account_is_selected_automatically(self):
+        service = _service_with_inbox()
+        with patch.object(gmail, "_connected_accounts", return_value=["school"]), \
+                patch.object(gmail, "_service", return_value=service) as open_service:
+            result = gmail.run({"action": "recent", "count": 1})
+        self.assertIn("Recent school Gmail", result)
+        open_service.assert_called_once_with("school", allow_login=False)
 
 
 if __name__ == "__main__":
