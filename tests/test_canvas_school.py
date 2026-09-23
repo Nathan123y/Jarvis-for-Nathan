@@ -1,12 +1,45 @@
 import unittest
 import sys
 import types
+from datetime import date, timedelta
 from unittest.mock import patch
 
 from plugins import canvas_school as canvas
 
 
 class CanvasTests(unittest.TestCase):
+    def test_calendar_feed_without_token_shows_dates_without_completion_claim(self):
+        due = (date.today() + timedelta(days=2)).strftime("%Y%m%d")
+        ics = ("BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\n"
+               f"DTSTART;VALUE=DATE:{due}\r\nSUMMARY:Physics\\, Lab\r\n"
+               "LOCATION:Physics 52\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
+        class Response:
+            status_code = 200
+            def iter_content(self, size):
+                yield ics.encode()
+            def close(self):
+                pass
+        requests_stub = types.ModuleType("requests")
+        requests_stub.get = lambda *args, **kwargs: Response()
+        config = {"calendar_feed": "https://sjsu.instructure.com/feeds/calendars/private.ics"}
+        with patch.dict(sys.modules, {"requests": requests_stub}), \
+             patch.object(canvas, "get_plugin_config", return_value=config), \
+             patch.object(requests_stub, "get", return_value=Response()) as get:
+            items, notice = canvas.fetch_assignments()
+            reply = canvas.run({}, player=None)
+        self.assertIsNone(notice)
+        self.assertEqual(items[0]["name"], "Physics, Lab")
+        self.assertEqual(items[0]["due"], (date.today() + timedelta(days=2)).isoformat())
+        self.assertIn("submission status is unknown", reply)
+        self.assertFalse(get.call_args.kwargs["allow_redirects"])
+
+    def test_calendar_feed_rejects_other_hosts_and_plain_http(self):
+        for url in ("http://sjsu.instructure.com/feeds/calendars/a.ics",
+                    "https://localhost/feeds/calendars/a.ics",
+                    "https://evil.com/feeds/calendars/a.ics"):
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                canvas._calendar_url(url)
+
     def test_planner_and_overdue_are_deduplicated_and_sorted(self):
         config = {"domain": "https://school.instructure.com", "token": "private-token"}
         pages = [

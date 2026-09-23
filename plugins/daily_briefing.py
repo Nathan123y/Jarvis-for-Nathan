@@ -181,11 +181,16 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
             lines.append(f"Showing {len(selected)} of {len(tasks)} open missions.")
         lines.append("Mission Control contains tasks you saved manually.")
 
-    lines += ["", "CANVAS ASSIGNMENTS"]
+    from memory.config_manager import get_plugin_config
+    canvas_feed_only = (bool(get_plugin_config("canvas").get("calendar_feed"))
+                        and not bool(get_plugin_config("canvas").get("token")))
+    lines += ["", "CANVAS CALENDAR (submission status unknown)" if canvas_feed_only
+              else "CANVAS ASSIGNMENTS"]
     if canvas_notice:
         lines.append(canvas_notice)
     elif not canvas_items:
-        lines.append("No incomplete or missing Canvas work was returned.")
+        lines.append("No upcoming Canvas dates were returned." if canvas_feed_only
+                     else "No incomplete or missing Canvas work was returned.")
     else:
         for item in canvas_items[:5]:
             when = "Overdue" if item["overdue"] else item["due"] or "No due date"
