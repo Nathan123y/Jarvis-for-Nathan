@@ -41,14 +41,13 @@ import time
 import json
 import sys
 import traceback
-import requests
-from types import SimpleNamespace
 from datetime import datetime
 from pathlib import Path
 
 import sounddevice as sd
 import numpy as np
-from core.openai_realtime import connect_openai
+from google import genai
+from google.genai import types
 from ui import JarvisUI
 from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
@@ -97,11 +96,9 @@ def get_base_dir():
 BASE_DIR        = get_base_dir()
 API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
-LIVE_MODEL          = "gpt-realtime-2.1"
-DEFAULT_TEXT_MODEL  = "gpt-6-sol"
-ADVANCED_TEXT_MODEL = "gpt-6-astra"
+LIVE_MODEL          = "models/gemini-3.1-flash-live-preview"
 CHANNELS            = 1
-SEND_SAMPLE_RATE    = 24000
+SEND_SAMPLE_RATE    = 16000 
 RECEIVE_SAMPLE_RATE = 24000
 CHUNK_SIZE          = 1024
 
@@ -287,7 +284,7 @@ def _render_prompt(template: str, values: dict) -> str:
 
 def _get_api_key() -> str:
     with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["openai_api_key"]
+        return json.load(f)["gemini_api_key"]
 
 
 def _load_system_prompt() -> str:
@@ -490,35 +487,6 @@ TOOL_DECLARATIONS = [
             "required": [],
         },
     },
-    {
-        "name": "consult_sol",
-        "description": (
-            "Use GPT-6 Sol for every substantive question, explanation, plan, "
-            "analysis, or writing request before answering. Do not use it for "
-            "tiny conversational acknowledgements or direct computer actions."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "task": {"type": "STRING", "description": "The user's complete request plus any context needed to answer it."}
-            },
-            "required": ["task"],
-        },
-    },
-    {
-        "name": "consult_astra",
-        "description": (
-            "Escalate unusually difficult, high-stakes, ambiguous, or multi-step "
-            "reasoning and coding work to GPT-6 Astra. Prefer consult_sol for normal work."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "task": {"type": "STRING", "description": "The hard task and all context required for an expert answer."}
-            },
-            "required": ["task"],
-        },
-    },
 ]
 
 class _ReconnectSignal(Exception):
@@ -630,7 +598,6 @@ class JarvisLive:
         self._proactive        = ProactiveEngine()
         self._last_user_speech = time.monotonic()  # updated on every user utterance
         self._session_log: list[str] = []          # conversation turns for end-of-session summary
-        self._openai_api_key = ""
 
         self._enhanced_live = True  # proactive audio; auto-disabled if the server rejects it
         self._tuned_live    = True  # turn-taking / media / thinking knobs; same fallback
@@ -964,8 +931,6 @@ class JarvisLive:
         self._play_cursor = 0.0     # next batch starts a fresh timeline
         if self._turn_done_event:
             self._turn_done_event.clear()
-        if self._loop and self.session and hasattr(self.session, "interrupt"):
-            asyncio.run_coroutine_threadsafe(self.session.interrupt(), self._loop)
         self.ui.write_log("SYS: Interrupted — listening...")
 
     def speak(self, text: str):
@@ -984,7 +949,7 @@ class JarvisLive:
         self.ui.write_log(f"ERR: {tool_name} — {short}")
         self.speak(f"Sir, {tool_name} encountered an error. {short}")
 
-    def _build_config(self) -> dict:
+    def _build_config(self) -> types.LiveConnectConfig:
         from datetime import datetime
 
         # Load customization from config
@@ -1052,47 +1017,100 @@ class JarvisLive:
             parts.append(mem_str)
         parts.append(sys_prompt)
 
-        # GPT Realtime handles the live microphone/speaker conversation.  It
-        # delegates normal knowledge work to Sol and hard work to Astra through
-        # the two model tools below, while Jarvis' existing computer tools stay
-        # local and unchanged.
-        parts.append(
-            "[OPENAI MODEL ROUTING]\n"
-            "For substantive knowledge, analysis, planning, explanation, or writing, "
-            "call consult_sol before answering. For unusually hard, high-stakes, "
-            "ambiguous, or deeply multi-step work, call consult_astra instead. "
-            "Use the returned answer as your source and relay it naturally. "
-            "Direct computer actions and brief conversation do not need delegation."
+        cfg = dict(
+            response_modalities=["AUDIO"],
+            output_audio_transcription={},
+            input_audio_transcription={},
+            system_instruction="\n".join(parts),
+            tools=[{"function_declarations": _all_decls}],
+            # Hand back the handle captured from the last session_resumption
+            # update. `handle=None` is exactly the old behaviour (ask for
+            # handles, start fresh), so the first connect of a run is unchanged.
+            session_resumption=types.SessionResumptionConfig(
+                handle=self._resume_handle
+            ),
+            # Sliding-window compression: session never dies from a full context
+            # window — JARVIS can stay in one conversation for hours
+            context_window_compression=types.ContextWindowCompressionConfig(
+                sliding_window=types.SlidingWindow(),
+            ),
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                        voice_name=get_voice()
+                    )
+                )
+            ),
         )
-        return {"instructions": "\n".join(parts), "tools": _all_decls}
+        if self._enhanced_live:
+            # Proactive audio: JARVIS stays silent when speech isn't addressed
+            # to it (background chatter, talking to someone else in the room).
+            # (Affective dialog was dropped: gemini-3.1-flash-live does not
+            #  support it, and it never reliably detected tone in practice.
+            #  To restore it on a 2.5 native-audio model, add back:
+            #  cfg["enable_affective_dialog"] = True )
+            if get_proactive_audio_enabled():
+                cfg["proactivity"] = types.ProactivityConfig(proactive_audio=True)
 
-    async def _ask_openai_model(self, model: str, task: str) -> str:
-        """Run Sol/Astra through Responses without blocking the audio loop."""
-        def _call():
-            response = requests.post(
-                "https://api.openai.com/v1/responses",
-                headers={
-                    "Authorization": f"Bearer {self._openai_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": model,
-                    "input": task,
-                    "reasoning": {"effort": "medium" if model == DEFAULT_TEXT_MODEL else "high"},
-                },
-                timeout=180,
+        if self._tuned_live:
+            cfg.update(self._tuning_config())
+
+        return types.LiveConnectConfig(**cfg)
+
+    def _tuning_config(self) -> dict:
+        """The optional knobs, kept apart so one bad field can be dropped wholesale.
+
+        Every one of these is a preview-API field. If a future model release
+        stops accepting any of them the connection fails at setup, so the run
+        loop turns `_tuned_live` off and reconnects on the plain config rather
+        than leaving the user with an assistant that will not start.
+        """
+        out: dict = {}
+
+        # How long the server waits through a pause before deciding your turn is
+        # over. This — not the size of the prompt — is what most of the delay
+        # before a reply actually is, and the default has to suit everybody, so
+        # it is necessarily cautious.
+        turn = get_turn_tuning()
+        if turn.get("enabled", True):
+            detect = types.AutomaticActivityDetection(
+                silence_duration_ms=turn["silence_ms"],
+                prefix_padding_ms=turn["prefix_ms"],
             )
-            response.raise_for_status()
-            payload = response.json()
-            chunks = []
-            for item in payload.get("output", []):
-                for content in item.get("content", []):
-                    if content.get("type") == "output_text" and content.get("text"):
-                        chunks.append(content["text"])
-            return "\n".join(chunks).strip() or "The model returned no text."
-        return await asyncio.to_thread(_call)
+            if turn["end_sensitivity"] == "high":
+                detect.end_of_speech_sensitivity = types.EndSensitivity.END_SENSITIVITY_HIGH
+            elif turn["end_sensitivity"] == "low":
+                detect.end_of_speech_sensitivity = types.EndSensitivity.END_SENSITIVITY_LOW
+            if turn["start_sensitivity"] == "high":
+                detect.start_of_speech_sensitivity = types.StartSensitivity.START_SENSITIVITY_HIGH
+            elif turn["start_sensitivity"] == "low":
+                detect.start_of_speech_sensitivity = types.StartSensitivity.START_SENSITIVITY_LOW
+            out["realtime_input_config"] = types.RealtimeInputConfig(
+                automatic_activity_detection=detect)
 
-    async def _execute_tool(self, fc):
+        # Screenshots and camera frames are tokenised at this resolution and then
+        # stay in the session's context. 'medium' keeps on-screen text legible
+        # for a fraction of a full-resolution frame.
+        res = get_media_resolution()
+        if res != "default":
+            out["media_resolution"] = {
+                "low":    types.MediaResolution.MEDIA_RESOLUTION_LOW,
+                "medium": types.MediaResolution.MEDIA_RESOLUTION_MEDIUM,
+                "high":   types.MediaResolution.MEDIA_RESOLUTION_HIGH,
+            }[res]
+
+        # Thinking is left at the server default deliberately. Forcing the budget
+        # to zero was measured on gemini-3.1-flash-live over interleaved trials
+        # and did not make the first word arrive sooner — this model does not
+        # appear to deliberate on the Live path, so pinning the field only adds a
+        # way for a future release to behave differently. Set "thinking_enabled"
+        # in config/api_keys.json to true to let it reason instead.
+        if get_thinking_enabled():
+            out["thinking_config"] = types.ThinkingConfig(thinking_budget=-1)
+
+        return out
+
+    async def _execute_tool(self, fc) -> types.FunctionResponse:
         name = fc.name
         args = dict(fc.args or {})
 
@@ -1109,7 +1127,7 @@ class JarvisLive:
                 print(f"[Memory] 💾 save_memory: {category}/{key} = {value}")
             if not self.ui.muted:
                 self.ui.set_state("LISTENING")
-            return SimpleNamespace(
+            return types.FunctionResponse(
                 id=fc.id, name=name,
                 response={"result": "ok", "silent": True}
             )
@@ -1118,11 +1136,7 @@ class JarvisLive:
         result = "Done."
 
         try:
-            if name in {"consult_sol", "consult_astra"}:
-                model = ADVANCED_TEXT_MODEL if name == "consult_astra" else DEFAULT_TEXT_MODEL
-                result = await self._ask_openai_model(model, args.get("task", ""))
-
-            elif name == "recall_memory":
+            if name == "recall_memory":
                 # Local file search: no network, no second model. Kept out of
                 # the executor deliberately — it is a dictionary scan over a few
                 # hundred short strings, and a thread hop would cost more than
@@ -1258,7 +1272,7 @@ class JarvisLive:
         _sched = (self._action_registry.scheduling(name)
                   or self._plugin_registry.scheduling(name))
         _extra = {"scheduling": _sched} if _sched else {}
-        return SimpleNamespace(
+        return types.FunctionResponse(
             id=fc.id, name=name,
             response={"result": result},
             **_extra
@@ -1273,7 +1287,7 @@ class JarvisLive:
             # are {"data": <bytes>, "mime_type": <str>} from _listen_audio and
             # the phone relay.
             await self.session.send_realtime_input(
-                audio=SimpleNamespace(
+                audio=types.Blob(
                     data=msg["data"],
                     mime_type=msg.get("mime_type", "audio/pcm"),
                 )
@@ -2071,15 +2085,16 @@ class JarvisLive:
                 _resumed_with = self._resume_handle is not None
                 config = self._build_config()
 
-                self._openai_api_key = _get_api_key()
+                # Fresh client on every reconnect — avoids stale HTTP session state
+                # v1alpha carries proactive audio; if it gets rejected we fall
+                # back to v1beta.
+                client = genai.Client(
+                    api_key=_get_api_key(),
+                    http_options={"api_version": "v1alpha" if self._enhanced_live else "v1beta"}
+                )
 
                 async with (
-                    connect_openai(
-                        api_key=self._openai_api_key,
-                        model=LIVE_MODEL,
-                        instructions=config["instructions"],
-                        tools=config["tools"],
-                    ) as session,
+                    client.aio.live.connect(model=LIVE_MODEL, config=config) as session,
                     asyncio.TaskGroup() as tg,
                 ):
                     self.session          = session
