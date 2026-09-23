@@ -289,6 +289,30 @@ python main.py
 
 `setup.py` only ever installs what your operating system needs — the Windows-only libraries are skipped automatically on macOS and Linux, and vice-versa. It also checks your Python version up front, so a wrong interpreter fails with a sentence instead of a wall of pip output. Prefer to do it by hand? `pip install -r requirements.txt` works too.
 
+### Launch by clicking Jarvis.app on macOS
+
+In Terminal, go to your **existing Jarvis Git project folder** and use the same
+Python you normally use to start Jarvis:
+
+```bash
+python3 tools/install_macos_app.py
+```
+
+This creates `~/Applications/Jarvis.app`. Open it from Finder or Spotlight; you
+can drag the app to your Dock. The app runs `main.py` in your existing folder
+using that Python installation, so your saved settings, Gmail connections and
+plugins stay in place. It does not require a new API key or another dependency
+installation. If you pull updates in VS Code, quit and reopen the app to run
+the updated code. If you move the project folder or replace that Python,
+run the installer again. Startup errors are recorded in
+`~/Library/Logs/Jarvis/launch.log`.
+
+macOS may ask you to grant the new Jarvis app Microphone, Camera, Automation,
+Accessibility or Full Disk Access permissions again; the grants you gave VS
+Code or Python Launcher do not automatically transfer to a newly created app.
+This launcher is for your own Mac and has not been signed or notarized for
+distribution to other people.
+
 On first use of Messages or Contacts on macOS, approve the **Automation** and
 **Contacts** prompts for the Python/Terminal app that launches JARVIS. Cellular
 SMS and phone calls also require the Mac and iPhone to be signed into the same
