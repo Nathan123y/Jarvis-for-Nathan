@@ -307,6 +307,20 @@ the updated code. If you move the project folder or replace that Python,
 run the installer again. Startup errors are recorded in
 `~/Library/Logs/Jarvis/launch.log`.
 
+If macOS blocks the launched Python process from opening `main.py` on your
+Desktop, use this command in the current Jarvis folder after pulling updates:
+
+```bash
+python3 tools/install_macos_app.py --relocate-project
+```
+
+It moves the whole Git checkout, including your locally saved credentials, to
+`~/Projects/Jarvis-for-Nathan` and repoints Jarvis.app there. Reopen that new
+folder in VS Code before your next Git pull. The installer refuses to move
+anything if that destination already exists. The launcher also checks which
+Mac CPU mode can load the installed audio library and uses it when starting
+Jarvis; an incompatible Python now gets a clear installation error.
+
 macOS may ask you to grant the new Jarvis app Microphone, Camera, Automation,
 Accessibility or Full Disk Access permissions again; the grants you gave VS
 Code or Python Launcher do not automatically transfer to a newly created app.
