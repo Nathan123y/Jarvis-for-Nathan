@@ -302,9 +302,12 @@ API and OAuth packages; run `python3 setup.py` if they are missing.
 
 1. Follow the [Google Gmail API Python quickstart](https://developers.google.com/workspace/gmail/api/quickstart/python) to create a Google Cloud project, enable the Gmail API, and create an **OAuth Desktop app** client. For a personal Google account, set the consent screen audience to **External** and add your own address as a test user if prompted.
 2. Download that client's JSON file. Rename it `gmail_credentials.json` and put it in this repository's `config/` folder. Do not upload it to GitHub.
-3. Launch JARVIS and say **“Connect Gmail.”** A browser window opens for Google sign-in. Approve the read-only Gmail and send-email permissions. JARVIS saves a private token in `config/gmail_token.json` for later launches.
-4. Say **“Check my five most recent Gmail emails”** or **“Check my unread Gmail emails.”** To read one fully, ask JARVIS to read it after it lists the recent messages.
-5. Say **“Email person@example.com with subject Meeting and say I will be there at noon.”** JARVIS shows the complete draft in the content panel. Review it, then press **CONFIRM** on the HUD to send.
+3. Launch JARVIS and say **“Connect my personal Gmail.”** A browser window opens for Google sign-in. Approve the read-only Gmail and send-email permissions. Your existing `config/gmail_token.json` connection remains the personal account.
+4. Say **“Connect my school Gmail”** and sign in with the school address. JARVIS stores it separately in `config/gmail_school_token.json`.
+5. Say **“Check my five most recent personal Gmail emails”** or **“Check my unread school Gmail emails.”** To read one fully, name the same account after JARVIS lists its messages.
+6. Say **“Send from my school Gmail to person@example.com with subject Meeting and say I will be there at noon.”** JARVIS shows the account and complete draft in the content panel. Review it, then press **CONFIRM** on the HUD to send.
+
+When both accounts are connected, name **personal** or **school** in each request. JARVIS asks which one to use if it is unclear.
 
 The plugin requests only `gmail.readonly` and `gmail.send`. Email bodies are
 limited to 3,500 characters so the full draft fits in the content panel. OAuth
