@@ -20,6 +20,7 @@ PLUGIN = {
     "description": (
         "Read the user's Canvas LMS school assignments. Use for 'what is due on "
         "Canvas', 'check my Canvas assignments', 'show overdue Canvas work', "
+        "'what is due on Canvas next month', "
         "or 'connect Canvas'. For a combined calendar, Gmail and school update, "
         "use daily_briefing instead. Canvas access is read-only. Never ask the "
         "user to say their token or calendar feed link aloud or paste it in chat. "
@@ -27,8 +28,10 @@ PLUGIN = {
     ),
     "parameters": {
         "type": "OBJECT",
-        "properties": {"action": {"type": "STRING",
-                                 "description": "assignments (default), check, or connect (setup instructions)"}},
+        "properties": {
+            "action": {"type": "STRING", "description": "assignments (default), check, or connect (setup instructions)"},
+            "timeframe": {"type": "STRING", "description": "upcoming (default, next 14 days), this_month, or next_month. For 'next month' choose next_month."},
+        },
         "required": [],
     },
 }
@@ -142,7 +145,23 @@ def _feed_day(value):
     return ""
 
 
-def _feed_assignments(url):
+def _date_range(timeframe):
+    today = date.today()
+    if timeframe == "upcoming":
+        return today, today + timedelta(days=14)
+    first = today.replace(day=1)
+    next_first = (first.replace(year=first.year + 1, month=1)
+                  if first.month == 12 else first.replace(month=first.month + 1))
+    if timeframe == "this_month":
+        return today, next_first - timedelta(days=1)
+    if timeframe == "next_month":
+        after_next = (next_first.replace(year=next_first.year + 1, month=1)
+                      if next_first.month == 12 else next_first.replace(month=next_first.month + 1))
+        return next_first, after_next - timedelta(days=1)
+    raise ValueError("Choose upcoming, this_month, or next_month for Canvas timeframe.")
+
+
+def _feed_assignments(url, start=None, end=None):
     import requests
     response = requests.get(url, timeout=(4, 8), allow_redirects=False,
                             headers={"Accept": "text/calendar"}, stream=True)
@@ -162,15 +181,15 @@ def _feed_assignments(url):
         raise ValueError("Canvas Calendar Feed returned an unexpected format.")
     # RFC 5545: a line beginning with whitespace continues the previous line.
     unfolded = re.sub(r"\r?\n[ \t]", "", raw)
-    today = date.today()
-    deadline = today + timedelta(days=14)
+    start = start or date.today()
+    end = end or start + timedelta(days=14)
     items, event = [], None
     for line in unfolded.splitlines():
         if line == "BEGIN:VEVENT":
             event = {}
         elif line == "END:VEVENT" and event is not None:
             due = _feed_day(event.get("DTSTART", ""))
-            if due and today <= date.fromisoformat(due) <= deadline and event.get("SUMMARY"):
+            if due and start <= date.fromisoformat(due) <= end and event.get("SUMMARY"):
                 items.append({"name": _clean(_ical_unescape(event["SUMMARY"])),
                               "course": _clean(_ical_unescape(event.get("LOCATION", "School")), 45),
                               "due": due, "overdue": False})
@@ -182,8 +201,12 @@ def _feed_assignments(url):
     return items[:20]
 
 
-def fetch_assignments():
+def fetch_assignments(timeframe="upcoming"):
     """Return (items, notice); never return access tokens or raw HTTP errors."""
+    try:
+        start, end = _date_range(timeframe)
+    except ValueError as exc:
+        return [], str(exc)
     config = get_plugin_config("canvas")
     token = str(config.get("token") or "").strip()
     feed = str(config.get("calendar_feed") or "").strip()
@@ -191,17 +214,16 @@ def fetch_assignments():
         if not feed:
             return [], "Canvas isn't connected. Add your Canvas Calendar Feed link in Jarvis Plugin Settings."
         try:
-            return _feed_assignments(_calendar_url(feed)), None
+            return _feed_assignments(_calendar_url(feed), start, end), None
         except ValueError as exc:
             return [], str(exc)
         except Exception:
             return [], "Canvas Calendar Feed couldn't be reached. Check your connection and try again."
     try:
         base = _base_url(config.get("domain"))
-        today = date.today()
         upcoming = _request_pages(base, token, "/api/v1/planner/items", {
-            "start_date": today.isoformat(),
-            "end_date": (today + timedelta(days=14)).isoformat(),
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
             "filter": "incomplete_items", "per_page": 50,
         })
         missing = _request_pages(base, token, "/api/v1/users/self/missing_submissions",
@@ -248,6 +270,7 @@ def fetch_assignments():
 
 def run(parameters: dict, player=None, session_memory=None) -> str:
     action = str((parameters or {}).get("action") or "assignments").lower().strip()
+    timeframe = str((parameters or {}).get("timeframe") or "upcoming").lower().strip()
     if action == "connect":
         return ("In Canvas, open Calendar and click Calendar Feed. Copy the link. In Jarvis, "
                 "open Settings > Plugin Settings > Canvas, paste it into Canvas Calendar Feed "
@@ -256,14 +279,14 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
                 "approved API token, the existing token connection takes priority.")
     if action not in ("assignments", "check"):
         return "Canvas actions: assignments, check, or connect."
-    items, notice = fetch_assignments()
+    items, notice = fetch_assignments(timeframe)
     if notice:
         return notice
     if not items:
-        return "Canvas is connected. No upcoming Canvas items were returned."
+        return f"Canvas is connected. No Canvas items were returned for {timeframe.replace('_', ' ')}."
     feed_mode = not str(get_plugin_config("canvas").get("token") or "").strip()
-    lines = ["CANVAS CALENDAR (upcoming dates; submission status unknown)" if feed_mode
-             else "CANVAS ASSIGNMENTS (read-only)"]
+    lines = [f"CANVAS CALENDAR · {timeframe.replace('_', ' ')} (submission status unknown)" if feed_mode
+             else f"CANVAS ASSIGNMENTS · {timeframe.replace('_', ' ')} (read-only)"]
     for item in items[:10]:
         when = "Overdue" if item["overdue"] else (item["due"] or "No due date")
         lines.append(f"{when} · {item['name']} · {item['course']}")
