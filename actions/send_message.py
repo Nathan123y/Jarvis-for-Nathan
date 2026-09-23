@@ -4,6 +4,9 @@ import sys
 import time
 from pathlib import Path
 
+from core import confirm
+from core.macos_communications import ContactError, resolve_contact, send_message as _mac_send_message
+
 try:
     import pyautogui
     pyautogui.FAILSAFE = True
@@ -221,6 +224,8 @@ _PLATFORM_MAP = [
     ({"messenger", "facebook", "fb"},         _send_messenger),
 ]
 
+_APPLE_MESSAGES = {"messages", "message", "imessage", "sms", "text", "apple messages"}
+
 
 def _resolve_platform(platform_str: str):
     key = platform_str.lower().strip()
@@ -245,6 +250,27 @@ def send_message(
         return "Please specify a recipient."
     if not message_text:
         return "Please specify the message content."
+
+    # Messages on macOS is controlled through its native scripting interface,
+    # not by searching the visible UI and pressing Enter. Resolve the contact
+    # first, then park the irreversible send behind the HUD confirmation gate.
+    if _get_os() == "mac" and platform.lower().strip() in _APPLE_MESSAGES:
+        try:
+            contact = resolve_contact(receiver)
+        except ContactError as e:
+            return str(e)
+        if confirm.pending_title():
+            return ("There is already a confirmation waiting on screen. "
+                    "Answer that one before sending another message.")
+        preview = message_text if len(message_text) <= 120 else message_text[:117] + "…"
+        detail = f"To: {contact.name} ({contact.masked_handle})\n\n{preview}"
+        return confirm.request(
+            key=f"message:{contact.handle}",
+            title=f"SEND MESSAGE TO {contact.name.upper()}?",
+            detail=detail,
+            run=lambda c=contact, m=message_text: _mac_send_message(c, m),
+        )
+
     if not _PYAUTOGUI:
         return "PyAutoGUI is not installed — cannot control the desktop."
 
@@ -269,7 +295,11 @@ def send_message(
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "send_message",
-    "description": "Sends a text message via WhatsApp, Telegram, or other messaging platform.",
+    "description": (
+        "Sends a text message via Apple Messages/iMessage/SMS, WhatsApp, Telegram, "
+        "or another messaging platform. On macOS, Apple Messages resolves the "
+        "contact natively and requires the user to confirm on the HUD before sending."
+    ),
     "parameters": {
         "type": "OBJECT",
         "properties": {
@@ -283,7 +313,7 @@ TOOL = {
             },
             "platform": {
                 "type": "STRING",
-                "description": "Platform: WhatsApp, Telegram, etc."
+                "description": "Platform: Messages, iMessage, SMS, WhatsApp, Telegram, etc."
             }
         },
         "required": [

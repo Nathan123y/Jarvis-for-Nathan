@@ -69,7 +69,9 @@ It's not just an assistant — it's an extension of your digital life.
 | 📂 File Processor | Read, summarize, and answer questions about local files |
 | 💻 Code Helper | Inline code review, debugging, and generation |
 | 🌐 Browser Control | Open URLs, navigate tabs, and interact with the browser by voice |
-| 📨 Send Message | Compose and send messages through WhatsApp, Telegram, and more |
+| 📨 Native Mac Messages | Resolve Contacts and send iMessage/SMS without clicking the UI — always requires HUD confirmation |
+| 📞 Mac Calls | Start confirmed Phone or FaceTime Audio calls from Contacts; ambiguous names and emergency numbers are blocked |
+| 💬 Other Messengers | Compose and send messages through WhatsApp, Telegram, and more |
 | 🎬 YouTube Control | Search, play, and control YouTube playback by voice |
 | 🖱️ Desktop Control | Taskbar, window management, and desktop-level operations |
 | 🧑‍💻 Silent Language Memory | Detects spoken language on first use — all future sessions adapt automatically |
@@ -286,6 +288,11 @@ python main.py
 
 `setup.py` only ever installs what your operating system needs — the Windows-only libraries are skipped automatically on macOS and Linux, and vice-versa. It also checks your Python version up front, so a wrong interpreter fails with a sentence instead of a wall of pip output. Prefer to do it by hand? `pip install -r requirements.txt` works too.
 
+On first use of Messages or Contacts on macOS, approve the **Automation** and
+**Contacts** prompts for the Python/Terminal app that launches JARVIS. Cellular
+SMS and phone calls also require the Mac and iPhone to be signed into the same
+Apple Account with call and text forwarding enabled.
+
 > ⚠️ **Installation Note:** If you hit a `ModuleNotFoundError` for an OS-specific package, install it with `pip install <module_name>`. The optional **wake word** engine is *not* installed here — grab it in one click from **⚙ → WAKE WORD** inside the app.
 
 ---
@@ -332,7 +339,8 @@ Mark LIV/
 │   ├── browser_control.py    # Web browser control
 │   ├── file_controller.py    # File system operations
 │   ├── file_processor.py     # Document reading and summarization
-│   ├── send_message.py       # Messaging integration
+│   ├── send_message.py       # Native Mac Messages + other messaging integrations
+│   ├── phone_call.py         # Confirmed Mac Phone / FaceTime Audio calls
 │   ├── weather_report.py     # Live weather data
 │   ├── flight_finder.py      # Flight search
 │   ├── youtube_video.py      # YouTube playback control
