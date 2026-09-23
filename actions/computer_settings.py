@@ -58,6 +58,45 @@ def _get_macos_wifi_interface() -> str:
         pass
     return "en0" 
 
+_MIC_PREVIOUS_LEVEL: int | None = None
+
+def _mac_script(script: str) -> str:
+    """Run a fixed AppleScript command and report device/permission errors."""
+    result = subprocess.run(
+        ["osascript", "-e", script], capture_output=True, text=True, timeout=6,
+    )
+    if result.returncode:
+        raise RuntimeError((result.stderr or "macOS rejected this setting").strip())
+    return result.stdout.strip()
+
+def microphone_get() -> int:
+    """Return macOS default input level, separate from app permission."""
+    if _OS != "Darwin":
+        raise RuntimeError("System microphone level control currently supports macOS only.")
+    return int(_mac_script("input volume of (get volume settings)"))
+
+def microphone_set(value: int) -> None:
+    if _OS != "Darwin":
+        raise RuntimeError("System microphone level control currently supports macOS only.")
+    if not 0 <= value <= 100:
+        raise ValueError("Microphone level must be between 0 and 100.")
+    _mac_script(f"set volume input volume {value}")
+
+def microphone_mute() -> str:
+    """Silence system input; voice commands cannot unmute it afterward."""
+    global _MIC_PREVIOUS_LEVEL
+    _MIC_PREVIOUS_LEVEL = microphone_get()
+    microphone_set(0)
+    return "System microphone muted. Type 'unmute system microphone' or use macOS Sound settings to restore voice control."
+
+def microphone_unmute() -> str:
+    global _MIC_PREVIOUS_LEVEL
+    previous = _MIC_PREVIOUS_LEVEL
+    target = previous if previous is not None and previous > 0 else 50
+    microphone_set(target)
+    _MIC_PREVIOUS_LEVEL = None
+    return f"System microphone input restored to {target}%."
+
 def volume_up():
     if _OS == "Windows":
         for _ in range(5): pyautogui.press("volumeup")
@@ -188,9 +227,7 @@ def volume_set(value: int):
 
 def brightness_up():
     if _OS == "Darwin":
-        subprocess.run(["osascript", "-e",
-            'tell application "System Events" to key code 144'],
-            capture_output=True)
+        _mac_script('tell application "System Events" to key code 144')
     elif _OS == "Linux":
         if subprocess.run(["which", "brightnessctl"],
                 capture_output=True).returncode == 0:
@@ -217,9 +254,7 @@ def brightness_up():
 
 def brightness_down():
     if _OS == "Darwin":
-        subprocess.run(["osascript", "-e",
-            'tell application "System Events" to key code 145'],
-            capture_output=True)
+        _mac_script('tell application "System Events" to key code 145')
     elif _OS == "Linux":
         if subprocess.run(["which", "brightnessctl"],
                 capture_output=True).returncode == 0:
@@ -600,6 +635,8 @@ ACTION_MAP: dict[str, callable] = {
     "toggle_mute":         volume_mute,
     "brightness_up":       brightness_up,
     "brightness_down":     brightness_down,
+    "microphone_unmute":    microphone_unmute,
+    "microphone_mute":      microphone_mute,
     "sleep_display":       sleep_display,
     "screen_off":          sleep_display,
     "pause_video":         pause_video,
@@ -680,6 +717,9 @@ _IRREVERSIBLE = {
     "toggle_wifi": ("Switch WiFi off or on",
                     "If this switches WiFi off, JARVIS loses its connection and "
                     "cannot switch it back on by voice."),
+    "microphone_mute": ("Mute system microphone",
+                        "Voice commands stop until input is restored. Type an "
+                        "unmute command or use macOS Sound settings."),
 }
 
 # Kept so anything still importing the old name keeps working.
@@ -705,6 +745,9 @@ _ALIASES = {
     "mute":            ("silence", "sound off", "no sound"),
     "brightness_up":   ("brighter", "raise brightness", "increase brightness"),
     "brightness_down": ("dimmer", "dim", "lower brightness", "decrease brightness"),
+    "microphone_mute": ("mute microphone", "mute my mic", "turn microphone off"),
+    "microphone_unmute": ("unmute microphone", "unmute my mic", "turn microphone on"),
+    "microphone_status": ("mic level", "microphone level", "microphone status"),
     "close_window":    ("close this", "close it"),
     "full_screen":     ("fullscreen", "maximise screen"),
     "show_desktop":    ("minimise everything", "go to desktop"),
@@ -720,7 +763,8 @@ _ALIASES = {
     "restart":         ("reboot", "restart the pc"),
 }
 
-_VALUE_ACTIONS = {"volume_set", "type_text", "press_key", "reload_n",
+_VALUE_ACTIONS = {"volume_set", "microphone_set", "microphone_mute",
+                  "microphone_status", "type_text", "press_key", "reload_n",
                   "scroll_up", "scroll_down"}
 
 
@@ -747,8 +791,16 @@ def _detect_action(description: str) -> dict:
 
     low = raw.lower()
 
-    # 2. "set volume to 30", "sesi 30 yap" — a number next to a volume word.
+    # 2. An explicit microphone request wins over generic volume words.
     num = re.search(r"(\d{1,3})\s*%?", low)
+    if any(w in low for w in ("microphone", "mic input", "my mic")):
+        if num:
+            return {"action": "microphone_set", "value": int(num.group(1))}
+        if any(w in low for w in ("unmute", "turn on", "enable")):
+            return {"action": "microphone_unmute", "value": None}
+        if any(w in low for w in ("mute", "turn off", "disable")):
+            return {"action": "microphone_mute", "value": None}
+        return {"action": "microphone_status", "value": None}
     if num and any(w in low for w in ("volume", "ses", "sound", "lautstark", "громкость")):
         return {"action": "volume_set", "value": max(0, min(100, int(num.group(1))))}
 
@@ -825,8 +877,29 @@ def computer_settings(
                     "Ask the user to answer that one first.")
         return confirm.request(
             key=action, title=title, detail=detail,
-            run=lambda f=func, a=action: (f(), f"{a} done.")[1],
+            run=lambda f=func, a=action: f() or f"{a} done.",
         )
+
+    if action == "microphone_status":
+        try:
+            return f"System microphone input level is {microphone_get()}%."
+        except Exception as e:
+            return f"Could not read microphone input: {e}"
+
+    if action == "microphone_set":
+        try:
+            if value is None:
+                return "Specify a microphone input level between 1 and 100%."
+            target = int(str(value).strip().rstrip("%"))
+            if not 1 <= target <= 100:
+                return "Use a microphone input level from 1 to 100%. To mute it, use microphone_mute and confirm on screen."
+            before = microphone_get()
+            microphone_set(target)
+            push_undo(f"microphone {before}% → {target}%",
+                      lambda b=before: (microphone_set(b), f"Microphone back to {b}%.")[1])
+            return f"System microphone input set to {target}%."
+        except (ValueError, RuntimeError, OSError, subprocess.TimeoutExpired) as e:
+            return f"Could not set microphone input: {e}"
 
     if action == "volume_set":
         try:
@@ -886,7 +959,7 @@ def computer_settings(
         _before = ("brightness", brightness_get())
 
     try:
-        func()
+        result = func()
     except Exception as e:
         print(f"[Settings] Action failed ({action}): {e}")
         return f"Action failed ({action}): {e}"
@@ -905,13 +978,13 @@ def computer_settings(
         push_undo("dark mode toggled",
                   lambda: (dark_mode(), "Theme switched back.")[1])
 
-    return f"Done: {action}."
+    return result if isinstance(result, str) else f"Done: {action}."
 
 
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "computer_settings",
-    "description": "Controls the computer: volume, brightness, window management, keyboard shortcuts, typing text on screen, closing apps, fullscreen, dark mode, WiFi, restart, shutdown, scrolling, tab management, zoom, screenshots, lock screen, refresh/reload page. Use for ANY single computer control command. restart, shutdown and toggle_wifi put a confirmation on the user's screen and do NOT happen until they press it — never claim they are done. Volume, brightness and dark mode can be reversed with the `undo` tool.",
+    "description": "Controls the computer: volume, brightness, macOS microphone input level/mute, windows, shortcuts, typing, dark mode, WiFi, screenshots, lock screen, and more. Use for one computer control command. restart, shutdown, toggle_wifi and microphone_mute require on-screen confirmation. Muting system input stops voice control until the user types an unmute command or restores input in macOS Sound settings. Brightness keys may need Accessibility permission; unsupported displays or devices return an error.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
@@ -930,7 +1003,8 @@ TOOL = {
                 "description": (
                     "The exact action. Prefer this over `description` — pick one of: "
                     "volume_up | volume_down | volume_set | mute | "
-                    "brightness_up | brightness_down | sleep_display | "
+                    "brightness_up | brightness_down | microphone_status | "
+                    "microphone_set | microphone_mute | microphone_unmute | sleep_display | "
                     "pause_video | close_app | close_window | full_screen | "
                     "minimize | maximize | snap_left | snap_right | "
                     "switch_window | show_desktop | task_manager | focus_search | "
@@ -953,7 +1027,7 @@ TOOL = {
             },
             "value": {
                 "type": "STRING",
-                "description": "Optional value: volume level 0-100, text to type, key name, etc."
+                "description": "Optional value: volume 0-100, microphone input level 1-100, text to type, key name, etc."
             }
         },
         "required": []
