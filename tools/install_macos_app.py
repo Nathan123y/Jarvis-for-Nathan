@@ -21,6 +21,7 @@ from pathlib import Path
 
 BUNDLE_ID = "com.nathan.jarvis.launcher"
 MARKER = "# Jarvis Git checkout launcher"
+NATIVE_SOURCE = Path(__file__).with_name("jarvis_launcher.swift")
 
 
 def compatible_arch(interpreter: Path) -> str:
@@ -68,8 +69,11 @@ def install(repo: Path, interpreter: Path, destination: Path, architecture: str 
         try:
             with info.open("rb") as source:
                 existing = plistlib.load(source)
-            if (existing.get("CFBundleIdentifier") != BUNDLE_ID or
-                    MARKER not in (destination / "Contents" / "MacOS" / "Jarvis").read_text()):
+            native_config = destination / "Contents" / "Resources" / "launch.plist"
+            old_launcher = destination / "Contents" / "MacOS" / "Jarvis"
+            is_ours = native_config.is_file() or (old_launcher.is_file() and
+                        MARKER in old_launcher.read_text(errors="replace"))
+            if existing.get("CFBundleIdentifier") != BUNDLE_ID or not is_ours:
                 raise ValueError("An unrelated app exists at that destination; choose another path.")
         except (OSError, ValueError, TypeError, plistlib.InvalidFileException) as exc:
             raise ValueError("An unrelated app exists at that destination; choose another path.") from exc
@@ -93,6 +97,27 @@ def install(repo: Path, interpreter: Path, destination: Path, architecture: str 
     }
     with (destination / "Contents" / "Info.plist").open("wb") as target:
         plistlib.dump(info, target)
+
+    if platform.system() == "Darwin":
+        # A shell-script bundle doesn't itself request microphone permission.
+        # A native executable provides a stable app identity and prompts before
+        # starting the Python process that captures audio.
+        config = destination / "Contents" / "Resources"
+        config.mkdir(parents=True, exist_ok=True)
+        with (config / "launch.plist").open("wb") as target:
+            plistlib.dump({"Repo": str(repo), "Python": str(interpreter),
+                           "Arch": architecture or ""}, target)
+        launcher = destination / "Contents" / "MacOS" / "Jarvis"
+        result = subprocess.run(["/usr/bin/xcrun", "swiftc", str(NATIVE_SOURCE),
+                                 "-framework", "AVFoundation", "-framework", "AppKit",
+                                 "-o", str(launcher)], capture_output=True, text=True)
+        if result.returncode:
+            raise ValueError(f"Could not compile Jarvis launcher: {result.stderr.strip()}")
+        result = subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-",
+                                 str(destination)], capture_output=True, text=True)
+        if result.returncode:
+            raise ValueError(f"Could not sign Jarvis launcher: {result.stderr.strip()}")
+        return destination
 
     script = f"""#!/bin/sh
 {MARKER}
