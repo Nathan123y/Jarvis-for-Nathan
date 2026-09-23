@@ -17,17 +17,15 @@ which messages it has already answered. If Live can't connect, the
 plugin silently falls back to stateless REST calls (gemini-2.5-flash)
 so the feature never dies.
 
-No clicking, no coordinates: the user clicks into the message input box
-themselves before/when starting, and the plugin simply pastes into the
-already-focused box (focus stays there after every send). A focus guard
-remembers which window the takeover started on and holds replies if the
-focus ever moves elsewhere, so a reply can never be pasted into the
-wrong application. Messages are read purely by vision, so it works with
-any messaging app: WhatsApp Web, Telegram, Instagram, Discord, Slack...
+For Apple Messages on macOS, accessibility identifies the selected window,
+focuses its message composer automatically, and captures just that window.
+The takeover pauses if the selected conversation changes. Other chat apps
+still use the focused input box and a window focus guard. Message content
+is read by screen vision without querying private message databases.
 
 Ways to stop: say "take the conversation back" (action=stop), slam the
 mouse into the top-left screen corner (pyautogui failsafe), or let it
-time out after `duration_minutes` (default 10).
+time out after `duration_minutes` (default 60).
 """
 
 import asyncio
@@ -54,7 +52,9 @@ PLUGIN = {
         "from here'. Use action='status' when asked whether the takeover is "
         "running. This tool WATCHES the screen by itself every few seconds — "
         "NEVER use screen_process or send_message for an ongoing chat "
-        "takeover. Pass the user's exact spoken words in 'query' (they may "
+        "takeover. On macOS Messages the selected chat composer is focused "
+        "automatically; the user does not need to click it again. Pass the "
+        "user's exact spoken words in 'query' (they may "
         "include instructions like 'tell him I'm in a meeting'). IMPORTANT: "
         "call this tool exactly ONCE per spoken request — never issue a "
         "second/duplicate start call for the same request."
@@ -75,6 +75,13 @@ PLUGIN = {
                                "own language (may contain extra instructions "
                                "for how to reply).",
             },
+            "platform": {
+                "type": "STRING",
+                "enum": ["messages", "other"],
+                "description": "Optional: 'messages' for macOS Apple Messages "
+                               "(automatic refocus), 'other' for a different "
+                               "messaging app. Defaults to Messages on macOS.",
+            },
             "duration_minutes": {
                 "type": "NUMBER",
                 "description": "Optional safety time limit in minutes "
@@ -89,8 +96,8 @@ PLUGIN = {
 # read live from main.LIVE_MODEL, so upgrading main.py upgrades this plugin too
 _LIVE_MODEL       = "models/gemini-2.5-flash-native-audio-preview-12-2025"
 _REST_MODEL       = "gemini-2.5-flash"   # fallback engine only
-_POLL_SECONDS     = 10       # how often the screen is checked
-_DEFAULT_MINUTES  = 10       # auto-stop safety limit
+_POLL_SECONDS     = 4       # how often the screen is checked
+_DEFAULT_MINUTES  = 60       # auto-stop safety limit
 _PIXEL_DELTA      = 15       # per-pixel difference that counts as "changed"
 _CHANGED_RATIO    = 0.002    # >0.2% of pixels changed = screen changed
                              # (a new chat bubble ≈ 1-2%; clock digits ≈ 0.03%)
@@ -126,6 +133,8 @@ _LIVE_SYSTEM = (
     "the newest incoming message is one you already answered this session, "
     "output STANDBY even though your reply is not visible in the screenshot; "
     "trust your own memory of what you answered over the screenshot.\n"
+    "Stay on the SAME selected conversation for the entire takeover. If "
+    "the header or participants change to a different chat, say NOSCREEN.\n"
     "3. If the newest message in the conversation is an incoming (left-side) "
     "message you have NOT replied to yet, say ONLY the reply itself — "
     "written AS THE USER: same language as the conversation, mimicking the "
@@ -172,6 +181,7 @@ _state = {
     "exchanges": [],      # list of (their_message_or_empty, our_reply)
     "engine":    "",      # "live" / "rest" — which engine is/was in use
     "ended":     "",      # why the last run ended (for status reports)
+    "paused":    "",      # temporary Messages focus/selection failure
 }
 _state_lock = threading.Lock()
 
@@ -183,15 +193,15 @@ def _running() -> bool:
 
 # ── screen capture ───────────────────────────────────────────────────────────
 
-def _grab_screen():
-    """Return (raw_rgb_np, jpeg_bytes) of the primary monitor."""
+def _grab_screen(region: dict | None = None):
+    """Return (raw_rgb_np, jpeg_bytes) from a window or primary monitor."""
     import mss
     import numpy as np
     import PIL.Image
 
     with mss.mss() as sct:
         monitors = sct.monitors
-        target = monitors[1] if len(monitors) > 1 else monitors[0]
+        target = region or (monitors[1] if len(monitors) > 1 else monitors[0])
         shot = sct.grab(target)
         raw = np.frombuffer(shot.rgb, dtype=np.uint8)
 
@@ -435,6 +445,80 @@ def _active_window_id():
         return None
 
 
+_MAC_MESSAGES_COMPOSER = r'''
+tell application "Messages" to activate
+tell application "System Events"
+    tell process "Messages"
+        set frontmost to true
+        if not (exists window 1) then error "No Messages conversation window is open."
+        set chatWindow to window 1
+        set winTitle to name of chatWindow as text
+        set winPos to position of chatWindow
+        set winSize to size of chatWindow
+        set composer to missing value
+        set lowestY to -1
+        set selectedName to ""
+        repeat with elementRef in entire contents of chatWindow
+            try
+                set elementRole to role of elementRef as text
+                if elementRole is "AXRow" then
+                    try
+                        if (value of attribute "AXSelected" of elementRef) as boolean then
+                            repeat with childRef in entire contents of elementRef
+                                try
+                                    if (role of childRef as text) is "AXStaticText" then
+                                        set selectedName to value of childRef as text
+                                        exit repeat
+                                    end if
+                                end try
+                            end repeat
+                        end if
+                    end try
+                end if
+                if elementRole is "AXTextArea" or elementRole is "AXTextField" then
+                    set elementSize to size of elementRef
+                    set elementPos to position of elementRef
+                    if (item 1 of elementSize) > 180 and (item 2 of elementPos) > lowestY then
+                        set composer to elementRef
+                        set lowestY to item 2 of elementPos
+                    end if
+                end if
+            end try
+        end repeat
+        if composer is missing value then error "Could not locate the Messages input field. Check macOS Accessibility permission."
+        set focused of composer to true
+        return winTitle & tab & selectedName & tab & (item 1 of winPos as text) & tab & (item 2 of winPos as text) & tab & (item 1 of winSize as text) & tab & (item 2 of winSize as text)
+    end tell
+end tell
+'''
+
+
+def _focus_messages_conversation(expected_title: str | None = None) -> tuple[str, dict]:
+    """Refocus the composer of the selected Messages window without clicking.
+
+    All input goes to Messages, even if Jarvis or another app stole focus.
+    Refuse to send if a titled chat changes mid-takeover.
+    """
+    import subprocess
+    result = subprocess.run(
+        ["osascript", "-"], input=_MAC_MESSAGES_COMPOSER,
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode:
+        raise RuntimeError((result.stderr or "Could not focus Messages").strip())
+    parts = result.stdout.strip().split("\t")
+    if len(parts) != 6:
+        raise RuntimeError("Messages did not identify its active chat window.")
+    title, selected = parts[:2]
+    identity = f"{title} / {selected}" if selected else title
+    if expected_title and identity != expected_title:
+        raise RuntimeError("The selected Messages conversation changed; takeover is paused.")
+    x, y, w, h = (int(n) for n in parts[2:])
+    if w < 240 or h < 200:
+        raise RuntimeError("Messages conversation window is too small to monitor safely.")
+    return identity, {"left": x, "top": y, "width": w, "height": h}
+
+
 def _send_reply(reply: str, os_name: str) -> None:
     """Paste into the ALREADY-FOCUSED input box — never clicks anything.
     The user put the caret in the message box; every chat app keeps focus
@@ -464,7 +548,7 @@ def _send_reply(reply: str, os_name: str) -> None:
 # ── the takeover loop (daemon thread) ────────────────────────────────────────
 
 def _takeover_loop(user_instruction: str, duration_s: float, player,
-                   stop_evt: threading.Event) -> None:
+                   stop_evt: threading.Event, platform: str = "messages") -> None:
     import pyautogui  # noqa: F401  (failsafe stays enabled — corner = abort)
 
     def _log(msg: str) -> None:
@@ -490,14 +574,16 @@ def _takeover_loop(user_instruction: str, duration_s: float, player,
 
     api_key = _config().get("gemini_api_key", "")
     os_name = _config().get("os_system", "windows").lower()
+    messages_mode = os_name == "mac" and platform == "messages"
     ended   = "finished"
     engine  = None
 
     try:
-        # the focus guard learns its window at the FIRST paste (that's when
-        # the user is certainly on the chat) — never at start, where they may
-        # still be talking to JARVIS with the chat not even open yet
+        # Other apps retain the old focus guard. On macOS Messages we target
+        # the same conversation window and restore its composer ourselves.
         focus_id = None
+        chat_title = None
+        held_notice = False
 
         system = _LIVE_SYSTEM
         if user_instruction:
@@ -510,32 +596,62 @@ def _takeover_loop(user_instruction: str, duration_s: float, player,
             engine = _LiveEngine(api_key, system)
             _state["engine"] = "live"
 
-        _log(f"JARVIS: Chat takeover armed ({_state['engine']} engine) — "
-             f"pasting into the focused input box (no clicking); the focus "
-             f"guard locks onto the chat window at the first reply. Watching "
-             f"the screen every {_POLL_SECONDS}s.")
+        if messages_mode:
+            _log("JARVIS: Chat takeover armed for the selected Messages "
+                 "conversation. I will keep the composer focused and watch "
+                 f"that window every {_POLL_SECONDS}s.")
+        else:
+            _log(f"JARVIS: Chat takeover armed ({_state['engine']} engine) — "
+                 "watching the chat window; keep it selected until I stop. "
+                 f"Checking every {_POLL_SECONDS}s.")
 
         recent_replies = []    # last 3 sent bursts — the dedup memory
         last_burst     = ""
         seen_chat      = False # NOSCREEN only counts after a chat was seen
         prev_raw       = None
+        pending_reply  = None  # reply held while the Messages composer was unavailable
+        pending_raw    = None  # same window pixels must still match on retry
         misses         = 0
         errors         = 0
         deadline       = time.time() + duration_s
 
         while not stop_evt.is_set() and time.time() < deadline:
             try:
-                raw, jpg = _grab_screen()
+                if messages_mode:
+                    try:
+                        title, region = _focus_messages_conversation(chat_title)
+                        chat_title = title
+                        if held_notice:
+                            _log("JARVIS: Messages conversation restored — resuming.")
+                            held_notice = False
+                            _state["paused"] = ""
+                        raw, jpg = _grab_screen(region)
+                    except RuntimeError as exc:
+                        _state["paused"] = str(exc)
+                        if not held_notice:
+                            _log(f"JARVIS: Waiting for the same Messages chat: {exc}")
+                            held_notice = True
+                        stop_evt.wait(_POLL_SECONDS)
+                        continue
+                else:
+                    raw, jpg = _grab_screen()
 
-                # screen identical to last check → nothing new, save the call
-                # (only after the first look, so we never skip check #1)
-                if prev_raw is not None and not _screen_changed(prev_raw, raw):
-                    stop_evt.wait(_POLL_SECONDS)
-                    continue
+                # A held reply must be retried even when the screen did not
+                # change. If the conversation changed while paused, throw the
+                # stale reply away and ask the engine about the new screenshot.
+                if pending_reply is not None and not _screen_changed(pending_raw, raw):
+                    verdict = pending_reply
+                    pending_reply = pending_raw = None
+                else:
+                    pending_reply = pending_raw = None
+                    if prev_raw is not None and not _screen_changed(prev_raw, raw):
+                        stop_evt.wait(_POLL_SECONDS)
+                        continue
+                    verdict = engine.check(jpg,
+                                           recent_replies).strip().strip('"\'')
+                if stop_evt.is_set():
+                    break
                 prev_raw = raw
-
-                verdict = engine.check(jpg,
-                                       recent_replies).strip().strip('"\'')
                 errors  = 0
                 upper   = verdict.upper().rstrip(".!")
 
@@ -545,6 +661,9 @@ def _takeover_loop(user_instruction: str, duration_s: float, player,
                              "conversation now.")
                     seen_chat = True
                     misses = 0
+                    # A later incoming message can naturally deserve the same
+                    # short reply as the previous one. Standby separates turns.
+                    last_burst = ""
 
                 elif upper.startswith("NOSCREEN"):
                     if not seen_chat:
@@ -581,8 +700,22 @@ def _takeover_loop(user_instruction: str, duration_s: float, player,
                     for i, part in enumerate(_split_messages(verdict)):
                         if i and stop_evt.wait(_BURST_GAP):
                             break   # stopped mid-burst
-                        cur_win = _active_window_id()
-                        if focus_id is None:
+                        if messages_mode:
+                            try:
+                                _focus_messages_conversation(chat_title)
+                            except RuntimeError as exc:
+                                _state["paused"] = str(exc)
+                                if not held_notice:
+                                    _log(f"JARVIS: Reply held — {exc}")
+                                    held_notice = True
+                                if not sent:
+                                    pending_reply, pending_raw = verdict, raw
+                                prev_raw = None
+                                break
+                        cur_win = _active_window_id() if not messages_mode else None
+                        if messages_mode:
+                            pass  # the Messages composer was verified and focused
+                        elif focus_id is None:
                             # first paste — the user is on the chat right
                             # now, so THIS window becomes the only window
                             # we will ever paste into
@@ -594,6 +727,11 @@ def _takeover_loop(user_instruction: str, duration_s: float, player,
                             _log("JARVIS: Reply held — focus is not on the "
                                  "chat window. Click the message box to let "
                                  "me continue.")
+                            if not sent:
+                                pending_reply, pending_raw = verdict, raw
+                            prev_raw = None
+                            break
+                        if stop_evt.is_set():
                             break
                         part = _casualize(part)
                         _send_reply(part, os_name)
@@ -645,6 +783,7 @@ def _takeover_loop(user_instruction: str, duration_s: float, player,
             except Exception:
                 pass
         _state["ended"] = ended
+        _state["paused"] = ""
         _log(f"JARVIS: Chat takeover over ({ended}) — "
              f"{len(_state['exchanges'])} replies sent this run.")
 
@@ -654,6 +793,13 @@ def _takeover_loop(user_instruction: str, duration_s: float, player,
 def run(parameters: dict, player=None, session_memory=None) -> str:
     action = (parameters.get("action") or "start").strip().lower()
     query  = (parameters.get("query") or "").strip()
+    platform = str(parameters.get("platform") or "").strip().lower()
+    if not platform:
+        # Keep the plugin useful for other apps when the user explicitly names
+        # one, even though Apple Messages is the macOS default.
+        other = ("whatsapp", "telegram", "instagram", "discord", "signal",
+                 "slack", "messenger", "browser")
+        platform = "other" if any(app in query.lower() for app in other) else "messages"
 
     try:
         if action == "stop":
@@ -670,6 +816,9 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
         if action == "status":
             if _running():
                 n = len(_state["exchanges"])
+                paused = _state.get("paused")
+                if paused:
+                    return f"Chat takeover is paused: {paused}"
                 return (f"The chat takeover is active on the "
                         f"{_state['engine'] or 'live'} engine — {n} "
                         f"repl{'y' if n == 1 else 'ies'} sent so far.")
@@ -709,22 +858,26 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
 
             _state["exchanges"]  = []
             _state["ended"]      = ""
+            _state["paused"]     = ""
             _state["engine"]     = ""
             _state["started_at"] = time.time()
             _state["stop"]       = threading.Event()
             _state["thread"]    = threading.Thread(
                 target=_takeover_loop,
-                args=(query, minutes * 60, player, _state["stop"]),
+                args=(query, minutes * 60, player, _state["stop"], platform),
                 daemon=True,
                 name="chat-takeover",
             )
             _state["thread"].start()
 
-        return ("Taking over the conversation, sir. Just leave the cursor "
-                "in the message input box — I never click anything, I type "
-                "into the box you focused. I'll watch the chat and answer "
-                f"any new message in your style for up to {minutes:.0f} "
-                "minutes. Say the word when you want it back.")
+        if _config().get("os_system", "").lower() == "mac" and platform == "messages":
+            return ("Taking over the selected Messages conversation, sir. "
+                    "I will focus its message field before each reply; you "
+                    "do not need to click it. Leave that same chat selected "
+                    f"for up to {minutes:.0f} minutes, or tell me to stop.")
+        return ("Taking over the conversation, sir. Keep its message field "
+                "selected; I will watch and respond to new messages for up "
+                f"to {minutes:.0f} minutes. Tell me to stop at any time.")
 
     except Exception as e:
         return f"Sir, the chat takeover failed: {e}"
