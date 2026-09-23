@@ -1278,7 +1278,7 @@ class JarvisLive:
             **_extra
         )
 
-    def _enqueue_audio(self, chunk: dict) -> None:
+    def _enqueue_audio(self, chunk: dict, expected_queue=None) -> None:
         """Queue fresh microphone audio without crashing the event loop on congestion.
 
         Called on the asyncio thread (including via call_soon_threadsafe from
@@ -1286,7 +1286,7 @@ class JarvisLive:
         oldest block instead of allowing stale audio to delay the user's reply.
         """
         queue = self.out_queue
-        if queue is None:
+        if queue is None or (expected_queue is not None and queue is not expected_queue):
             return  # a reconnect replaced the session before this callback ran
         if queue.full():
             try:
@@ -1381,7 +1381,8 @@ class JarvisLive:
                 data = indata.tobytes()
                 loop.call_soon_threadsafe(
                     self._enqueue_audio,
-                    {"data": data, "mime_type": "audio/pcm"}
+                    {"data": data, "mime_type": "audio/pcm"},
+                    self.out_queue,
                 )
                 # Feed the live mic level to the HUD so the waveform reacts to
                 # the user's actual voice while listening. Purely cosmetic — any
