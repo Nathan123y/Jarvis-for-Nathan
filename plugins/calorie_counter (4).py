@@ -51,6 +51,7 @@ _FPS               = 25
 _ANIM_MAX_SECONDS  = 25      # animator safety stop
 _SCAN_COLOR        = (255, 190, 40)    # JARVIS cyan-blue (BGR)
 _SCAN_CORE         = (255, 235, 130)   # bright core line (BGR)
+_camera_lock       = threading.Lock()
 
 
 # ── config helpers (same pattern as actions/web_search.py) ──────────────────
@@ -70,10 +71,16 @@ def _open_camera():
         backend = cv2.CAP_DSHOW if platform.system() == "Windows" else cv2.CAP_ANY
     except AttributeError:
         backend = 0
-    cap = cv2.VideoCapture(int(_config().get("camera_index", 0)), backend)
+    try:
+        index = int(_config().get("camera_index", 0))
+    except (ValueError, TypeError):
+        index = 0
+    cap = cv2.VideoCapture(index, backend)
+    if not cap.isOpened() and index != 0:
+        cap.release()
+        cap = cv2.VideoCapture(0, backend)
     if not cap.isOpened():
-        cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
+        cap.release()
         return None
     for _ in range(6):  # warm-up frames
         cap.read()
@@ -162,7 +169,8 @@ def _analyze(photo: np.ndarray, query: str, api_key: str) -> dict:
 def run(parameters: dict, player=None, session_memory=None) -> str:
     query = (parameters.get("query") or "").strip() or "How many calories is this food?"
 
-    api_key = _config().get("gemini_api_key")
+    from memory.config_manager import get_gemini_key
+    api_key = get_gemini_key()
     if not api_key:
         return "I can't run the nutrition scan — no API key is configured."
 
@@ -178,16 +186,19 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
     frame_sig  = getattr(win, "_cam_frame_sig", None)
     stream_sig = getattr(win, "_cam_stream_sig", None)
 
-    cap = _open_camera()
-    if cap is None:
-        return ("I couldn't access the camera — it may be in use by another "
-                "feature or application.")
+    if not _camera_lock.acquire(blocking=False):
+        return "A nutrition scan is already running. Please wait for it to finish."
 
+    cap = None
     photo = None
     stop_anim = threading.Event()
     animator = None
     view_open = False
     try:
+        cap = _open_camera()
+        if cap is None:
+            return ("I couldn't access the camera — it may be in use by another "
+                    "feature or application.")
         if stream_sig:
             stream_sig.emit(True)   # HUD logo → live camera view
             view_open = True
@@ -205,43 +216,52 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
             time.sleep(1.0 / _FPS)
         ok, frm = cap.read()
         photo = frm if ok and frm is not None else last
-    finally:
-        try:
-            cap.release()   # release BEFORE anything else — avoid device conflicts
-        except Exception:
-            pass
+        cap.release()
+        cap = None
+        if photo is None:
+            return "I couldn't capture a picture of the food, sorry."
 
-    if photo is None:
-        if view_open:
-            stream_sig.emit(False)
-        return "I couldn't capture a picture of the food, sorry."
-
-    # Phase 2 — freeze frame, keep the scan bar sweeping while Gemini analyzes
-    if frame_sig:
-        def _animate():
-            a0 = time.time()
-            while (not stop_anim.wait(1.0 / _FPS)
-                   and time.time() - a0 < _ANIM_MAX_SECONDS):
-                _emit_frame(frame_sig, _draw_scan_bar(photo, (time.time() - a0) * 1.2))
-        animator = threading.Thread(target=_animate, daemon=True,
-                                    name="calorie-scan-anim")
-        animator.start()
-
-    try:
+        # Freeze frame while Gemini analyzes; cap is already released.
+        if frame_sig:
+            def _animate():
+                a0 = time.time()
+                while (not stop_anim.wait(1.0 / _FPS)
+                       and time.time() - a0 < _ANIM_MAX_SECONDS):
+                    _emit_frame(frame_sig, _draw_scan_bar(photo, (time.time() - a0) * 1.2))
+            animator = threading.Thread(target=_animate, daemon=True,
+                                        name="calorie-scan-anim")
+            animator.start()
         data = _analyze(photo, query, api_key)
     except Exception as e:
         return f"The nutrition analysis failed: {e}"
     finally:
+        if cap is not None:
+            cap.release()
         stop_anim.set()
         if animator:
             animator.join(timeout=1)
-        if view_open:
-            stream_sig.emit(False)  # back to the JARVIS HUD
+        try:
+            if view_open:
+                stream_sig.emit(False)  # back to the JARVIS HUD
+        finally:
+            _camera_lock.release()
+
+    if not isinstance(data, dict):
+        return "The nutrition scan returned an unreadable result. Please try again."
+    if not data.get("food"):
+        return (str(data.get("spoken_summary") or "I couldn't identify food in the photo.")
+                .strip())
+
+    # An image cannot establish precise serving size or hidden ingredients.
+    calories = data.get("calories_kcal")
+    if not isinstance(calories, (float, int)) or isinstance(calories, bool) or calories < 0:
+        return "I can see food, but I couldn't estimate its calories reliably. Try a clearer photo and tell me the portion size."
 
     spoken = (data.get("spoken_summary") or "").strip()
 
     if data.get("food"):
-        panel = (data.get("panel_text") or "").strip()
+        panel = str(data.get("panel_text") or "").strip()
+        panel += "\n\nApproximate only. Portion size and ingredients may change the result."
         if player and panel:
             try:
                 player.show_content("🍽 NUTRITION SCAN", panel)

@@ -18,6 +18,7 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 PLUGIN = {
     "name": "excel_writer",
@@ -58,8 +59,21 @@ def _output_dir() -> Path:
 
 
 def _safe_name(name: str) -> str:
-    name = re.sub(r'[<>:"/\\|?*]', "", (name or "").strip()) or "spreadsheet"
-    return name[:60]
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", str(name or "").strip())
+    name = name.removesuffix(".xlsx").strip(" .")
+    return name[:60].strip(" .") or "spreadsheet"
+
+
+def _cell_value(value):
+    """Do not turn text supplied by a prompt into an executable Excel formula."""
+    if isinstance(value, str) and value.lstrip().startswith(("=", "+", "-", "@")):
+        return "'" + value
+    return value if value is None or isinstance(value, (str, int, float, bool)) else str(value)
+
+
+def _sheet_title(value: str) -> str:
+    title = re.sub(r'[\\/*?:\[\]]', "", str(value or "Sheet1")).strip(" '")
+    return title[:31] or "Sheet1"
 
 
 # ── Gemini: request → structured spec ────────────────────────────────────────
@@ -104,20 +118,30 @@ def _build_xlsx(spec: dict, path: Path) -> dict:
     from openpyxl.styles import Font, PatternFill, Alignment
     from openpyxl.utils import get_column_letter
 
-    headers = [str(h) for h in (spec.get("headers") or [])]
+    if not isinstance(spec, dict):
+        raise ValueError("The spreadsheet layout was not an object.")
     rows = spec.get("rows") or []
+    headers = spec.get("headers") or []
+    if not isinstance(rows, list) or not isinstance(headers, list):
+        raise ValueError("The spreadsheet needs a list of headers and rows.")
+    if len(rows) > 100 or len(headers) > 100:
+        raise ValueError("Please use at most 100 rows and 100 columns.")
+    headers = [str(h) for h in headers]
     if not headers and rows:
-        headers = [f"Column {i+1}" for i in range(len(rows[0]))]
+        first = rows[0]
+        headers = [f"Column {i+1}" for i in range(len(first) if isinstance(first, list) else 1)]
     ncols = len(headers)
+    if not ncols or ncols > 100:
+        raise ValueError("Please describe at least one column (at most 100).")
 
     wb = Workbook()
     ws = wb.active
-    ws.title = (str(spec.get("title") or "Sheet1"))[:31]
+    ws.title = _sheet_title(spec.get("title"))
 
     header_font = Font(bold=True, color="FFFFFF")
     header_fill = PatternFill("solid", fgColor="1F4E78")
     for c, h in enumerate(headers, start=1):
-        cell = ws.cell(row=1, column=c, value=h)
+        cell = ws.cell(row=1, column=c, value=_cell_value(h))
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = Alignment(horizontal="center")
@@ -129,15 +153,22 @@ def _build_xlsx(spec: dict, path: Path) -> dict:
             row = [row]
         for c in range(ncols):
             val = row[c] if c < len(row) else None
-            ws.cell(row=r, column=c + 1, value=val)
+            ws.cell(row=r, column=c + 1, value=_cell_value(val))
         r += 1
     last_data_row = r - 1
 
     # total row (SUM) for requested numeric columns
-    total_cols = [i for i in (spec.get("total_columns") or [])
-                  if isinstance(i, int) and 0 <= i < ncols]
+    requested_totals = spec.get("total_columns") or []
+    if not isinstance(requested_totals, list):
+        requested_totals = []
+    total_cols = [i for i in requested_totals
+                  if type(i) is int and 0 <= i < ncols
+                  and any(isinstance(row, list) and i < len(row)
+                          and type(row[i]) in (int, float) for row in rows)]
     if total_cols and last_data_row >= 2:
-        ws.cell(row=r, column=1, value="TOTAL").font = Font(bold=True)
+        label_col = next((i for i in range(ncols) if i not in total_cols), None)
+        if label_col is not None:
+            ws.cell(row=r, column=label_col + 1, value="TOTAL").font = Font(bold=True)
         for i in total_cols:
             col = get_column_letter(i + 1)
             cell = ws.cell(row=r, column=i + 1,
@@ -163,7 +194,10 @@ def _build_xlsx(spec: dict, path: Path) -> dict:
             ctype = str(chart.get("type", "bar")).lower()
             cat_col = int(chart.get("category_col", 0))
             val_col = int(chart.get("value_col", 1))
-            if 0 <= cat_col < ncols and 0 <= val_col < ncols:
+            if (0 <= cat_col < ncols and 0 <= val_col < ncols
+                    and cat_col != val_col and any(
+                        isinstance(row, list) and val_col < len(row)
+                        and type(row[val_col]) in (int, float) for row in rows)):
                 ch = {"line": LineChart, "pie": PieChart}.get(ctype, BarChart)()
                 ch.title = chart.get("title") or ws.title
                 data_ref = Reference(ws, min_col=val_col + 1, min_row=1, max_row=last_data_row)
@@ -201,12 +235,12 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
     except Exception as e:
         return f"I couldn't work out the spreadsheet layout: {e}"
 
-    if not (spec.get("headers") or spec.get("rows")):
+    if not isinstance(spec, dict) or not (spec.get("headers") or spec.get("rows")):
         return "I couldn't turn that into a table — try describing the columns and data."
 
     fname = _safe_name(parameters.get("filename") or spec.get("filename") or "spreadsheet")
     stamp = datetime.now().strftime("%Y%m%d_%H%M")
-    path = _output_dir() / f"{fname}_{stamp}.xlsx"
+    path = _output_dir() / f"{fname}_{stamp}_{uuid4().hex[:8]}.xlsx"
 
     try:
         info = _build_xlsx(spec, path)
@@ -231,4 +265,4 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
         extras.append("a chart")
     extra_str = f" including {' and '.join(extras)}" if extras else ""
     return (f"Done — I've created {path.name} with {info['rows']} rows{extra_str}, "
-            f"and saved it to your Desktop.")
+            f"and saved it to {path.parent}.")
