@@ -2990,8 +2990,7 @@ class MainWindow(QMainWindow):
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
 
-        self._left_panel = self._build_left_panel()
-        body.addWidget(self._left_panel, stretch=0)
+        # Keep the full width for the animated speaking canvas.
 
         # Center column: HUD + resizable content panel via QSplitter
         self.hud = HudCanvas(face_path, _display)
@@ -3056,10 +3055,8 @@ class MainWindow(QMainWindow):
         self._center_split.setCollapsible(0, False)
         body.addWidget(self._center_split, stretch=5)
 
-        self._right_panel = self._build_right_panel()
-        body.addWidget(self._right_panel, stretch=0)
-
         root.addLayout(body, stretch=1)
+        root.addWidget(self._build_command_dock())
         root.addWidget(self._build_footer())
 
         # Quick-access drawer (floating overlay, built after central widget layout is done)
@@ -3073,13 +3070,8 @@ class MainWindow(QMainWindow):
         self._clock_tmr.start(1000)
         self._tick_clock()
 
-        # Metric update timer
-        self._metric_tmr = QTimer(self)
-        self._metric_tmr.timeout.connect(self._update_metrics)
-        self._metric_tmr.start(2000)
-        self._update_metrics()
-
         self._log_sig.connect(self._log.append_log)
+        self._log_sig.connect(self._present_log_line)
         self._state_sig.connect(self._apply_state)
         self._content_sig.connect(self._show_content)
         self._reconfig_sig.connect(self._show_setup)
@@ -3122,7 +3114,7 @@ class MainWindow(QMainWindow):
         pw = _CameraPreview._W
         ph = self._cam_preview.height()
         self._cam_preview.setGeometry(
-            cw.width() - _RIGHT_W - pw - 12,
+            cw.width() - pw - 12,
             cw.height() - ph - 28,
             pw, ph,
         )
@@ -3569,7 +3561,7 @@ class MainWindow(QMainWindow):
         pw = _CameraPreview._W
         ph = self._cam_preview.height() or _CameraPreview._H
         self._cam_preview.setGeometry(
-            cw.width() - _RIGHT_W - pw - 12,
+            cw.width() - pw - 12,
             cw.height() - ph - 28,
             pw, ph,
         )
@@ -3771,74 +3763,139 @@ class MainWindow(QMainWindow):
             lay.addWidget(lbl)
 
         return w
-    def _build_right_panel(self) -> QWidget:
+    def _build_command_dock(self) -> QWidget:
+        """Conversation and controls beneath the full-width speaking canvas."""
         w = QWidget()
-        w.setFixedWidth(_RIGHT_W)
-        w.setStyleSheet(f"background: {C.DARK}; border-left: 1px solid {C.BORDER};")
+        w.setStyleSheet(f"background: {C.DARK}; border-top: 1px solid {C.BORDER_B};")
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(16, 16, 16, 16)
-        lay.setSpacing(10)
+        lay.setContentsMargins(24, 12, 24, 14)
+        lay.setSpacing(9)
 
-        def _sec(txt):
-            l = QLabel(f"▸ {txt}")
-            l.setFont(QFont("Menlo" if _OS == "Darwin" else "Consolas", 11, QFont.Weight.Bold))
-            l.setStyleSheet(f"color: {C.PRI}; background: transparent;")
-            return l
+        self._reply_status = QLabel("◉  READY TO TALK")
+        self._reply_status.setFont(QFont("Menlo" if _OS == "Darwin" else "Consolas", 10, QFont.Weight.Bold))
+        self._reply_status.setStyleSheet(f"color: {C.PRI}; background: transparent; border: none;")
+        lay.addWidget(self._reply_status)
 
-        lay.addWidget(_sec("ACTIVITY LOG"))
-        self._log = LogWidget()
-        lay.addWidget(self._log, stretch=1)
+        self._reply_text = QTextEdit()
+        self._reply_text.setReadOnly(True)
+        self._reply_text.setFixedHeight(106)
+        self._reply_text.setFont(QFont("Menlo" if _OS == "Darwin" else "Consolas", 14))
+        self._reply_text.setStyleSheet(f"""
+            QTextEdit {{
+                background: {C.PANEL}; color: {C.WHITE};
+                border: 1px solid {C.BORDER_B}; border-radius: 12px;
+                padding: 12px 16px;
+            }}
+        """)
+        self._reply_text.setPlaceholderText("Your conversation appears here as JARVIS speaks…")
+        lay.addWidget(self._reply_text)
+        self._reply_pending = ""
+        self._reply_pos = 0
+        self._reply_timer = QTimer(self)
+        self._reply_timer.timeout.connect(self._type_reply_step)
 
-        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet(f"color: {C.BORDER}; margin: 2px 0;")
-        lay.addWidget(sep)
+        row = self._build_input_row()
+        attach = QPushButton("＋  FILE")
+        attach.setFixedHeight(44)
+        attach.setFont(QFont("Menlo" if _OS == "Darwin" else "Consolas", 10, QFont.Weight.Bold))
+        attach.setCursor(Qt.CursorShape.PointingHandCursor)
+        attach.setStyleSheet(f"""
+            QPushButton {{
+                color: {C.PRI}; background: {C.PANEL};
+                border: 1px solid {C.BORDER_B}; border-radius: 9px;
+                padding: 0 14px;
+            }}
+            QPushButton:hover {{ background: {C.PANEL2}; }}
+        """)
+        row.addWidget(attach)
+        lay.addLayout(row)
 
-        lay.addWidget(_sec("FILE UPLOAD"))
-        self._drop_zone = FileDropZone()
-        self._drop_zone.file_selected.connect(self._on_file_selected)
-        lay.addWidget(self._drop_zone)
-
-        self._file_hint = QLabel("No file loaded — drop or click above to upload")
-        self._file_hint.setFont(QFont("Menlo" if _OS == "Darwin" else "Consolas", 10))
-        self._file_hint.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent;")
+        tools = QHBoxLayout()
+        tools.setSpacing(12)
+        self._file_hint = QLabel("＋ Add a file to ask JARVIS about it")
+        self._file_hint.setFont(QFont("Menlo" if _OS == "Darwin" else "Consolas", 9))
+        self._file_hint.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent; border: none;")
         self._file_hint.setWordWrap(True)
-        lay.addWidget(self._file_hint)
+        tools.addWidget(self._file_hint, stretch=1)
 
-        sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
-        sep2.setStyleSheet(f"color: {C.BORDER}; margin: 2px 0;")
-        lay.addWidget(sep2)
-
-        lay.addWidget(_sec("COMMAND INPUT"))
-        lay.addLayout(self._build_input_row())
-
-        self._interrupt_btn = QPushButton("✋  INTERRUPT  [ESC]")
-        self._interrupt_btn.setFixedHeight(44)
-        self._interrupt_btn.setFont(QFont("Menlo" if _OS == "Darwin" else "Consolas", 11, QFont.Weight.Bold))
+        self._interrupt_btn = QPushButton("■  STOP  [ESC]")
+        self._interrupt_btn.setFixedHeight(36)
         self._interrupt_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._interrupt_btn.setStyleSheet(f"""
             QPushButton {{
-                background: #140008; color: {C.MUTED_C};
-                border: 1px solid {C.MUTED_C}; border-radius: 3px;
-            }}
-            QPushButton:hover {{
-                background: #200010; border: 1px solid #ff6688;
-            }}
-            QPushButton:pressed {{
-                background: #300018;
+                color: {C.MUTED_C}; background: {C.PANEL};
+                border: 1px solid {C.MUTED_C}; border-radius: 8px;
+                padding: 0 14px;
             }}
         """)
         self._interrupt_btn.clicked.connect(self._do_interrupt)
-        lay.addWidget(self._interrupt_btn)
+        tools.addWidget(self._interrupt_btn)
 
-        self._mute_btn = QPushButton("🎙  MICROPHONE ACTIVE")
-        self._mute_btn.setFixedHeight(44)
-        self._mute_btn.setFont(QFont("Menlo" if _OS == "Darwin" else "Consolas", 11, QFont.Weight.Bold))
+        self._mute_btn = QPushButton()
+        self._mute_btn.setFixedHeight(36)
         self._mute_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._mute_btn.clicked.connect(self._toggle_mute)
         self._style_mute_btn()
-        lay.addWidget(self._mute_btn)
+        tools.addWidget(self._mute_btn)
+        lay.addLayout(tools)
 
+        # Preserve the existing log and upload APIs without a visible sidebar.
+        self._log = LogWidget(self)
+        self._log.hide()
+        self._drop_zone = FileDropZone(self)
+        self._drop_zone.hide()
+        self._drop_zone.file_selected.connect(self._on_file_selected)
+        attach.clicked.connect(self._drop_zone._browse)
+        self.setAcceptDrops(True)
         return w
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls() and any(
+            Path(url.toLocalFile()).is_file() for url in event.mimeData().urls()
+        ):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        for url in event.mimeData().urls():
+            path = url.toLocalFile()
+            if path and Path(path).is_file():
+                self._drop_zone._set_file(path)
+                event.acceptProposedAction()
+                break
+
+    def _present_log_line(self, line: str):
+        """Show the latest exchange instead of a scrolling activity panel."""
+        speaker, sep, message = line.partition(":")
+        if not sep or not message.strip():
+            return
+        if speaker.strip().casefold() == "you":
+            self._reply_timer.stop()
+            self._reply_text.setPlainText(f"You  ·  {message.strip()}")
+        elif speaker.strip().casefold() in {
+            self._assistant_name.casefold(), "jarvis", "friday", "j.a.r.v.i.s"
+        }:
+            self._start_reply(f"{self._assistant_name.upper()}  ·  {message.strip()}")
+        elif speaker.strip().casefold() == "err":
+            self._start_reply(f"NOTICE  ·  {message.strip()}")
+
+    def _start_reply(self, message: str):
+        self._reply_pending = message
+        self._reply_pos = 0
+        self._reply_text.clear()
+        self._reply_timer.start(18)
+
+    def _type_reply_step(self):
+        text = self._reply_pending
+        if self._reply_pos >= len(text):
+            self._reply_timer.stop()
+            return
+        # Long answers animate in bounded time instead of stalling for minutes.
+        step = max(1, (len(text) + 149) // 150)
+        self._reply_pos = min(len(text), self._reply_pos + step)
+        self._reply_text.setPlainText(text[:self._reply_pos])
+        cursor = self._reply_text.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self._reply_text.setTextCursor(cursor)
 
     def _build_quick_drawer(self) -> QWidget:
         """Floating overlay panel shown when the ⚙ header button is toggled."""
@@ -4134,6 +4191,10 @@ class MainWindow(QMainWindow):
             }}
         """)
         lay.addWidget(self._content_display)
+        self._content_pending = ""
+        self._content_pos = 0
+        self._content_timer = QTimer(self)
+        self._content_timer.timeout.connect(self._type_content_step)
 
         return w
 
@@ -4145,15 +4206,24 @@ class MainWindow(QMainWindow):
         self.hud.glance(0.0, -0.85, hold=1.3)
         self._content_title_lbl.setText(title.upper()[:48])
         self._content_ts_lbl.setText(_time.strftime("%H:%M:%S"))
-        self._content_display.setPlainText(text)
-        self._content_display.moveCursor(
-            self._content_display.textCursor().MoveOperation.Start
-        )
+        self._content_pending = str(text)
+        self._content_pos = 0
+        self._content_display.clear()
+        self._content_timer.start(16)
         first_show = not self._content_panel.isVisible()
         self._content_panel.show()
         if first_show:
             total = self._center_split.height()
             self._center_split.setSizes([max(total - 300, 300), 300])
+
+    def _type_content_step(self):
+        text = self._content_pending
+        if self._content_pos >= len(text):
+            self._content_timer.stop()
+            return
+        step = max(1, (len(text) + 249) // 250)
+        self._content_pos = min(len(text), self._content_pos + step)
+        self._content_display.setPlainText(text[:self._content_pos])
 
     # ── document review ──────────────────────────────────────────────────────
     # Rendered as rich text into the content panel that already exists, rather
@@ -4231,6 +4301,7 @@ class MainWindow(QMainWindow):
         # imposing one language's rules on all of them is the bug, not the fix.
         self._content_title_lbl.setText((title or "Document")[:48])
         self._content_ts_lbl.setText(_time.strftime("%H:%M:%S"))
+        self._content_timer.stop()
         self._content_display.setHtml("".join(parts))
         self._content_display.moveCursor(
             self._content_display.textCursor().MoveOperation.Start)
@@ -5164,12 +5235,14 @@ class MainWindow(QMainWindow):
         if not txt: return
         self._input.clear()
         self._log.append_log(f"You: {txt}")
+        self._present_log_line(f"You: {txt}")
         if self.on_text_command:
             threading.Thread(target=self.on_text_command, args=(txt,), daemon=True).start()
 
     def _apply_state(self, state: str):
         self.hud.state    = state
         self.hud.speaking = (state == "SPEAKING")
+        self._reply_status.setText(f"◉  {state.replace('_', ' ').upper()}")
 
     def _check_config(self) -> bool:
         if not API_FILE.exists(): return False
