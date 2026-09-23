@@ -1650,6 +1650,8 @@ class JarvisLive:
         except Exception:
             pass
 
+        playback_primed = False
+        last_underflow_log = 0.0
         try:
             while True:
                 try:
@@ -1658,6 +1660,10 @@ class JarvisLive:
                         timeout=0.1
                     )
                 except asyncio.TimeoutError:
+                    # A gap in streamed speech drains the device buffer. Prime
+                    # the next stretch before writing so brief network stalls
+                    # do not turn into crackles between words.
+                    playback_primed = False
                     if (
                         self._turn_done_event
                         and self._turn_done_event.is_set()
@@ -1673,6 +1679,21 @@ class JarvisLive:
                 # thread-pool round-trips (was one asyncio.to_thread per 50ms slice).
                 # Cap at ~200 ms so interrupt() still stops audio within ~200 ms.
                 batch = bytearray(chunk)
+                if not playback_primed:
+                    # About 120 ms of 24 kHz mono PCM gives CoreAudio room to
+                    # absorb uneven network delivery. Stop waiting as soon as
+                    # Gemini has finished a short answer.
+                    deadline = time.monotonic() + 0.12
+                    while len(batch) < 5760 and not self._turn_done_event.is_set():
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        try:
+                            batch.extend(await asyncio.wait_for(
+                                self.audio_in_queue.get(), timeout=remaining))
+                        except asyncio.TimeoutError:
+                            break
+                    playback_primed = True
                 while len(batch) < 9600:   # 9600 bytes ≈ 200 ms at 24 kHz / 16-bit mono
                     try:
                         batch.extend(self.audio_in_queue.get_nowait())
@@ -1730,7 +1751,10 @@ class JarvisLive:
                     pass
 
                 try:
-                    await asyncio.to_thread(stream.write, bytes(batch))
+                    underflowed = await asyncio.to_thread(stream.write, bytes(batch))
+                    if underflowed and time.monotonic() - last_underflow_log > 5.0:
+                        print("[JARVIS] Speaker underflow: playback starved of audio", flush=True)
+                        last_underflow_log = time.monotonic()
                 except (RuntimeError, asyncio.CancelledError):
                     break   # executor shutting down — exit cleanly
         except Exception as e:
