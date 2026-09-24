@@ -112,6 +112,7 @@ def install(repo: Path, interpreter: Path, destination: Path, architecture: str 
         result = subprocess.run(["/usr/bin/xcrun", "swiftc", str(NATIVE_SOURCE), str(ANNOUNCER_SOURCE),
                                  "-framework", "AVFoundation", "-framework", "AppKit",
                                  "-framework", "ApplicationServices",
+                                 "-framework", "ScreenCaptureKit",
                                  "-o", str(launcher)], capture_output=True, text=True)
         if result.returncode:
             raise ValueError(f"Could not compile Jarvis launcher: {result.stderr.strip()}")
