@@ -62,8 +62,12 @@ final class NotificationAnnouncer: NSObject, NSSpeechSynthesizerDelegate {
     }
 
     private func visibleBanner(_ element: AXUIElement) -> Bool {
-        guard let position = attribute(element, kAXPositionAttribute as String) as? AXValue,
-              let size = attribute(element, kAXSizeAttribute as String) as? AXValue else { return false }
+        guard let positionValue = attribute(element, kAXPositionAttribute as String),
+              let sizeValue = attribute(element, kAXSizeAttribute as String),
+              CFGetTypeID(positionValue) == AXValueGetTypeID(),
+              CFGetTypeID(sizeValue) == AXValueGetTypeID() else { return false }
+        let position = unsafeBitCast(positionValue, to: AXValue.self)
+        let size = unsafeBitCast(sizeValue, to: AXValue.self)
         var point = CGPoint.zero
         var bounds = CGSize.zero
         guard AXValueGetValue(position, .cgPoint, &point),
