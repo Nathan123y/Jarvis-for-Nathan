@@ -5296,6 +5296,39 @@ class JarvisUI:
         self._win = MainWindow(face_path)
         self.root = _RootShim(self._app)
         self._win.show()
+        # The native app launcher owns the menu bar. Poll only when launched
+        # through that app; VS Code / direct Python launches stay independent.
+        control_dir = os.environ.get("JARVIS_MENU_CONTROL_DIR")
+        if control_dir:
+            from pathlib import Path
+            self._menu_dir = Path(control_dir)
+            self._menu_timer = QTimer(self._win)
+            self._menu_timer.timeout.connect(self._poll_menu_control)
+            self._menu_timer.start(250)
+            self._poll_menu_control()
+
+    def _poll_menu_control(self):
+        command_file = self._menu_dir / "command"
+        try:
+            command = command_file.read_text(encoding="utf-8").strip()
+            command_file.unlink(missing_ok=True)
+        except FileNotFoundError:
+            command = ""
+        except OSError:
+            command = ""
+        if command == "open":
+            self._win.showNormal()
+            self._win.raise_()
+            self._win.activateWindow()
+        elif command in ("mute", "unmute"):
+            self.muted = command == "mute"
+        try:
+            status_file = self._menu_dir / "status"
+            state = "muted" if self.muted else "active"
+            if not status_file.exists() or status_file.read_text(encoding="utf-8") != state:
+                status_file.write_text(state, encoding="utf-8")
+        except OSError:
+            pass
 
     @property
     def muted(self) -> bool:
