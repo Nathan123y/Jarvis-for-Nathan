@@ -10,6 +10,7 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
     private var announcementsItem: NSMenuItem?
     private let announcer = NotificationAnnouncer()
     private var refreshTimer: Timer?
+    private var screenTimer: Timer?
     private var controlDirectory: URL?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -29,6 +30,9 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
             return
         }
         setupMenu()
+        screenTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
+            self?.handleScreenRequest()
+        }
         announcer.start()
         AVCaptureDevice.requestAccess(for: .audio) { allowed in
             DispatchQueue.main.async {
@@ -126,6 +130,36 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
         }
     }
 
+    // Capture in the signed Jarvis process so macOS checks Jarvis's screen permission,
+    // rather than the separate Python interpreter that handles the voice session.
+    private func handleScreenRequest() {
+        guard let directory = controlDirectory else { return }
+        let request = directory.appendingPathComponent("screen-request")
+        guard let identifier = try? String(contentsOf: request, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              UUID(uuidString: identifier) != nil else { return }
+        try? FileManager.default.removeItem(at: request)
+        let response = directory.appendingPathComponent("screen-\(identifier).png")
+        let errorFile = directory.appendingPathComponent("screen-\(identifier).error")
+        guard CGPreflightScreenCaptureAccess() else {
+            try? "Jarvis needs Screen & System Audio Recording access. Quit and reopen Jarvis after granting it."
+                .write(to: errorFile, atomically: true, encoding: .utf8)
+            return
+        }
+        guard let frame = CGDisplayCreateImage(CGMainDisplayID()),
+              let png = NSBitmapImageRep(cgImage: frame).representation(using: .png, properties: [:]) else {
+            try? "Jarvis could not capture the display."
+                .write(to: errorFile, atomically: true, encoding: .utf8)
+            return
+        }
+        do {
+            try png.write(to: response, options: .atomic)
+        } catch {
+            try? "Jarvis could not save the screenshot: \(error.localizedDescription)"
+                .write(to: errorFile, atomically: true, encoding: .utf8)
+        }
+    }
+
     private func refreshMenu() {
         let running = child?.isRunning == true
         let state = controlDirectory.flatMap {
@@ -175,6 +209,7 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         refreshTimer?.invalidate()
+        screenTimer?.invalidate()
         announcer.stop()
         if let child = child, child.isRunning { child.terminate() }
         if let directory = controlDirectory {
