@@ -70,7 +70,14 @@ def _calendar():
     except (OSError, subprocess.TimeoutExpired):
         return [], "Calendar could not be reached. Check that it is open and Jarvis has Automation access."
     if result.returncode:
-        return [], "Calendar access is unavailable. Allow Jarvis's Python app to control Calendar in macOS settings."
+        detail = (result.stderr or "").lower()
+        if "-1743" in detail or "not authorized to send apple events" in detail:
+            return [], (
+                "Calendar Automation was denied. In System Settings → Privacy & Security "
+                "→ Automation, allow Jarvis (or Python) to control Calendar, then "
+                "quit and reopen Jarvis."
+            )
+        return [], "Calendar could not be read. Open Calendar and try again."
     events = []
     for line in result.stdout.splitlines():
         clock, sep, title = line.partition("\t")

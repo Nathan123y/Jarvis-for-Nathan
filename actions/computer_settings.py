@@ -66,7 +66,19 @@ def _mac_script(script: str) -> str:
         ["osascript", "-e", script], capture_output=True, text=True, timeout=6,
     )
     if result.returncode:
-        raise RuntimeError((result.stderr or "macOS rejected this setting").strip())
+        detail = (result.stderr or "macOS rejected this setting").strip()
+        if "-1743" in detail or "not authorized to send apple events" in detail.lower():
+            raise RuntimeError(
+                "macOS denied Automation. In System Settings → Privacy & Security → "
+                "Automation, allow Jarvis (or Python) to control System Events, "
+                "then quit and reopen Jarvis."
+            )
+        if any(code in detail for code in ("-25211", "-1719")) or "not allowed assistive access" in detail.lower():
+            raise RuntimeError(
+                "macOS denied Accessibility. In System Settings → Privacy & Security "
+                "→ Accessibility, allow Jarvis and Python, then quit and reopen Jarvis."
+            )
+        raise RuntimeError(detail)
     return result.stdout.strip()
 
 def microphone_get() -> int:
@@ -101,9 +113,9 @@ def volume_up():
     if _OS == "Windows":
         for _ in range(5): pyautogui.press("volumeup")
     elif _OS == "Darwin":
-        subprocess.run(["osascript", "-e",
-            "set volume output volume (output volume of (get volume settings) + 10)"],
-            capture_output=True)
+        _mac_script(
+            "set volume output volume (output volume of (get volume settings) + 10)"
+        )
     else:
         subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", "+10%"],
             capture_output=True)
@@ -112,9 +124,9 @@ def volume_down():
     if _OS == "Windows":
         for _ in range(5): pyautogui.press("volumedown")
     elif _OS == "Darwin":
-        subprocess.run(["osascript", "-e",
-            "set volume output volume (output volume of (get volume settings) - 10)"],
-            capture_output=True)
+        _mac_script(
+            "set volume output volume (output volume of (get volume settings) - 10)"
+        )
     else:
         subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", "-10%"],
             capture_output=True)
@@ -123,11 +135,20 @@ def volume_mute():
     if _OS == "Windows":
         pyautogui.press("volumemute")
     elif _OS == "Darwin":
-        subprocess.run(["osascript", "-e", "set volume with output muted"],
-            capture_output=True)
+        _mac_script("set volume with output muted")
     else:
         subprocess.run(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "toggle"],
             capture_output=True)
+
+def volume_unmute():
+    if _OS == "Darwin":
+        _mac_script("set volume without output muted")
+    elif _OS == "Windows":
+        pyautogui.press("volumemute")
+    else:
+        subprocess.run(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "0"],
+                       capture_output=True)
+
 
 def volume_get() -> int | None:
     """Current master volume 0-100, or None if this platform will not say.
@@ -217,8 +238,7 @@ def volume_set(value: int):
             pyautogui.press("volumemute")
             pyautogui.press("volumemute")
     elif _OS == "Darwin":
-        subprocess.run(["osascript", "-e", f"set volume output volume {value}"],
-            capture_output=True)
+        _mac_script(f"set volume output volume {value}")
         return
     else:
         subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{value}%"],
@@ -297,10 +317,10 @@ def minimize_window():
 
 def maximize_window():
     if _OS == "Darwin":
-        subprocess.run(["osascript", "-e",
+        _mac_script(
             'tell application "System Events" to keystroke "f" '
-            'using {control down, command down}'],
-            capture_output=True)
+            'using {control down, command down}'
+        )
     elif _OS == "Windows":
         pyautogui.hotkey("win", "up")
     else:
@@ -548,10 +568,10 @@ def open_run():
 
 def dark_mode():
     if _OS == "Darwin":
-        subprocess.run(["osascript", "-e",
+        _mac_script(
             'tell app "System Events" to tell appearance preferences '
-            'to set dark mode to not dark mode'],
-            capture_output=True)
+            'to set dark mode to not dark mode'
+        )
     elif _OS == "Windows":
         try:
             import winreg
@@ -586,8 +606,14 @@ def toggle_wifi():
             capture_output=True, text=True
         )
         state = "off" if "On" in result.stdout else "on"
-        subprocess.run(["networksetup", "-setairportpower", iface, state],
-            capture_output=True)
+        changed = subprocess.run(
+            ["networksetup", "-setairportpower", iface, state],
+            capture_output=True, text=True, timeout=8
+        )
+        if changed.returncode:
+            raise RuntimeError(
+                (changed.stderr or "macOS could not change Wi-Fi power").strip()
+            )
     elif _OS == "Windows":
         try:
             subprocess.run(
@@ -631,7 +657,7 @@ ACTION_MAP: dict[str, callable] = {
     "volume_up":           volume_up,
     "volume_down":         volume_down,
     "mute":                volume_mute,
-    "unmute":              volume_mute,
+    "unmute":              volume_unmute,
     "toggle_mute":         volume_mute,
     "brightness_up":       brightness_up,
     "brightness_down":     brightness_down,
@@ -839,9 +865,6 @@ def computer_settings(
     player=None,
     session_memory=None,
 ) -> str:
-    if not _PYAUTOGUI:
-        return "pyautogui is not installed. Run: pip install pyautogui"
-
     params      = parameters or {}
     raw_action  = params.get("action", "").strip()
     description = params.get("description", "").strip()
@@ -857,6 +880,16 @@ def computer_settings(
 
     if not action:
         return _suggest(description or raw_action)
+
+    native_mac_actions = {
+        "volume_up", "volume_down", "volume_set", "mute", "unmute",
+        "toggle_mute", "brightness_up", "brightness_down", "microphone_status",
+        "microphone_set", "microphone_mute", "microphone_unmute",
+        "sleep_display", "screen_off", "maximize", "dark_mode", "toggle_wifi",
+        "restart", "shutdown",
+    }
+    if not _PYAUTOGUI and not (_OS == "Darwin" and action in native_mac_actions):
+        return "PyAutoGUI is needed for keyboard or mouse control. Run: pip install pyautogui"
 
     print(f"[Settings] Action: {action}  Value: {value}  OS: {_OS}")
     if player:
