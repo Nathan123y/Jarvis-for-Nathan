@@ -1,9 +1,11 @@
+import subprocess
 import unittest
 from unittest.mock import Mock, patch
 
 from core.macos_communications import (
     Contact,
     ContactError,
+    _CONTACT_SCRIPT,
     is_emergency_number,
     normalize_phone,
     resolve_contact,
@@ -22,6 +24,33 @@ class MacCommunicationsTests(unittest.TestCase):
             contact = resolve_contact("Nathan Yousif", phone_only=True)
         self.assertEqual(contact, Contact("Nathan Yousif", "+14085551212"))
         self.assertEqual(contact.masked_handle, "••• ••• 1212")
+
+    def test_spoken_relationship_prefix_and_nicknames_are_searched(self):
+        with patch("core.macos_communications._osascript", return_value="OK\tMaria Yousif\t+14085551212") as script:
+            contact = resolve_contact("my Mom")
+        self.assertEqual(contact.name, "Maria Yousif")
+        self.assertEqual(script.call_args.args[1:3], ("Mom", "message"))
+        self.assertIn("whose nickname is wanted", _CONTACT_SCRIPT)
+        self.assertIn("whose nickname contains wanted", _CONTACT_SCRIPT)
+
+    def test_automation_denial_is_distinguished_from_no_matching_contact(self):
+        denied = Mock(returncode=1, stdout="", stderr="Not authorized to send Apple events to Contacts. (-1743)")
+        with patch("core.macos_communications.subprocess.run", return_value=denied):
+            with self.assertRaisesRegex(ContactError, "Privacy & Security → Automation"):
+                resolve_contact("Mom")
+
+    def test_contacts_timeout_returns_helpful_error(self):
+        with patch("core.macos_communications.subprocess.run", side_effect=subprocess.TimeoutExpired("osascript", 8)) as run:
+            with self.assertRaisesRegex(ContactError, "took too long"):
+                resolve_contact("Mom")
+        self.assertEqual(run.call_args.kwargs["timeout"], 8)
+
+    def test_message_body_is_passed_as_argument_with_profanity_untouched(self):
+        from core.macos_communications import send_message
+
+        with patch("core.macos_communications._osascript", return_value="OK") as script:
+            send_message(Contact("Mom", "+14085551212"), "What the hell? Don't censor this.")
+        self.assertEqual(script.call_args.args[1:], ("+14085551212", "What the hell? Don't censor this."))
 
     def test_ambiguous_contact_is_never_silently_selected(self):
         with patch("core.macos_communications._osascript", return_value="AMBIGUOUS\tJohn A | John B"):
