@@ -72,6 +72,8 @@ class MacLauncherTests(unittest.TestCase):
                 self.assertEqual(plistlib.load(source)["Arch"], "arm64")
             self.assertEqual(run.call_count, 2)
             self.assertIn("swiftc", run.call_args_list[0].args[0])
+            self.assertTrue(any(str(source).endswith("notification_announcer.swift")
+                                for source in run.call_args_list[0].args[0]))
             self.assertIn("codesign", run.call_args_list[1].args[0][0])
 
 
