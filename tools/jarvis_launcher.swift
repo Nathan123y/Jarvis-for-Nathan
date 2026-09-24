@@ -10,7 +10,7 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
     private var announcementsItem: NSMenuItem?
     private let announcer = NotificationAnnouncer()
     private var refreshTimer: Timer?
-    private var screenTimer: Timer?
+    private var screenTimer: DispatchSourceTimer?
     private var controlDirectory: URL?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -30,9 +30,15 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
             return
         }
         setupMenu()
-        screenTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
+        // Screen requests must continue while AppKit is handling a menu, dialog,
+        // or microphone permission prompt on the main run loop.
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "com.nathan.jarvis.screen"))
+        timer.schedule(deadline: .now(), repeating: .milliseconds(150))
+        timer.setEventHandler { [weak self] in
             self?.handleScreenRequest()
         }
+        screenTimer = timer
+        timer.resume()
         announcer.start()
         AVCaptureDevice.requestAccess(for: .audio) { allowed in
             DispatchQueue.main.async {
@@ -209,7 +215,7 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         refreshTimer?.invalidate()
-        screenTimer?.invalidate()
+        screenTimer?.cancel()
         announcer.stop()
         if let child = child, child.isRunning { child.terminate() }
         if let directory = controlDirectory {
