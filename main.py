@@ -1318,6 +1318,10 @@ class JarvisLive:
         loop = asyncio.get_event_loop()
 
         def callback(indata, frames, time_info, status):
+            # The native app may read a visible macOS banner aloud. Do not
+            # send that speech back to the live model as a new user request.
+            if getattr(self.ui, "announcing", False):
+                return
             # ── Wake-word gate ───────────────────────────────────────────────
             # While asleep, the mic audio NEVER goes to Gemini (nothing is
             # streamed, so JARVIS can't respond to speech not addressed to it and
