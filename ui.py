@@ -5309,7 +5309,12 @@ class JarvisUI:
             self._poll_menu_control()
 
     def _poll_menu_control(self):
-        self.announcing = (self._menu_dir / "announcing").exists()
+        # A crashed native speech announcer must not silence the mic forever.
+        marker = self._menu_dir / "announcing"
+        try:
+            self.announcing = marker.exists() and time.time() - marker.stat().st_mtime < 30
+        except OSError:
+            self.announcing = False
         command_file = self._menu_dir / "command"
         try:
             command = command_file.read_text(encoding="utf-8").strip()
