@@ -594,6 +594,10 @@ class JarvisLive:
         self._turn_done_event: asyncio.Event | None = None
         self._dashboard     = None
         self._briefing_sent    = False          # morning briefing fires once per process
+        self._mic_ready: asyncio.Event | None = None
+        self._startup_brief_pending = False
+        self._startup_voice_blocks = 0
+        self._startup_user_spoke = False
         self._sys_monitor      = SystemMonitor()  # persistent cooldown state
         self._proactive        = ProactiveEngine()
         self._last_user_speech = time.monotonic()  # updated on every user utterance
@@ -1357,6 +1361,16 @@ class JarvisLive:
                 # out until it can be tried on real hardware.
                 return
 
+            # If the user starts talking right after the app opens, keep the
+            # automatic greeting from starting in the middle of their request.
+            if self._startup_brief_pending:
+                if _pcm_level(indata) > 0.04:
+                    self._startup_voice_blocks += 1
+                    if self._startup_voice_blocks >= 3:
+                        self._startup_user_spoke = True
+                else:
+                    self._startup_voice_blocks = 0
+
             # ── Echo tail ────────────────────────────────────────────────────
             # The speaking flag has dropped but the speakers have not finished.
             # Sending this to the model is how an assistant hears itself, decides
@@ -1432,6 +1446,8 @@ class JarvisLive:
 
             with _mic_stream:
                 print("[JARVIS] 🎤 Mic stream open")
+                if self._mic_ready is not None:
+                    loop.call_soon_threadsafe(self._mic_ready.set)
                 while True:
                     await asyncio.sleep(0.1)
         except Exception as e:
@@ -1656,6 +1672,7 @@ class JarvisLive:
 
         playback_primed = False
         last_underflow_log = 0.0
+        last_audio_at = 0.0
         try:
             while True:
                 try:
@@ -1668,13 +1685,23 @@ class JarvisLive:
                     # the next stretch before writing so brief network stalls
                     # do not turn into crackles between words.
                     playback_primed = False
+                    # The server can pause between audio chunks without sending
+                    # turn_complete. Keeping SPEAKING latched through that pause
+                    # makes the mic ignore everything the user says, even while
+                    # Jarvis is silent. Release it after a short idle stretch;
+                    # the existing echo-tail guard handles audio still in the
+                    # speaker buffer.
+                    paused = last_audio_at and time.monotonic() - last_audio_at > 0.35
                     if (
                         self._turn_done_event
                         and self._turn_done_event.is_set()
                         and self.audio_in_queue.empty()
                     ):
-                        self.set_speaking(False)
+                        if self._is_speaking:
+                            self.set_speaking(False)
                         self._turn_done_event.clear()
+                    elif paused and self._is_speaking:
+                        self.set_speaking(False)
                     continue
 
                 self.set_speaking(True)
@@ -1756,6 +1783,7 @@ class JarvisLive:
 
                 try:
                     underflowed = await asyncio.to_thread(stream.write, bytes(batch))
+                    last_audio_at = time.monotonic()
                     if underflowed and time.monotonic() - last_underflow_log > 5.0:
                         print("[JARVIS] Speaker underflow: playback starved of audio", flush=True)
                         last_underflow_log = time.monotonic()
@@ -1780,6 +1808,22 @@ class JarvisLive:
                     shown on the UI content panel. Waits for turn_complete event
                     instead of a fixed sleep so there is no unnecessary gap.
         """
+        # Give the user a short first turn after the microphone really opens.
+        # An utterance during this window takes precedence over the automatic
+        # greeting; the daily brief remains available from its normal command.
+        try:
+            if self._mic_ready is None:
+                return
+            await asyncio.wait_for(self._mic_ready.wait(), timeout=8.0)
+            await asyncio.sleep(3.0)
+            if self._startup_user_spoke or not self.session:
+                print("[JARVIS] Startup briefing skipped: user spoke first.")
+                return
+        except asyncio.TimeoutError:
+            print("[JARVIS] Startup briefing skipped: microphone not ready.")
+            return
+        finally:
+            self._startup_brief_pending = False
         memory   = load_memory()
         identity = memory.get("identity", {})
 
@@ -2147,6 +2191,7 @@ class JarvisLive:
                     self.audio_in_queue   = asyncio.Queue()
                     self.out_queue        = asyncio.Queue(maxsize=32)  # ~2 s max at 16 kHz/1024 samples
                     self._turn_done_event = asyncio.Event()
+                    self._mic_ready = asyncio.Event()
 
                     # Reset transient state that must not carry over from a previous session
                     self._pending_vision       = None
@@ -2172,8 +2217,8 @@ class JarvisLive:
                         self.ui.write_log("SYS: JARVIS online — sleeping. Say 'Hey Jarvis' to wake me.")
                     else:
                         self._awake = True
-                        self.ui.set_state("LISTENING")
-                        self.ui.write_log("SYS: JARVIS online.")
+                        self.ui.set_state("INITIALISING")
+                        self.ui.write_log("SYS: Connected — opening microphone.")
 
                     if self._dashboard:
                         await self._dashboard.broadcast({"type": "status", "state": "active"})
@@ -2182,6 +2227,12 @@ class JarvisLive:
                     tg.create_task(self._watch_reconnect())
                     tg.create_task(self._send_realtime())
                     tg.create_task(self._listen_audio())
+                    async def _show_mic_ready():
+                        await self._mic_ready.wait()
+                        if self._awake and not self.ui.muted:
+                            self.ui.set_state("LISTENING")
+                        self.ui.write_log("SYS: Microphone ready.")
+                    tg.create_task(_show_mic_ready())
                     tg.create_task(self._receive_audio())
                     tg.create_task(self._play_audio())
                     tg.create_task(self._run_system_monitor())
@@ -2196,6 +2247,9 @@ class JarvisLive:
                     # would mean talking while "asleep".
                     if not self._briefing_sent and get_brief_enabled() and self._awake:
                         self._briefing_sent = True
+                        self._startup_user_spoke = False
+                        self._startup_voice_blocks = 0
+                        self._startup_brief_pending = True
                         tg.create_task(self._send_startup_briefing())
 
             except KeyboardInterrupt:
