@@ -7,6 +7,8 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var microphoneItem: NSMenuItem?
     private var statusLabel: NSMenuItem?
+    private var announcementsItem: NSMenuItem?
+    private let announcer = NotificationAnnouncer()
     private var refreshTimer: Timer?
     private var controlDirectory: URL?
 
@@ -18,13 +20,16 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])
             controlDirectory = directory
+            announcer.controlDirectory = directory
             try? FileManager.default.removeItem(at: directory.appendingPathComponent("command"))
             try? FileManager.default.removeItem(at: directory.appendingPathComponent("status"))
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent("announcing"))
         } catch {
             showError("Could not prepare menu controls: \(error.localizedDescription)")
             return
         }
         setupMenu()
+        announcer.start()
         AVCaptureDevice.requestAccess(for: .audio) { allowed in
             DispatchQueue.main.async {
                 if allowed {
@@ -108,6 +113,9 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
         let microphone = NSMenuItem(title: "Mute microphone", action: #selector(toggleMicrophone), keyEquivalent: "")
         menu.addItem(microphone)
         microphoneItem = microphone
+        let announcements = NSMenuItem(title: "Announce notifications", action: #selector(toggleAnnouncements), keyEquivalent: "")
+        menu.addItem(announcements)
+        announcementsItem = announcements
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit Jarvis", action: #selector(quit), keyEquivalent: ""))
         for entry in menu.items where entry.action != nil { entry.target = self }
@@ -128,6 +136,9 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
             (muted ? "Microphone muted" : "Microphone active")) : "Jarvis stopped"
         microphoneItem?.title = muted ? "Unmute microphone" : "Mute microphone"
         microphoneItem?.isEnabled = running && state != nil
+        announcementsItem?.state = announcer.enabled ? .on : .off
+        announcementsItem?.title = announcer.enabled && !announcer.trusted
+            ? "Grant Accessibility to announce" : "Announce notifications"
         if let button = statusItem?.button {
             button.image = NSImage(systemSymbolName: muted ? "mic.slash.circle" : "waveform.circle",
                                    accessibilityDescription: muted ? "Jarvis muted" : "Jarvis")
@@ -144,6 +155,14 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
     @objc private func toggleMicrophone() {
         sendCommand(microphoneItem?.title == "Unmute microphone" ? "unmute" : "mute")
     }
+    @objc private func toggleAnnouncements() {
+        if announcer.enabled && !announcer.trusted {
+            _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
+        } else {
+            announcer.setEnabled(!announcer.enabled)
+        }
+        refreshMenu()
+    }
     @objc private func quit() { NSApp.terminate(nil) }
 
     private func showError(_ message: String) {
@@ -156,6 +175,7 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         refreshTimer?.invalidate()
+        announcer.stop()
         if let child = child, child.isRunning { child.terminate() }
         if let directory = controlDirectory {
             try? FileManager.default.removeItem(at: directory.appendingPathComponent("command"))
