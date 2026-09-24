@@ -15,7 +15,7 @@ from urllib.parse import quote
 _DIRECT_PHONE = re.compile(r"^\+?[0-9(). -]{3,}$")
 _DIRECT_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _EMERGENCY_NUMBERS = {"000", "110", "112", "119", "911", "999"}
-_CONTACT_TIMEOUT = 8
+_CONTACT_TIMEOUT = 12
 
 
 class ContactError(RuntimeError):
@@ -61,11 +61,68 @@ on run argv
         if (count of matches) is 0 then
             set matches to every person whose last name is wanted
         end if
+        if (count of matches) is 0 then
+            -- Contacts' indexed "whose" searches can miss imported and synced
+            -- cards, particularly when the displayed name differs from the
+            -- first/last-name fields. Inspect the cards in Contacts itself.
+            set exactCards to {}
+            set partialCards to {}
+            set allCards to every person
+            if (count of allCards) is 0 then return "EMPTY_BOOK"
+            repeat with p in allCards
+                set cardNames to {}
+                try
+                    set end of cardNames to (name of p as text)
+                end try
+                set givenName to ""
+                set familyName to ""
+                try
+                    set givenName to (first name of p as text)
+                    if givenName is "missing value" then set givenName to ""
+                    if givenName is not "" then set end of cardNames to givenName
+                end try
+                try
+                    set familyName to (last name of p as text)
+                    if familyName is "missing value" then set familyName to ""
+                    if familyName is not "" then set end of cardNames to familyName
+                end try
+                if givenName is not "" and familyName is not "" then
+                    set end of cardNames to givenName & " " & familyName
+                    set end of cardNames to familyName & " " & givenName
+                end if
+                try
+                    set nick to nickname of p as text
+                    if nick is not "missing value" and nick is not "" then set end of cardNames to nick
+                end try
+                set isExact to false
+                set isPartial to false
+                repeat with cardName in cardNames
+                    ignoring case
+                        if (cardName as text) is wanted then
+                            set isExact to true
+                        else if (cardName as text) contains wanted then
+                            set isPartial to true
+                        end if
+                    end ignoring
+                end repeat
+                if isExact then
+                    set end of exactCards to p
+                else if isPartial then
+                    set end of partialCards to p
+                end if
+            end repeat
+            if (count of exactCards) > 0 then
+                set matches to exactCards
+            else
+                set matches to partialCards
+            end if
+        end if
         if (count of matches) is 0 then return "NOT_FOUND"
         if (count of matches) > 1 then
             set foundNames to {}
             repeat with p in matches
                 set end of foundNames to (name of p as text)
+                if (count of foundNames) >= 5 then exit repeat
             end repeat
             set AppleScript's text item delimiters to " | "
             return "AMBIGUOUS" & tab & (foundNames as text)
@@ -178,6 +235,11 @@ def resolve_contact(query: str, *, phone_only: bool = False) -> Contact:
     status = parts[0] if parts else ""
     if status == "OK" and len(parts) >= 3:
         return Contact(name=parts[1], handle=parts[2])
+    if status == "EMPTY_BOOK":
+        raise ContactError(
+            "Contacts returned no cards to Jarvis. Open the Contacts app and check "
+            "that your contacts are synced and visible in All Contacts."
+        )
     if status == "AMBIGUOUS":
         choices = parts[1] if len(parts) > 1 else "multiple contacts"
         raise ContactError(f"More than one contact matches '{query}': {choices}. Please use the full name.")

@@ -40,10 +40,15 @@ class MacCommunicationsTests(unittest.TestCase):
                 resolve_contact("Mom")
 
     def test_contacts_timeout_returns_helpful_error(self):
-        with patch("core.macos_communications.subprocess.run", side_effect=subprocess.TimeoutExpired("osascript", 8)) as run:
+        with patch("core.macos_communications.subprocess.run", side_effect=subprocess.TimeoutExpired("osascript", 12)) as run:
             with self.assertRaisesRegex(ContactError, "took too long"):
                 resolve_contact("Mom")
-        self.assertEqual(run.call_args.kwargs["timeout"], 8)
+        self.assertEqual(run.call_args.kwargs["timeout"], 12)
+
+    def test_empty_contacts_is_reported_as_sync_issue(self):
+        with patch("core.macos_communications._osascript", return_value="EMPTY_BOOK"):
+            with self.assertRaisesRegex(ContactError, "All Contacts"):
+                resolve_contact("Mom")
 
     def test_message_body_is_passed_as_argument_with_profanity_untouched(self):
         from core.macos_communications import send_message
