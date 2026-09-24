@@ -59,8 +59,8 @@ def _read_full_config() -> dict:
 
 # Single source of truth for the release name — the window title, the header
 # badge and the readme must never disagree again.
-APP_VERSION  = "MARK LIV"
-APP_PROTOCOL = APP_VERSION.split()[-1]
+APP_VERSION  = "ܢܵܬܵܢ"
+APP_PROTOCOL = "LIV"
 
 _DEFAULT_W, _DEFAULT_H = 1320, 820
 _MIN_W,     _MIN_H     = 960, 650
@@ -4594,7 +4594,7 @@ class MainWindow(QMainWindow):
 
         lay.addWidget(_fl("[F4] Mute  ·  [F11] Fullscreen"))
         lay.addStretch()
-        lay.addWidget(_fl("By FatihMakes", C.PRI_DIM))
+        lay.addWidget(_fl("Proverbs 20:24", C.PRI_DIM))
         return w
 
     def _on_file_selected(self, path: str):
@@ -5302,12 +5302,14 @@ class JarvisUI:
         if control_dir:
             from pathlib import Path
             self._menu_dir = Path(control_dir)
+            self.announcing = False
             self._menu_timer = QTimer(self._win)
             self._menu_timer.timeout.connect(self._poll_menu_control)
             self._menu_timer.start(250)
             self._poll_menu_control()
 
     def _poll_menu_control(self):
+        self.announcing = (self._menu_dir / "announcing").exists()
         command_file = self._menu_dir / "command"
         try:
             command = command_file.read_text(encoding="utf-8").strip()
@@ -5324,7 +5326,7 @@ class JarvisUI:
             self.muted = command == "mute"
         try:
             status_file = self._menu_dir / "status"
-            state = "muted" if self.muted else "active"
+            state = "muted" if self.muted else ("speaking" if self._win.hud.speaking else "active")
             if not status_file.exists() or status_file.read_text(encoding="utf-8") != state:
                 status_file.write_text(state, encoding="utf-8")
         except OSError:

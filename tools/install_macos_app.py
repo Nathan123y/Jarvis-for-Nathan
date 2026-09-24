@@ -22,6 +22,7 @@ from pathlib import Path
 BUNDLE_ID = "com.nathan.jarvis.launcher"
 MARKER = "# Jarvis Git checkout launcher"
 NATIVE_SOURCE = Path(__file__).with_name("jarvis_launcher.swift")
+ANNOUNCER_SOURCE = Path(__file__).with_name("notification_announcer.swift")
 
 
 def compatible_arch(interpreter: Path) -> str:
@@ -108,8 +109,9 @@ def install(repo: Path, interpreter: Path, destination: Path, architecture: str 
             plistlib.dump({"Repo": str(repo), "Python": str(interpreter),
                            "Arch": architecture or ""}, target)
         launcher = destination / "Contents" / "MacOS" / "Jarvis"
-        result = subprocess.run(["/usr/bin/xcrun", "swiftc", str(NATIVE_SOURCE),
+        result = subprocess.run(["/usr/bin/xcrun", "swiftc", str(NATIVE_SOURCE), str(ANNOUNCER_SOURCE),
                                  "-framework", "AVFoundation", "-framework", "AppKit",
+                                 "-framework", "ApplicationServices",
                                  "-o", str(launcher)], capture_output=True, text=True)
         if result.returncode:
             raise ValueError(f"Could not compile Jarvis launcher: {result.stderr.strip()}")
