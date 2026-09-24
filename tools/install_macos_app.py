@@ -8,14 +8,17 @@ The app contains only a launcher. It does not copy source, dependencies or secre
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import platform
 import plistlib
+import re
 import shlex
 import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -23,6 +26,34 @@ BUNDLE_ID = "com.nathan.jarvis.launcher"
 MARKER = "# Jarvis Git checkout launcher"
 NATIVE_SOURCE = Path(__file__).with_name("jarvis_launcher.swift")
 ANNOUNCER_SOURCE = Path(__file__).with_name("notification_announcer.swift")
+BUILD_MARKER = "native-build.sha256"
+
+
+def signing_identity() -> str:
+    """Use a stable development identity when one is already installed."""
+    result = subprocess.run(["/usr/bin/security", "find-identity", "-v", "-p", "codesigning"],
+                            capture_output=True, text=True, check=False)
+    if result.returncode:
+        return "-"
+    matches = re.findall(r'\b[0-9A-F]{40}\s+"(Apple Development:[^"]+)"', result.stdout)
+    # If there are several identities, don't silently pick the wrong team.
+    return matches[0] if len(matches) == 1 else "-"
+
+
+def native_build_id(settings: dict, info: dict, identity: str) -> str:
+    digest = hashlib.sha256()
+    for source in (NATIVE_SOURCE, ANNOUNCER_SOURCE):
+        digest.update(source.read_bytes())
+    digest.update(plistlib.dumps(settings, sort_keys=True))
+    digest.update(plistlib.dumps(info, sort_keys=True))
+    digest.update(identity.encode("utf-8"))
+    return digest.hexdigest()
+
+
+def verified_bundle(destination: Path) -> bool:
+    result = subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict",
+                             str(destination)], capture_output=True, text=True, check=False)
+    return result.returncode == 0
 
 
 def compatible_arch(interpreter: Path) -> str:
@@ -53,7 +84,8 @@ def relocate_project(repo: Path, destination: Path) -> Path:
     return Path(shutil.move(str(repo), str(destination))).resolve()
 
 
-def install(repo: Path, interpreter: Path, destination: Path, architecture: str | None = None) -> Path:
+def install(repo: Path, interpreter: Path, destination: Path, architecture: str | None = None,
+            identity: str | None = None) -> Path:
     repo = repo.expanduser().resolve()
     interpreter = interpreter.expanduser().resolve()
     destination = destination.expanduser().resolve()
@@ -79,8 +111,6 @@ def install(repo: Path, interpreter: Path, destination: Path, architecture: str 
         except (OSError, ValueError, TypeError, plistlib.InvalidFileException) as exc:
             raise ValueError("An unrelated app exists at that destination; choose another path.") from exc
 
-    macos = destination / "Contents" / "MacOS"
-    macos.mkdir(parents=True, exist_ok=True)
     info = {
         "CFBundleDevelopmentRegion": "en",
         "CFBundleExecutable": "Jarvis",
@@ -96,31 +126,68 @@ def install(repo: Path, interpreter: Path, destination: Path, architecture: str 
         "NSCameraUsageDescription": "Jarvis accesses the camera when you request a camera feature.",
         "NSAppleEventsUsageDescription": "Jarvis controls approved Mac apps when you request an action.",
     }
-    with (destination / "Contents" / "Info.plist").open("wb") as target:
-        plistlib.dump(info, target)
 
     if platform.system() == "Darwin":
-        # A shell-script bundle doesn't itself request microphone permission.
-        # A native executable provides a stable app identity and prompts before
-        # starting the Python process that captures audio.
-        config = destination / "Contents" / "Resources"
-        config.mkdir(parents=True, exist_ok=True)
-        with (config / "launch.plist").open("wb") as target:
-            plistlib.dump({"Repo": str(repo), "Python": str(interpreter),
-                           "Arch": architecture or ""}, target)
-        launcher = destination / "Contents" / "MacOS" / "Jarvis"
-        result = subprocess.run(["/usr/bin/xcrun", "swiftc", str(NATIVE_SOURCE), str(ANNOUNCER_SOURCE),
-                                 "-framework", "AVFoundation", "-framework", "AppKit",
-                                 "-framework", "ApplicationServices",
-                                 "-framework", "ScreenCaptureKit",
-                                 "-o", str(launcher)], capture_output=True, text=True)
-        if result.returncode:
-            raise ValueError(f"Could not compile Jarvis launcher: {result.stderr.strip()}")
-        result = subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-",
-                                 str(destination)], capture_output=True, text=True)
-        if result.returncode:
-            raise ValueError(f"Could not sign Jarvis launcher: {result.stderr.strip()}")
+        # macOS screen access follows the app's signing identity. Rebuilding an
+        # ad-hoc signed binary on each install loses that permission each time.
+        selected_identity = identity or signing_identity()
+        settings = {"Repo": str(repo), "Python": str(interpreter), "Arch": architecture or ""}
+        build_id = native_build_id(settings, info, selected_identity)
+        marker = destination / "Contents" / "Resources" / BUILD_MARKER
+        if destination.exists() and marker.is_file() and marker.read_text() == build_id \
+                and verified_bundle(destination):
+            print("Jarvis.app is current and its signature is valid; keeping existing permissions.")
+            return destination
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".jarvis-build-", dir=destination.parent) as tmp:
+            staged = Path(tmp) / "Jarvis.app"
+            macos = staged / "Contents" / "MacOS"
+            config = staged / "Contents" / "Resources"
+            macos.mkdir(parents=True)
+            config.mkdir()
+            with (staged / "Contents" / "Info.plist").open("wb") as target:
+                plistlib.dump(info, target)
+            with (config / "launch.plist").open("wb") as target:
+                plistlib.dump(settings, target)
+            (config / BUILD_MARKER).write_text(build_id, encoding="ascii")
+            launcher = macos / "Jarvis"
+            result = subprocess.run(["/usr/bin/xcrun", "swiftc", str(NATIVE_SOURCE),
+                                     str(ANNOUNCER_SOURCE), "-framework", "AVFoundation",
+                                     "-framework", "AppKit", "-framework", "ApplicationServices",
+                                     "-framework", "ScreenCaptureKit", "-o", str(launcher)],
+                                    capture_output=True, text=True, check=False)
+            if result.returncode:
+                raise ValueError(f"Could not compile Jarvis launcher: {result.stderr.strip()}")
+            result = subprocess.run(["/usr/bin/codesign", "--force", "--sign", selected_identity,
+                                     str(staged)], capture_output=True, text=True, check=False)
+            if result.returncode:
+                raise ValueError(f"Could not sign Jarvis launcher: {result.stderr.strip()}")
+            if not verified_bundle(staged):
+                raise ValueError("The rebuilt Jarvis app failed signature verification. The old app was kept.")
+
+            # Build and verify before replacing anything the user can launch.
+            if destination.exists():
+                backup = Path(tmp) / "previous-Jarvis.app"
+                destination.rename(backup)
+                try:
+                    staged.rename(destination)
+                except OSError:
+                    backup.rename(destination)
+                    raise
+            else:
+                staged.rename(destination)
+        if selected_identity == "-":
+            print("Using ad-hoc signing. Native rebuilds may require granting screen access again; "
+                  "an Apple Development signing identity keeps permissions stable across rebuilds.")
+        else:
+            print(f"Signed Jarvis with {selected_identity}.")
         return destination
+
+    macos = destination / "Contents" / "MacOS"
+    macos.mkdir(parents=True, exist_ok=True)
+    with (destination / "Contents" / "Info.plist").open("wb") as target:
+        plistlib.dump(info, target)
 
     script = f"""#!/bin/sh
 {MARKER}
@@ -160,6 +227,8 @@ def main() -> None:
     parser.add_argument("--destination", type=Path, default=Path.home() / "Applications" / "Jarvis.app")
     parser.add_argument("--relocate-project", action="store_true",
                         help="Move the Git checkout from Desktop to ~/Projects before reinstalling")
+    parser.add_argument("--signing-identity", help="Apple Development certificate name or SHA; "
+                        "uses the only installed Apple Development certificate when omitted")
     args = parser.parse_args()
     if platform.system() != "Darwin":
         parser.error("Run this installer on the Mac where you use Jarvis.")
@@ -168,7 +237,8 @@ def main() -> None:
         arch = compatible_arch(Path(sys.executable))
         if args.relocate_project:
             repo = relocate_project(repo, Path.home() / "Projects" / repo.name)
-        target = install(repo, Path(sys.executable), args.destination, architecture=arch)
+        target = install(repo, Path(sys.executable), args.destination, architecture=arch,
+                         identity=args.signing_identity)
     except ValueError as exc:
         parser.error(str(exc))
     print(f"Installed {target}")
