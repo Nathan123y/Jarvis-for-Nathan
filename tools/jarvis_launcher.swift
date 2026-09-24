@@ -26,6 +26,15 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
             try? FileManager.default.removeItem(at: directory.appendingPathComponent("command"))
             try? FileManager.default.removeItem(at: directory.appendingPathComponent("status"))
             try? FileManager.default.removeItem(at: directory.appendingPathComponent("announcing"))
+            // Remove screenshots and requests left by a previous app session.
+            if let files = try? FileManager.default.contentsOfDirectory(at: directory,
+                                                                         includingPropertiesForKeys: nil) {
+                for file in files where file.lastPathComponent == "screen-request" ||
+                    (file.lastPathComponent.hasPrefix("screen-") &&
+                     (file.pathExtension == "png" || file.pathExtension == "error")) {
+                    try? FileManager.default.removeItem(at: file)
+                }
+            }
         } catch {
             showError("Could not prepare menu controls: \(error.localizedDescription)")
             return
@@ -148,13 +157,11 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
         try? FileManager.default.removeItem(at: request)
         let response = directory.appendingPathComponent("screen-\(identifier).png")
         let errorFile = directory.appendingPathComponent("screen-\(identifier).error")
-        guard CGPreflightScreenCaptureAccess() else {
-            try? "Jarvis needs Screen & System Audio Recording access. Quit and reopen Jarvis after granting it."
-                .write(to: errorFile, atomically: true, encoding: .utf8)
-            return
-        }
         if #available(macOS 14.0, *) {
-            Task {
+            // ScreenCaptureKit checks its own authorization. The older Core
+            // Graphics preflight can report false after an app reinstall even
+            // when ScreenCaptureKit is able to capture.
+            Task.detached(priority: .userInitiated) {
                 do {
                     let content = try await SCShareableContent.excludingDesktopWindows(
                         false, onScreenWindowsOnly: true)
@@ -176,11 +183,17 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
                     }
                     try png.write(to: response, options: .atomic)
                 } catch {
+                    NSLog("Jarvis screen capture failed: %@", error.localizedDescription)
                     try? error.localizedDescription.write(to: errorFile, atomically: true, encoding: .utf8)
                 }
             }
         } else {
             // ScreenCaptureKit's still image API requires macOS 14.
+            guard CGPreflightScreenCaptureAccess() else {
+                try? "Jarvis needs Screen & System Audio Recording access. Quit and reopen Jarvis after granting it."
+                    .write(to: errorFile, atomically: true, encoding: .utf8)
+                return
+            }
             let capture = Process()
             capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
             capture.arguments = ["-x", "-t", "png", response.path]

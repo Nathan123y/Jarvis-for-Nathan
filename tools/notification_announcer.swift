@@ -6,6 +6,9 @@ import ApplicationServices
 final class NotificationAnnouncer: NSObject, NSSpeechSynthesizerDelegate {
     private let speech = NSSpeechSynthesizer()
     private var timer: Timer?
+    private var speechWatchdog: Timer?
+    private let scanQueue = DispatchQueue(label: "com.nathan.jarvis.notifications", qos: .utility)
+    private var scanInProgress = false
     private var seen = [String: Date]()
     private var primed = false
     private var queue = [String]()
@@ -38,7 +41,7 @@ final class NotificationAnnouncer: NSObject, NSSpeechSynthesizerDelegate {
         guard enabled, trusted, timer == nil else { return }
         primed = false
         seen.removeAll()
-        timer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.scan()
         }
         scan()
@@ -47,12 +50,15 @@ final class NotificationAnnouncer: NSObject, NSSpeechSynthesizerDelegate {
     func stop() {
         timer?.invalidate()
         timer = nil
+        speechWatchdog?.invalidate()
+        speechWatchdog = nil
         queue.removeAll()
         speech.stopSpeaking()
         removeSpeakingMarker()
     }
 
     private func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
+        AXUIElementSetMessagingTimeout(element, 0.25)
         var result: CFTypeRef?
         return AXUIElementCopyAttributeValue(element, name as CFString, &result) == .success ? result : nil
     }
@@ -61,7 +67,7 @@ final class NotificationAnnouncer: NSObject, NSSpeechSynthesizerDelegate {
         (attribute(element, name) as? [AXUIElement]) ?? []
     }
 
-    private func visibleBanner(_ element: AXUIElement) -> Bool {
+    private func visibleBanner(_ element: AXUIElement, screenFrames: [CGRect]) -> Bool {
         guard let positionValue = attribute(element, kAXPositionAttribute as String),
               let sizeValue = attribute(element, kAXSizeAttribute as String),
               CFGetTypeID(positionValue) == AXValueGetTypeID(),
@@ -74,8 +80,7 @@ final class NotificationAnnouncer: NSObject, NSSpeechSynthesizerDelegate {
               AXValueGetValue(size, .cgSize, &bounds) else { return false }
         // Check each screen independently. Notification Center's large panel
         // and the Dock are not transient top-right banners.
-        return NSScreen.screens.contains { screen in
-            let frame = screen.frame
+        return screenFrames.contains { frame in
             return point.x >= frame.minX + frame.width * 0.55 &&
                 point.x < frame.maxX && point.y >= frame.minY &&
                 point.y < frame.minY + frame.height * 0.30 &&
@@ -99,16 +104,13 @@ final class NotificationAnnouncer: NSObject, NSSpeechSynthesizerDelegate {
         return lines
     }
 
-    private func scan() {
-        guard enabled, trusted else { return }
-        let now = Date()
-        seen = seen.filter { now.timeIntervalSince($0.value) < 120 }
+    private func collectVisibleBanners(processIDs: [pid_t], screenFrames: [CGRect]) -> [String] {
         var current = [String]()
-        for app in NSWorkspace.shared.runningApplications where
-            (app.bundleIdentifier?.lowercased().contains("notificationcenter") == true ||
-             app.localizedName == "NotificationCenter") {
-            let root = AXUIElementCreateApplication(app.processIdentifier)
-            for window in children(root, kAXWindowsAttribute as String) where visibleBanner(window) {
+        for processID in processIDs {
+            let root = AXUIElementCreateApplication(processID)
+            AXUIElementSetMessagingTimeout(root, 0.25)
+            for window in children(root, kAXWindowsAttribute as String) where
+                visibleBanner(window, screenFrames: screenFrames) {
                 // Preserve order: app name, sender/title, message body.
                 var lines = [String]()
                 for line in text(in: window) where !lines.contains(line) { lines.append(line) }
@@ -116,6 +118,34 @@ final class NotificationAnnouncer: NSObject, NSSpeechSynthesizerDelegate {
                 current.append(lines.prefix(5).joined(separator: ". "))
             }
         }
+        return current
+    }
+
+    private func scan() {
+        guard enabled, trusted, !scanInProgress else { return }
+        // Accessibility can block waiting for Notification Center. Keep those
+        // calls away from AppKit's run loop and never pile up overlapping scans.
+        let processIDs = NSWorkspace.shared.runningApplications.filter {
+            $0.bundleIdentifier?.lowercased().contains("notificationcenter") == true ||
+                $0.localizedName == "NotificationCenter"
+        }.map(\.processIdentifier)
+        let screenFrames = NSScreen.screens.map(\.frame)
+        scanInProgress = true
+        scanQueue.async { [weak self] in
+            guard let self = self else { return }
+            let current = self.collectVisibleBanners(processIDs: processIDs,
+                                                       screenFrames: screenFrames)
+            DispatchQueue.main.async {
+                self.scanInProgress = false
+                guard self.enabled, self.timer != nil else { return }
+                self.processVisibleBanners(current)
+            }
+        }
+    }
+
+    private func processVisibleBanners(_ current: [String]) {
+        let now = Date()
+        seen = seen.filter { now.timeIntervalSince($0.value) < 120 }
         // Existing banners at launch are not new notifications.
         if !primed {
             for message in current { seen[message] = now }
@@ -139,10 +169,21 @@ final class NotificationAnnouncer: NSObject, NSSpeechSynthesizerDelegate {
             try? "1".write(to: directory.appendingPathComponent("announcing"),
                            atomically: true, encoding: .utf8)
         }
-        speech.startSpeaking("Notification. \(message)")
+        if speech.startSpeaking("Notification. \(message)") {
+            speechWatchdog?.invalidate()
+            speechWatchdog = Timer.scheduledTimer(withTimeInterval: 25, repeats: false) {
+                [weak self] _ in
+                self?.speech.stopSpeaking()
+                self?.removeSpeakingMarker()
+            }
+        } else {
+            removeSpeakingMarker()
+        }
     }
 
     func speechSynthesizer(_ sender: NSSpeechSynthesizer, didFinishSpeaking finishedSpeaking: Bool) {
+        speechWatchdog?.invalidate()
+        speechWatchdog = nil
         // Leave a brief tail while the speakers finish emitting the last samples.
         Timer.scheduledTimer(withTimeInterval: 0.6, repeats: false) { [weak self] _ in
             self?.removeSpeakingMarker()

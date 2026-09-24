@@ -100,7 +100,8 @@ def _capture_screen() -> tuple[bytes, str]:
         response = directory / f"screen-{identifier}.png"
         error = directory / f"screen-{identifier}.error"
         request.write_text(identifier, encoding="utf-8")
-        deadline = time.monotonic() + 15
+        deadline = time.monotonic() + 20
+        pickup_deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
             if error.exists():
                 message = error.read_text(encoding="utf-8")
@@ -110,12 +111,19 @@ def _capture_screen() -> tuple[bytes, str]:
                 png = response.read_bytes()
                 response.unlink(missing_ok=True)
                 return _compress(png, "PNG")
+            if time.monotonic() >= pickup_deadline and request.exists():
+                if request.read_text(encoding="utf-8") == identifier:
+                    request.unlink(missing_ok=True)
+                    raise RuntimeError(
+                        "The Jarvis menu app did not receive the screen request. "
+                        "Quit and reopen Jarvis, then try again."
+                    )
             time.sleep(0.05)
         if request.exists() and request.read_text(encoding="utf-8") == identifier:
             request.unlink(missing_ok=True)
         raise RuntimeError(
-            "Jarvis's screen capture did not respond. Confirm the Jarvis app is running "
-            "and reinstall it with python3 tools/install_macos_app.py."
+            "macOS screen capture did not finish. Check Jarvis's Screen & System Audio "
+            "Recording permission, then quit and reopen Jarvis."
         )
 
     if not _MSS:
