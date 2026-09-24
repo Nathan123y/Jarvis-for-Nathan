@@ -23,7 +23,7 @@ def _load_enqueue():
 
 class AudioQueueTests(unittest.TestCase):
     def setUp(self):
-        self.player = _load_enqueue()
+        self.player = _load_enqueue()()
         self.player.out_queue = asyncio.Queue(maxsize=2)
 
     def test_new_audio_replaces_oldest_when_network_stalls(self):
