@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
+import time
+import uuid
 from pathlib import Path
 
 import numpy as np
@@ -86,6 +89,31 @@ def _compress(img_bytes: bytes, source_format: str = "PNG") -> tuple[bytes, str]
 
 
 def _capture_screen() -> tuple[bytes, str]:
+
+    # The native app owns macOS screen permission. Ask it to capture instead of
+    # making macOS authorize the Python child separately on every launch.
+    control = os.environ.get("JARVIS_MENU_CONTROL_DIR")
+    if sys.platform == "darwin" and control:
+        directory = Path(control)
+        identifier = str(uuid.uuid4())
+        request = directory / "screen-request"
+        response = directory / f"screen-{identifier}.png"
+        error = directory / f"screen-{identifier}.error"
+        request.write_text(identifier, encoding="utf-8")
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            if error.exists():
+                message = error.read_text(encoding="utf-8")
+                error.unlink(missing_ok=True)
+                raise RuntimeError(message)
+            if response.exists():
+                png = response.read_bytes()
+                response.unlink(missing_ok=True)
+                return _compress(png, "PNG")
+            time.sleep(0.05)
+        if request.exists() and request.read_text(encoding="utf-8") == identifier:
+            request.unlink(missing_ok=True)
+        raise RuntimeError("Jarvis's screen capture did not respond. Quit and reopen the app.")
 
     if not _MSS:
         raise RuntimeError("mss is not installed. Run: pip install mss")
