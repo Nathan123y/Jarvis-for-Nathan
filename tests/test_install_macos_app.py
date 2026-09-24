@@ -67,14 +67,46 @@ class MacLauncherTests(unittest.TestCase):
             with patch("tools.install_macos_app.platform.system", return_value="Darwin"), \
                  patch("tools.install_macos_app.subprocess.run") as run:
                 run.return_value.returncode = 0
+                run.return_value.stdout = ""
                 install(root, Path(sys.executable), target, architecture="arm64")
             with (target / "Contents" / "Resources" / "launch.plist").open("rb") as source:
                 self.assertEqual(plistlib.load(source)["Arch"], "arm64")
-            self.assertEqual(run.call_count, 2)
-            self.assertIn("swiftc", run.call_args_list[0].args[0])
+            self.assertEqual(run.call_count, 4)
+            self.assertIn("swiftc", run.call_args_list[1].args[0])
             self.assertTrue(any(str(source).endswith("notification_announcer.swift")
-                                for source in run.call_args_list[0].args[0]))
-            self.assertIn("codesign", run.call_args_list[1].args[0][0])
+                                for source in run.call_args_list[1].args[0]))
+            self.assertEqual(run.call_args_list[2].args[0][3], "-")
+
+    def test_unchanged_signed_bundle_does_not_rebuild_or_change_permission_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "main.py").touch()
+            target = root / "Jarvis.app"
+            with patch("tools.install_macos_app.platform.system", return_value="Darwin"), \
+                 patch("tools.install_macos_app.subprocess.run") as run:
+                run.return_value.returncode = 0
+                install(root, Path(sys.executable), target, architecture="arm64",
+                        identity="Apple Development: Nathan (ABC123)")
+                run.reset_mock()
+                install(root, Path(sys.executable), target, architecture="arm64",
+                        identity="Apple Development: Nathan (ABC123)")
+            self.assertEqual(run.call_count, 1)
+            self.assertIn("--verify", run.call_args.args[0])
+
+    def test_failed_compile_keeps_existing_bundle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "main.py").touch()
+            target = root / "Jarvis.app"
+            with patch("tools.install_macos_app.platform.system", return_value="Darwin"), \
+                 patch("tools.install_macos_app.subprocess.run") as run:
+                run.return_value.returncode = 0
+                install(root, Path(sys.executable), target, architecture="arm64", identity="-")
+                previous = (target / "Contents" / "Resources" / "launch.plist").read_bytes()
+                run.side_effect = [type("Result", (), {"returncode": 1, "stderr": "Swift error"})()]
+                with self.assertRaisesRegex(ValueError, "Swift error"):
+                    install(root, Path(sys.executable), target, architecture="x86_64", identity="-")
+            self.assertEqual((target / "Contents" / "Resources" / "launch.plist").read_bytes(), previous)
 
 
 if __name__ == "__main__":
