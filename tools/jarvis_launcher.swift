@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import Foundation
+import ScreenCaptureKit
 
 final class JarvisLauncher: NSObject, NSApplicationDelegate {
     private var child: Process?
@@ -152,17 +153,47 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
                 .write(to: errorFile, atomically: true, encoding: .utf8)
             return
         }
-        guard let frame = CGDisplayCreateImage(CGMainDisplayID()),
-              let png = NSBitmapImageRep(cgImage: frame).representation(using: .png, properties: [:]) else {
-            try? "Jarvis could not capture the display."
-                .write(to: errorFile, atomically: true, encoding: .utf8)
-            return
-        }
-        do {
-            try png.write(to: response, options: .atomic)
-        } catch {
-            try? "Jarvis could not save the screenshot: \(error.localizedDescription)"
-                .write(to: errorFile, atomically: true, encoding: .utf8)
+        if #available(macOS 14.0, *) {
+            Task {
+                do {
+                    let content = try await SCShareableContent.excludingDesktopWindows(
+                        false, onScreenWindowsOnly: true)
+                    guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() })
+                        ?? content.displays.first else {
+                        throw NSError(domain: "Jarvis", code: 1,
+                                      userInfo: [NSLocalizedDescriptionKey: "No display available for capture."])
+                    }
+                    let filter = SCContentFilter(display: display, excludingWindows: [])
+                    let config = SCStreamConfiguration()
+                    config.width = display.width
+                    config.height = display.height
+                    let frame = try await SCScreenshotManager.captureImage(
+                        contentFilter: filter, configuration: config)
+                    guard let png = NSBitmapImageRep(cgImage: frame).representation(
+                        using: .png, properties: [:]) else {
+                        throw NSError(domain: "Jarvis", code: 2,
+                                      userInfo: [NSLocalizedDescriptionKey: "Could not encode screenshot."])
+                    }
+                    try png.write(to: response, options: .atomic)
+                } catch {
+                    try? error.localizedDescription.write(to: errorFile, atomically: true, encoding: .utf8)
+                }
+            }
+        } else {
+            // ScreenCaptureKit's still image API requires macOS 14.
+            let capture = Process()
+            capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            capture.arguments = ["-x", "-t", "png", response.path]
+            do {
+                try capture.run()
+                capture.waitUntilExit()
+                if capture.terminationStatus != 0 {
+                    throw NSError(domain: "Jarvis", code: 3,
+                                  userInfo: [NSLocalizedDescriptionKey: "Screen capture failed."])
+                }
+            } catch {
+                try? error.localizedDescription.write(to: errorFile, atomically: true, encoding: .utf8)
+            }
         }
     }
 
@@ -225,7 +256,12 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
     }
 }
 
-let app = NSApplication.shared
-let delegate = JarvisLauncher()
-app.delegate = delegate
-app.run()
+@main
+struct JarvisApplication {
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = JarvisLauncher()
+        app.delegate = delegate
+        app.run()
+    }
+}
