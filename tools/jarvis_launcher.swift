@@ -4,9 +4,27 @@ import Foundation
 
 final class JarvisLauncher: NSObject, NSApplicationDelegate {
     private var child: Process?
+    private var statusItem: NSStatusItem?
+    private var microphoneItem: NSMenuItem?
+    private var statusLabel: NSMenuItem?
+    private var refreshTimer: Timer?
+    private var controlDirectory: URL?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        let directory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Jarvis/MenuControl")
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            controlDirectory = directory
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent("command"))
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent("status"))
+        } catch {
+            showError("Could not prepare menu controls: \(error.localizedDescription)")
+            return
+        }
+        setupMenu()
         AVCaptureDevice.requestAccess(for: .audio) { allowed in
             DispatchQueue.main.async {
                 if allowed {
@@ -54,12 +72,14 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
             var environment = ProcessInfo.processInfo.environment
             environment["PATH"] = URL(fileURLWithPath: python).deletingLastPathComponent().path
                 + ":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+            environment["JARVIS_MENU_CONTROL_DIR"] = controlDirectory?.path
             process.environment = environment
             process.standardOutput = handle
             process.standardError = handle
             process.terminationHandler = { process in
                 DispatchQueue.main.async {
                     handle.closeFile()
+                    self.refreshMenu()
                     if process.terminationStatus != 0 {
                         self.showError("Jarvis stopped. See ~/Library/Logs/Jarvis/launch.log for details.")
                     } else {
@@ -69,10 +89,62 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
             }
             child = process
             try process.run()
+            refreshMenu()
         } catch {
             showError("Jarvis could not start: \(error.localizedDescription)")
         }
     }
+
+    private func setupMenu() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.button?.image = NSImage(systemSymbolName: "waveform.circle", accessibilityDescription: "Jarvis")
+        if item.button?.image == nil { item.button?.title = "Jarvis" }
+        let menu = NSMenu()
+        let status = NSMenuItem(title: "Starting Jarvis…", action: nil, keyEquivalent: "")
+        status.isEnabled = false
+        menu.addItem(status)
+        statusLabel = status
+        menu.addItem(NSMenuItem(title: "Open Jarvis", action: #selector(openWindow), keyEquivalent: ""))
+        let microphone = NSMenuItem(title: "Mute microphone", action: #selector(toggleMicrophone), keyEquivalent: "")
+        menu.addItem(microphone)
+        microphoneItem = microphone
+        menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "Quit Jarvis", action: #selector(quit), keyEquivalent: ""))
+        for entry in menu.items where entry.action != nil { entry.target = self }
+        item.menu = menu
+        statusItem = item
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            self?.refreshMenu()
+        }
+    }
+
+    private func refreshMenu() {
+        let running = child?.isRunning == true
+        let state = controlDirectory.flatMap {
+            try? String(contentsOf: $0.appendingPathComponent("status"), encoding: .utf8)
+        }?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let muted = state == "muted"
+        statusLabel?.title = running ? (state == nil ? "Starting Jarvis…" :
+            (muted ? "Microphone muted" : "Microphone active")) : "Jarvis stopped"
+        microphoneItem?.title = muted ? "Unmute microphone" : "Mute microphone"
+        microphoneItem?.isEnabled = running && state != nil
+        if let button = statusItem?.button {
+            button.image = NSImage(systemSymbolName: muted ? "mic.slash.circle" : "waveform.circle",
+                                   accessibilityDescription: muted ? "Jarvis muted" : "Jarvis")
+        }
+    }
+
+    private func sendCommand(_ command: String) {
+        guard child?.isRunning == true, let directory = controlDirectory else { return }
+        try? command.write(to: directory.appendingPathComponent("command"),
+                           atomically: true, encoding: .utf8)
+    }
+
+    @objc private func openWindow() { sendCommand("open") }
+    @objc private func toggleMicrophone() {
+        sendCommand(microphoneItem?.title == "Unmute microphone" ? "unmute" : "mute")
+    }
+    @objc private func quit() { NSApp.terminate(nil) }
 
     private func showError(_ message: String) {
         let alert = NSAlert()
@@ -83,7 +155,12 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        refreshTimer?.invalidate()
         if let child = child, child.isRunning { child.terminate() }
+        if let directory = controlDirectory {
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent("command"))
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent("status"))
+        }
     }
 }
 
