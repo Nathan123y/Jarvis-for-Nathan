@@ -15,6 +15,7 @@ from urllib.parse import quote
 _DIRECT_PHONE = re.compile(r"^\+?[0-9(). -]{3,}$")
 _DIRECT_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _EMERGENCY_NUMBERS = {"000", "110", "112", "119", "911", "999"}
+_CONTACT_TIMEOUT = 8
 
 
 class ContactError(RuntimeError):
@@ -42,7 +43,23 @@ on run argv
     tell application "Contacts"
         set matches to every person whose name is wanted
         if (count of matches) is 0 then
+            try
+                set matches to every person whose nickname is wanted
+            end try
+        end if
+        if (count of matches) is 0 then
             set matches to every person whose name contains wanted
+        end if
+        if (count of matches) is 0 then
+            try
+                set matches to every person whose nickname contains wanted
+            end try
+        end if
+        if (count of matches) is 0 then
+            set matches to every person whose first name is wanted
+        end if
+        if (count of matches) is 0 then
+            set matches to every person whose last name is wanted
         end if
         if (count of matches) is 0 then return "NOT_FOUND"
         if (count of matches) > 1 then
@@ -62,14 +79,25 @@ on run argv
                 set mobileItems to {}
                 repeat with ph in phoneItems
                     set phoneLabel to label of ph as text
-                    if phoneLabel contains "mobile" or phoneLabel contains "iPhone" then
-                        set end of mobileItems to ph
-                    end if
+                    ignoring case
+                        if phoneLabel contains "mobile" or phoneLabel contains "iPhone" or phoneLabel contains "cell" then
+                            set end of mobileItems to ph
+                        end if
+                    end ignoring
                 end repeat
                 if (count of mobileItems) is 1 then
                     set chosen to value of item 1 of mobileItems
                 else
-                    return "MULTIPLE_HANDLES" & tab & (name of p as text)
+                    set uniqueNumbers to {}
+                    repeat with ph in phoneItems
+                        set phoneNumber to value of ph as text
+                        if uniqueNumbers does not contain phoneNumber then set end of uniqueNumbers to phoneNumber
+                    end repeat
+                    if (count of uniqueNumbers) is 1 then
+                        set chosen to item 1 of uniqueNumbers
+                    else
+                        return "MULTIPLE_HANDLES" & tab & (name of p as text)
+                    end if
                 end if
             end if
         else if handleKind is not "phone" and (count of emails of p) is 1 then
@@ -102,15 +130,24 @@ end run
 
 
 def _osascript(script: str, *args: str, timeout: int = 20) -> str:
-    result = subprocess.run(
-        ["osascript", "-", *args],
-        input=script,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    try:
+        result = subprocess.run(
+            ["osascript", "-", *args],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ContactError("Contacts or Messages took too long to respond. Try again in a moment.") from exc
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "macOS automation failed").strip()
+        if "-1743" in detail or "not authorized to send Apple events" in detail.lower():
+            raise ContactError(
+                "macOS denied automation access to Contacts or Messages. Allow Jarvis "
+                "(or Python, if that is what macOS lists) under System Settings → "
+                "Privacy & Security → Automation, then reopen Jarvis."
+            )
         raise RuntimeError(detail)
     return result.stdout.strip()
 
@@ -128,7 +165,7 @@ def is_emergency_number(value: str) -> bool:
 
 def resolve_contact(query: str, *, phone_only: bool = False) -> Contact:
     """Resolve a direct handle or an unambiguous macOS Contacts name."""
-    query = query.strip()
+    query = re.sub(r"^(?:(?:my|the)\s+)+", "", query.strip(), flags=re.IGNORECASE).strip()
     if not query:
         raise ContactError("Please specify a contact name or phone number.")
     if _DIRECT_PHONE.fullmatch(query):
@@ -136,7 +173,7 @@ def resolve_contact(query: str, *, phone_only: bool = False) -> Contact:
     if not phone_only and _DIRECT_EMAIL.fullmatch(query):
         return Contact(name=query, handle=query)
 
-    raw = _osascript(_CONTACT_SCRIPT, query, "phone" if phone_only else "message")
+    raw = _osascript(_CONTACT_SCRIPT, query, "phone" if phone_only else "message", timeout=_CONTACT_TIMEOUT)
     parts = raw.split("\t")
     status = parts[0] if parts else ""
     if status == "OK" and len(parts) >= 3:

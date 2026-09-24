@@ -41,6 +41,7 @@ import time
 import json
 import sys
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -1118,7 +1119,10 @@ class JarvisLive:
         name = fc.name
         args = dict(fc.args or {})
 
-        print(f"[JARVIS] 🔧 {name}  {args}")
+        # Dictated messages may contain private conversations. Keep the tool
+        # name and recipient in the launch log without recording the message.
+        log_args = {**args, "message_text": "[content omitted]"} if name == "send_message" else args
+        print(f"[JARVIS] 🔧 {name}  {log_args}")
         self.ui.set_state("THINKING")
 
 
@@ -1670,6 +1674,10 @@ class JarvisLive:
         except Exception:
             pass
 
+        # Isolate CoreAudio writes from tools that run in asyncio's shared
+        # executor (Contacts and Messages may take several seconds to answer).
+        # A busy automation worker must not hold up the next speaker buffer.
+        speaker_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jarvis-speaker")
         playback_primed = False
         last_underflow_log = 0.0
         last_audio_at = 0.0
@@ -1782,7 +1790,9 @@ class JarvisLive:
                     pass
 
                 try:
-                    underflowed = await asyncio.to_thread(stream.write, bytes(batch))
+                    underflowed = await asyncio.get_running_loop().run_in_executor(
+                        speaker_executor, stream.write, bytes(batch)
+                    )
                     last_audio_at = time.monotonic()
                     if underflowed and time.monotonic() - last_underflow_log > 5.0:
                         print("[JARVIS] Speaker underflow: playback starved of audio", flush=True)
@@ -1794,6 +1804,7 @@ class JarvisLive:
             raise
         finally:
             self.set_speaking(False)
+            speaker_executor.shutdown(wait=False, cancel_futures=True)
             stream.stop()
             stream.close()
 
