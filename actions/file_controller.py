@@ -47,6 +47,25 @@ _SENSITIVE_NAMES = {
 _SENSITIVE_PARTS = {".ssh", "keychains", "cookies", "login data", "passwords"}
 
 
+def _permission_denied(path: str) -> str:
+    if _OS != "Darwin":
+        return f"Permission denied: {path}"
+    target = Path(path).expanduser()
+    home = Path.home()
+    for folder in ("Desktop", "Documents", "Downloads"):
+        if target == home / folder or (home / folder) in target.parents:
+            return (
+                f"Permission denied: {path}. Check System Settings → Privacy & "
+                f"Security → Files & Folders → Jarvis (or Python) → {folder}, "
+                "then quit and reopen Jarvis."
+            )
+    return (
+        f"Permission denied: {path}. Check the folder's access rights in Finder. "
+        "If macOS protects this location, check System Settings → Privacy & "
+        "Security → Files & Folders for Jarvis (or Python)."
+    )
+
+
 def _undo_move(src: Path, dst: Path):
     """Reverse of a move: put it back where it came from."""
     def _fn():
@@ -369,7 +388,9 @@ def list_files(path: str = "desktop", show_hidden: bool = False,
         target = _resolve_path(path)
         if not _is_readable_path(target):
             return f"Access denied: {target}"
-        if not target.exists():
+        try:
+            target.stat()  # Path.exists() can hide macOS permission errors.
+        except FileNotFoundError:
             return f"Path not found: {target}"
         if not target.is_dir():
             return f"Not a directory: {target}"
@@ -398,7 +419,7 @@ def list_files(path: str = "desktop", show_hidden: bool = False,
         return result
 
     except PermissionError:
-        return f"Permission denied: {path}"
+        return _permission_denied(str(target) if "target" in locals() else path)
     except Exception as e:
         return f"Error listing files: {e}"
 
@@ -425,6 +446,8 @@ def create_file(path: str, name: str = "", content: str = "",
         push_undo(f"created {target.name}",
                   _undo_write(target, previous) if existed else _undo_create(target))
         return f"File created: {target.name}"
+    except PermissionError:
+        return _permission_denied(str(target) if "target" in locals() else path)
     except Exception as e:
         return f"Could not create file: {e}"
 
@@ -581,7 +604,9 @@ def read_file(path: str, name: str = "", max_chars: int = 12000) -> str:
         target = (base / name) if name else base
         if not _is_readable_path(target):
             return f"Access denied: {target}"
-        if not target.exists():
+        try:
+            target.stat()
+        except FileNotFoundError:
             return f"File not found: {target.name}"
         if not target.is_file():
             return f"Not a file: {target.name}"
@@ -595,6 +620,8 @@ def read_file(path: str, name: str = "", max_chars: int = 12000) -> str:
             content = content[:max_chars] + f"\n\n[Truncated — {len(content)} total chars]"
         return content
 
+    except PermissionError:
+        return _permission_denied(str(target) if "target" in locals() else path)
     except Exception as e:
         return f"Could not read file: {e}"
 
@@ -635,6 +662,8 @@ def write_file(path: str, name: str = "", content: str = "",
         return (f"{action}: {target.name}. "
                 f"(Too large to keep a copy of the old contents, so this one "
                 f"cannot be undone.)")
+    except PermissionError:
+        return _permission_denied(str(target) if "target" in locals() else path)
     except Exception as e:
         return f"Could not write file: {e}"
 
