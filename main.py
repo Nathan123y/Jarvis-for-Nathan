@@ -1524,6 +1524,7 @@ class JarvisLive:
             except Exception as exc:
                 print(f"[JARVIS] ❌ Tool response: {exc}")
                 traceback.print_exc()
+                self.request_reconnect(keep_context=True, reason="tool response failure")
 
         try:
             while True:
