@@ -80,6 +80,7 @@ from core                      import confirm as confirm_gate
 from core                      import audio_devices
 from core.action_loader        import discover_actions
 from core.echo                 import EchoGuard
+from core.playback_timing      import playback_idle
 from core.viseme               import VisemeStream
 from core.wake_word            import (
     WakeWordDetector, is_ready as wake_is_ready, install_and_download as wake_install,
@@ -1504,6 +1505,26 @@ class JarvisLive:
     async def _receive_audio(self):
         print("[JARVIS] 👂 Recv started")
         out_buf, in_buf = [], []
+        tool_lock = asyncio.Lock()
+        tool_workers: set[asyncio.Task] = set()
+
+        async def respond_to_tools(tool_call):
+            # A slow contact lookup or plugin must not stop receive() from
+            # handing the rest of an already-started answer to the speaker.
+            # Serialize responses if the server sends another tool call while
+            # one is still running, and cancel this worker with the session.
+            try:
+                async with tool_lock:
+                    fn_responses = []
+                    for fc in tool_call.function_calls:
+                        print(f"[JARVIS] 📞 {fc.name}")
+                        fn_responses.append(await self._execute_tool(fc))
+                    await self.session.send_tool_response(function_responses=fn_responses)
+                    await self._flush_pending_vision()
+            except Exception as exc:
+                print(f"[JARVIS] ❌ Tool response: {exc}")
+                traceback.print_exc()
+                self.request_reconnect(keep_context=True, reason="tool response failure")
 
         try:
             while True:
@@ -1616,19 +1637,18 @@ class JarvisLive:
                                 asyncio.create_task(_cam_close())
 
                     if response.tool_call:
-                        fn_responses = []
-                        for fc in response.tool_call.function_calls:
-                            print(f"[JARVIS] 📞 {fc.name}")
-                            fr = await self._execute_tool(fc)
-                            fn_responses.append(fr)
-                        await self.session.send_tool_response(
-                            function_responses=fn_responses
-                        )
-                        await self._flush_pending_vision()
+                        worker = asyncio.create_task(respond_to_tools(response.tool_call))
+                        tool_workers.add(worker)
+                        worker.add_done_callback(tool_workers.discard)
         except Exception as e:
             print(f"[JARVIS] ❌ Recv: {e}")
             traceback.print_exc()
             raise
+        finally:
+            for worker in tool_workers:
+                worker.cancel()
+            if tool_workers:
+                await asyncio.gather(*tool_workers, return_exceptions=True)
 
     async def _play_audio(self):
         print("[JARVIS] 🔊 Play started")
@@ -1689,21 +1709,20 @@ class JarvisLive:
                         timeout=0.1
                     )
                 except asyncio.TimeoutError:
-                    # A gap in streamed speech drains the device buffer. Prime
-                    # the next stretch before writing so brief network stalls
-                    # do not turn into crackles between words.
-                    playback_primed = False
-                    # The server can pause between audio chunks without sending
-                    # turn_complete. Keeping SPEAKING latched through that pause
-                    # makes the mic ignore everything the user says, even while
-                    # Jarvis is silent. Release it after a short idle stretch;
-                    # the existing echo-tail guard handles audio still in the
-                    # speaker buffer.
-                    paused = last_audio_at and time.monotonic() - last_audio_at > 0.35
+                    # An empty network queue does not mean the device is silent:
+                    # it may still be playing the last batch. Re-priming on every
+                    # 100 ms timeout used to add another wait between words.
+                    if playback_idle(last_audio_at, self._play_cursor, 0.18):
+                        playback_primed = False
+                    # Give the speaker time to finish before reopening the mic.
+                    # A longer pause without turn_complete still releases it so
+                    # the user can speak if the server stalls mid-response.
+                    paused = playback_idle(last_audio_at, self._play_cursor, 0.65)
                     if (
                         self._turn_done_event
                         and self._turn_done_event.is_set()
                         and self.audio_in_queue.empty()
+                        and (not last_audio_at or time.time() >= self._play_cursor)
                     ):
                         if self._is_speaking:
                             self.set_speaking(False)
