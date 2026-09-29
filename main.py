@@ -1124,8 +1124,10 @@ class JarvisLive:
         # name and recipient in the launch log without recording the message.
         log_args = {**args, "message_text": "[content omitted]"} if name == "send_message" else args
         print(f"[JARVIS] 🔧 {name}  {log_args}")
-        self.ui.set_state("THINKING")
-
+        # A tool can run while an earlier sentence is still playing. Keep the
+        # HUD in SPEAKING until the speaker drains.
+        if not self._is_speaking:
+            self.ui.set_state("THINKING")
 
         if name == "save_memory":
             category = args.get("category", "notes")
@@ -1134,7 +1136,7 @@ class JarvisLive:
             if key and value:
                 update_memory({category: {key: {"value": value}}})
                 print(f"[Memory] 💾 save_memory: {category}/{key} = {value}")
-            if not self.ui.muted:
+            if not self.ui.muted and not self._is_speaking:
                 self.ui.set_state("LISTENING")
             return types.FunctionResponse(
                 id=fc.id, name=name,
@@ -1267,7 +1269,7 @@ class JarvisLive:
             traceback.print_exc()
             self.speak_error(name, e)
 
-        if not self.ui.muted:
+        if not self.ui.muted and not self._is_speaking:
             self.ui.set_state("LISTENING")
 
         print(f"[JARVIS] 📤 {name} → {str(result)[:80]}")
@@ -1731,7 +1733,8 @@ class JarvisLive:
                         self.set_speaking(False)
                     continue
 
-                self.set_speaking(True)
+                if not self._is_speaking:
+                    self.set_speaking(True)
 
                 # Batch all immediately-available chunks into one write to reduce
                 # thread-pool round-trips (was one asyncio.to_thread per 50ms slice).
@@ -1816,8 +1819,8 @@ class JarvisLive:
                     if underflowed and time.monotonic() - last_underflow_log > 5.0:
                         print("[JARVIS] Speaker underflow: playback starved of audio", flush=True)
                         last_underflow_log = time.monotonic()
-                except (RuntimeError, asyncio.CancelledError):
-                    break   # executor shutting down — exit cleanly
+                except asyncio.CancelledError:
+                    raise   # session shutdown; a device failure must reconnect instead
         except Exception as e:
             print(f"[JARVIS] ❌ Play: {e}")
             raise
