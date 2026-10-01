@@ -116,6 +116,13 @@ def _find_note(vault: Path, name: str) -> tuple[Path | None, str | None]:
     return None, "I could not find that note in your vault."
 
 
+def _modified(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0  # Obsidian Sync may rename a note during the scan
+
+
 def obsidian_notes(parameters: dict, player=None) -> str:
     action = str(parameters.get("action", "")).strip().lower()
     if action == "connect":
@@ -132,7 +139,7 @@ def obsidian_notes(parameters: dict, player=None) -> str:
 
     query = str(parameters.get("query") or "").strip()
     if action == "recent":
-        candidates = sorted(_notes(vault), key=lambda p: p.stat().st_mtime, reverse=True)[:12]
+        candidates = sorted(_notes(vault), key=_modified, reverse=True)[:12]
         if not candidates:
             return "I found no Markdown notes in that Obsidian vault."
         return _PRIVATE_RESULT + "Recent notes:\n" + "\n".join(
