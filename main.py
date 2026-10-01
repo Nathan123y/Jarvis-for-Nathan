@@ -1120,9 +1120,14 @@ class JarvisLive:
         name = fc.name
         args = dict(fc.args or {})
 
-        # Dictated messages may contain private conversations. Keep the tool
-        # name and recipient in the launch log without recording the message.
-        log_args = {**args, "message_text": "[content omitted]"} if name == "send_message" else args
+        # Dictated messages and note content may be private. Do not write
+        # Obsidian note titles, search phrases, or note text to the launch log.
+        if name == "send_message":
+            log_args = {**args, "message_text": "[content omitted]"}
+        elif name == "obsidian_notes":
+            log_args = {"action": args.get("action"), "details": "[omitted]"}
+        else:
+            log_args = args
         print(f"[JARVIS] 🔧 {name}  {log_args}")
         # A tool can run while an earlier sentence is still playing. Keep the
         # HUD in SPEAKING until the speaker drains.
