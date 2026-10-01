@@ -24,35 +24,18 @@ One JSON object per line, appended to:
 
 Nothing reads this file back at runtime — delete or rotate it any time.
 
-HOW TO WIRE THIS IN (main.py)
-------------------------------
-1. At the top of JarvisLive.__init__, after BASE_DIR is known:
-       from core.perf_trace import log_launch_context
-       log_launch_context(BASE_DIR)
-   This is the single most useful line for the Finder-vs-VS Code question:
-   it records the resolved Python executable, CPU architecture (arm64 vs
-   x86_64 — catches silent Rosetta translation), cwd, and the git commit/
-   branch actually running. Compare two perf.jsonl files — one from a
-   VS Code launch, one from the Finder app — and the "launch" record is
-   usually where the real difference shows up.
+INTEGRATION
+-----------
+main.py records launch context on a background thread, every speaker write
+(buffer size, latency, underflow), input overflow reports, and requested UI
+state transitions. The state log shows what Jarvis asked the UI to display;
+it does not measure when Qt actually painted a frame. Other call sites may
+use trace_block() to record suspected synchronous stalls when needed.
 
-2. Wherever the output stream is written (the function the __init__
-   comment calls "_play_audio"), right after `stream.write(chunk)`:
-       from core.perf_trace import log_audio_write
-       log_audio_write(stream.latency, len(chunk) // 2, bool(status and status.output_underflow))
-
-3. Wherever the input callback reports status, log overflow the same way
-   with log_audio_in_status(bool(status.input_overflow)).
-
-4. Route every state change through the _apply_state gate suggested in the
-   write-up (not included here, since it edits your existing JarvisLive
-   class directly) instead of calling self.ui.set_state(...) in more than
-   one place. That gate calls log_state_transition() on every change.
-
-5. Wrap anything that might block the event loop — an osascript/AppleEvents
-   call, a notification post, session reconnect, a plugin/action discovery
-   pass — in `with trace_block("name"): ...`. The "slow" flag on each line
-   is the first thing worth grepping perf.jsonl for.
+Compare the 'launch' lines by pid after a VS Code launch and a Finder app
+launch. For the laggy period, inspect 'audio_out' underflows and the 'state'
+sequence for the same pid. Launch paths and Git status are diagnostics; review
+them before sharing the log.
 """
 from __future__ import annotations
 
