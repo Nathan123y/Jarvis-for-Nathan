@@ -101,12 +101,23 @@ exact name or ID with the `product` parameter. `brief` and `research` work befor
 publication. `draft`, `campaign` and `sales` require a verified published link.
 
 The seller launch pack contains 15 separate customer ZIPs and the uploader.
+Update the Gumroad CLI before creating drafts:
+`curl -fsSL https://gumroad.com/install-cli.sh | bash`. The uploader checks that
+`products create --help` offers `--draft` and uses that flag on every create.
+Older versions are stopped before any write: the create API can publish by
+default despite older CLI help calling it a draft. This needs the 2026-10-02
+CLI release or later with explicit draft support.
 From the extracted pack on the Mac, run `python3 upload_products.py --create` to
 create drafts with downloads, descriptions, covers, previews and thumbnails.
 Open each draft and use Gumroad's test-purchase feature to verify checkout and
 the actual downloaded files. Then use `python3 upload_products.py --publish
 --tested`. The CLI login stays local. The uploader checkpoints uncertain writes
 and stops rather than risking duplicate uploads. It never emails prospects.
+Login is checked using the CLI's `authenticated` field, separately from API
+`success` responses. Terminal progress is printed for each upload, and failures
+show the command and CLI error message with credentials redacted. Keep the
+pack's `upload_state.json` if anything fails; it records confirmed product IDs
+and unresolved writes.
 
 The uploader connects published URLs to ignored local
 `config/product_sales/catalog_links.json`. For products published manually, ask
