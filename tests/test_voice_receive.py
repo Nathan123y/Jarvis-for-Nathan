@@ -50,6 +50,9 @@ class VoiceReceiveTests(unittest.IsolatedAsyncioTestCase):
                 return False
 
         player = Player()
+        player._pending_tool_batches = 0
+        player.ui = SimpleNamespace(muted=False)
+        player._set_ui_state = lambda *a: None
         player.session = FakeSession()
         player.audio_in_queue = asyncio.Queue()
         player._interrupted = False
@@ -58,11 +61,13 @@ class VoiceReceiveTests(unittest.IsolatedAsyncioTestCase):
         try:
             await asyncio.wait_for(started.wait(), 1)
             self.assertEqual(await asyncio.wait_for(player.audio_in_queue.get(), 1), voice)
+            self.assertEqual(player._pending_tool_batches, 1)
         finally:
             release.set()
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await task
+            self.assertEqual(player._pending_tool_batches, 0)
 
     async def test_go_away_rotates_once_after_speech_drains(self):
         rotated = asyncio.Event()
@@ -78,6 +83,9 @@ class VoiceReceiveTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.Event().wait()
 
         player = _receive_method()()
+        player._pending_tool_batches = 0
+        player.ui = SimpleNamespace(muted=False)
+        player._set_ui_state = lambda *a: None
         player.session = FakeSession()
         player.audio_in_queue = asyncio.Queue()
         player._resume_handle = "valid-token"
@@ -94,6 +102,7 @@ class VoiceReceiveTests(unittest.IsolatedAsyncioTestCase):
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await task
+            self.assertEqual(player._pending_tool_batches, 0)
 
 
 if __name__ == "__main__":
