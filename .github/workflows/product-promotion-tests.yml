@@ -1,0 +1,27 @@
+name: Product promotion tests
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/product-promotion-tests.yml"
+      - "plugins/product_sales.py"
+      - "plugins/gmail.py"
+      - "core/confirm.py"
+      - "core/plugin_loader.py"
+      - "memory/config_manager.py"
+      - "tests/test_product_sales.py"
+      - "tests/test_gmail.py"
+permissions:
+  contents: read
+jobs:
+  promotion:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+      - name: Promotion workflow tests
+        run: python3 -m unittest discover -s tests -p 'test_product_sales.py' -v
+      - name: Existing Gmail tests
+        run: python3 -m unittest discover -s tests -p 'test_gmail.py' -v
