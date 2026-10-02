@@ -17,8 +17,8 @@ PLUGIN = {
     "description": (
         "Give the user's on-demand daily/morning briefing: today's Mac Calendar "
         "events, live Canvas assignments, overdue and upcoming Mission Control "
-        "tasks, and unread personal "
-        "and school Gmail. Use for 'give me my daily briefing', 'what is my day "
+        "tasks, and unread mail from connected personal, school, and spam "
+        "Gmail accounts. Use for 'give me my daily briefing', 'what is my day "
         "looking like', 'morning update', or 'what do I have today'. Unlike "
         "mission_control's task-only briefing, this combines available sources. "
         "Read-only: never create tasks, send mail or claim to read Canvas. "
@@ -109,7 +109,7 @@ def _gmail():
     except (ImportError, OSError):
         return [], ["Gmail is unavailable."]
     if not connected:
-        return [], ["No Gmail account is connected. Ask Jarvis to connect personal or school Gmail."]
+        return [], ["No Gmail account is connected. Ask Jarvis to connect personal, school, or spam Gmail."]
     found, notices = [], []
     for account in connected:
         try:

@@ -25,6 +25,7 @@ _LEGACY_TOKEN = _ROOT / "config" / "gmail_token.json"
 _ACCOUNT_TOKENS = {
     "personal": _ROOT / "config" / "gmail_personal_token.json",
     "school": _ROOT / "config" / "gmail_school_token.json",
+    "spam": _ROOT / "config" / "gmail_spam_token.json",
 }
 _ACCOUNTS = tuple(_ACCOUNT_TOKENS)
 _SCOPES = (
@@ -40,11 +41,12 @@ _MESSAGE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{4,120}$")
 PLUGIN = {
     "name": "gmail",
     "description": (
-        "Access the user's personal and school Gmail accounts with Google sign-in. "
-        "Always set account=personal or account=school when the user names one. "
+        "Access the user's personal, school, and spam Gmail accounts with Google sign-in. "
+        "Spam is the user's label for a separate Gmail account used for promotion. "
+        "Always set account=personal, account=school, or account=spam when named. "
         "Use action=connect to link that account; action=recent to check recent "
         "or unread mail; action=read with an ID from that account's recent listing; "
-        "action=send when they explicitly ask to email someone. If both accounts "
+        "action=send when they explicitly ask to email someone. If multiple accounts "
         "are connected and the user does not name one, ask which account to use. "
         "For sending, require an exact email address. The email is sent ONLY "
         "after the user presses CONFIRM on the JARVIS HUD. Never say it was sent "
@@ -54,7 +56,7 @@ PLUGIN = {
         "type": "OBJECT",
         "properties": {
             "action": {"type": "STRING", "description": "connect, recent, read, or send"},
-            "account": {"type": "STRING", "description": "personal or school Gmail account"},
+            "account": {"type": "STRING", "description": "personal, school, or spam Gmail account"},
             "unread_only": {"type": "BOOLEAN", "description": "For recent, show only unread inbox mail"},
             "count": {"type": "INTEGER", "description": "For recent, number of emails (1 to 10, default 5)"},
             "message_id": {"type": "STRING", "description": "For read, ID returned by recent"},
@@ -78,20 +80,28 @@ def _connected_accounts() -> list[str]:
     return [account for account in _ACCOUNTS if _token_path(account).exists()]
 
 
+def _account_choices(accounts) -> str:
+    labels = [f"{account} Gmail" for account in accounts]
+    if len(labels) <= 2:
+        return " or ".join(labels)
+    return ", ".join(labels[:-1]) + ", or " + labels[-1]
+
+
 def _choose_account(action: str, requested) -> str:
     account = str(requested or "").strip().lower()
     if account and account not in _ACCOUNTS:
-        raise ValueError("Choose either the personal or school Gmail account.")
+        raise ValueError(f"Choose {_account_choices(_ACCOUNTS)}.")
     if account:
         return account
     connected = _connected_accounts()
     if action == "connect":
-        raise ValueError("Which account should I connect: personal Gmail or school Gmail?")
+        raise ValueError(f"Which account should I connect: {_account_choices(_ACCOUNTS)}?")
     if len(connected) == 1:
         return connected[0]
     if len(connected) > 1:
-        raise ValueError("Both Gmail accounts are connected. Say personal Gmail or school Gmail.")
-    raise RuntimeError("Gmail is not connected. Ask me to connect personal Gmail or school Gmail first.")
+        count = "Both" if len(connected) == 2 else "Multiple"
+        raise ValueError(f"{count} Gmail accounts are connected. Say {_account_choices(connected)}.")
+    raise RuntimeError(f"Gmail is not connected. Ask me to connect {_account_choices(_ACCOUNTS)} first.")
 
 
 def _write_token(creds, token: Path) -> None:
@@ -145,7 +155,8 @@ def _service(account: str, *, allow_login: bool = False):
                     "and save it as config/gmail_credentials.json, then ask me to connect Gmail."
                 )
             flow = InstalledAppFlow.from_client_secrets_file(str(_CREDENTIALS), _SCOPES)
-            creds = flow.run_local_server(host="127.0.0.1", port=0, open_browser=True)
+            creds = flow.run_local_server(host="127.0.0.1", port=0, open_browser=True,
+                                          prompt="consent select_account")
             _write_token(creds, token)
     return build("gmail", "v1", credentials=creds, cache_discovery=False)
 

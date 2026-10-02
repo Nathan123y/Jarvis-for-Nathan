@@ -27,10 +27,19 @@ and reopen `~/Applications/Jarvis.app`. No app reinstall is needed. Confirm
    The tool adds a tagged product link. See the current price on Gumroad;
    the proposed $12 launch price is not hard-coded into pitches.
 5. To send, fill in **Settings → Plugin Settings → Product promotion** once:
-   Gmail account (`personal` or `school`), sender/business name, and a valid
+   Gmail account (`personal`, `school`, or `spam`), sender/business name, and a valid
    business postal address. Then say **“Send product pitch [draft ID].”**
    Review the complete email and press **CONFIRM** on the Jarvis window.
    The send is blocked without a full preview, connection, or confirmation.
+
+For a separate promotion address, say **“Connect my spam Gmail.”** Choose your
+actual dedicated Gmail address in Google's account chooser and approve access.
+`spam` is Jarvis's local account label; it does not create a Google account or
+change the email address recipients see. Confirm Jarvis reports the intended
+address, then set the promotion Gmail account field to `spam` and save. Say
+**“Send that product pitch from my spam Gmail.”** Its OAuth token is stored
+separately in ignored `config/gmail_spam_token.json`. The sender name and postal
+address fields are still required. Check that inbox for replies and opt-outs.
 
 Use Gumroad's seller test purchase to check the uploaded ZIP and download before
 launching promotion. Keep the existing standard product page; the custom
@@ -39,7 +48,7 @@ landing page is not required. Gumroad handles checkout and file delivery.
 ## Contact history and replies
 
 Say **“Show my product promotion status.”** Sent contacts cannot receive another
-first pitch through this plugin. After checking personal/school Gmail, record
+first pitch through this plugin. After checking the sending Gmail inbox, record
 an outcome: **“Mark [email] replied / bought / do not contact.”** An opt-out stays
 blocked even if the same address is rediscovered with different capitalization.
 Customer replies and support use the existing Gmail tools and their approval.

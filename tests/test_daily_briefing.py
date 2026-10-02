@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, call, patch
 
 from plugins import daily_briefing as briefing
 
@@ -90,6 +90,33 @@ class BriefingTests(unittest.TestCase):
         self.assertEqual(service.messages_obj.metadata_args["format"], "metadata")
         self.assertEqual(found, [("school", 1, [("Teacher", "Assignment")])])
         self.assertEqual(notices, [])
+
+    def test_gmail_briefing_includes_the_separate_spam_inbox_without_login(self):
+        from plugins import gmail
+
+        accounts = ["personal", "school", "spam"]
+        services = {}
+        for account in accounts:
+            service = MagicMock()
+            api = service.users.return_value.messages.return_value
+            api.list.return_value.execute.return_value = {"messages": [{"id": f"{account}-123"}]}
+            api.get.return_value.execute.return_value = {"payload": {"headers": [
+                {"name": "From", "value": f"{account} sender"},
+                {"name": "Subject", "value": f"{account} subject"},
+            ]}}
+            services[account] = service
+
+        with patch.object(briefing, "get_plugin_enabled", return_value=True), \
+                patch.object(gmail, "_connected_accounts", return_value=accounts), \
+                patch.object(gmail, "_service", side_effect=lambda account, **kwargs: services[account]) as connect:
+            found, notices = briefing._gmail()
+        self.assertEqual(connect.call_args_list, [call(account, allow_login=False) for account in accounts])
+        self.assertEqual(found, [(account, 1, [(f"{account} sender", f"{account} subject")]) for account in accounts])
+        self.assertEqual(notices, [])
+        for account, service in services.items():
+            service.users().messages().get.assert_called_once_with(
+                userId="me", id=f"{account}-123", format="metadata", metadataHeaders=["From", "Subject"]
+            )
 
 
 if __name__ == "__main__":
