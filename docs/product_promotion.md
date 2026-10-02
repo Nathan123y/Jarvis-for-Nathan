@@ -121,9 +121,19 @@ and unresolved writes.
 
 The uploader connects published URLs to ignored local
 `config/product_sales/catalog_links.json`. For products published manually, ask
-"Sync my Gumroad product catalog" (`action=sync`). Sync matches exact unique
-catalog names and only accepts explicit published status and Gumroad URLs.
+"Sync my Gumroad product catalog" (`action=sync`). Sync matches unique catalog
+names while ignoring capitalization and repeated spaces, and only accepts
+explicit published status and Gumroad URLs. Changed wording is never guessed.
 Unpublished listings or ambiguous names are not connected.
+When a list entry omits its URL or publication status, sync reads that listing
+by its actual product ID and verifies the identity before binding its URL.
+A failed or mismatched detail lookup preserves the current links.
+The on-screen sync report includes how many listings Gumroad returned, the
+names it observed, and separate reasons for unpublished, unmatched, duplicate,
+or unverified products. Zero matches is not an accessibility-permission or API
+key diagnosis. If names differ, compare those returned names with the catalog;
+use the same wording or explicitly resolve which buyer bundle a renamed listing
+contains before connecting it. Sync never publishes products or sends email.
 
 Examples:
 

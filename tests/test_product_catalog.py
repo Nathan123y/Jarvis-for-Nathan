@@ -3,7 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from plugins import product_sales as sales
 
 class CatalogTests(unittest.TestCase):
@@ -64,5 +64,96 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(cli.call_args_list[0].args[0],['products','view','tutor'])
         self.assertIn('TID',cli.call_args_list[1].args[0])
         self.assertIn('0 reported orders',text)
+
+    def test_missing_list_url_is_resolved_by_verified_product_id(self):
+        listing={'id':'TID','name':'Tutor Session Organizer','published':True}
+        detail=dict(listing,short_url='https://example.gumroad.com/l/tutor')
+        with patch.object(sales,'_cli_json',side_effect=[{'products':[listing]},{'product':detail}]) as cli:
+            text=sales.run({'action':'sync'})
+        self.assertIn('Connected 1',text)
+        self.assertEqual(cli.call_args_list[1].args[0],['products','view','TID'])
+        self.assertEqual(sales._product({'product':'tutor-sessions'})['url'],detail['short_url'])
+
+    def test_missing_status_is_verified_and_draft_is_not_connected(self):
+        listing={'id':'TID','name':'Tutor Session Organizer','short_url':'https://example.gumroad.com/l/tutor'}
+        detail=dict(listing,published=False)
+        with patch.object(sales,'_cli_json',side_effect=[{'products':[listing]},{'result':{'product':detail}}]):
+            text=sales.run({'action':'sync'})
+        self.assertIn('Connected 0',text)
+        self.assertIn('Not published yet: Tutor Session Organizer',text)
+        self.assertEqual(sales._product({'product':'tutor-sessions'})['url'],'')
+
+    def test_manual_name_capitalization_and_spaces_match_without_guessing(self):
+        listing={'name':'  TUTOR   session Organizer  ','published':True,'short_url':'https://example.gumroad.com/l/tutor'}
+        with patch.object(sales,'_cli_json',return_value={'products':[listing]}) as cli:
+            text=sales.run({'action':'sync'})
+        self.assertIn('Connected 1',text)
+        self.assertEqual(cli.call_count,1)
+
+    def test_normalized_duplicate_names_remain_ambiguous(self):
+        records=[{'name':name,'published':True,'short_url':'https://example.gumroad.com/l/'+str(i)}
+                 for i,name in enumerate(['Tutor Session Organizer',' TUTOR  session organizer '])]
+        with patch.object(sales,'_cli_json',return_value={'products':records}):
+            text=sales.run({'action':'sync'})
+        self.assertIn('Connected 0',text)
+        self.assertIn('Resolve duplicate product names: Tutor Session Organizer',text)
+        self.assertEqual(sales._product({'product':'tutor-sessions'})['url'],'')
+
+    def test_changed_wording_reports_observed_names_and_successful_access(self):
+        records=[{'name':'My Tutor Planner','published':True,'short_url':'https://example.gumroad.com/l/tutor'}]
+        with patch.object(sales,'_cli_json',return_value={'products':records}):
+            text=sales.run({'action':'sync'})
+        self.assertIn('Connected 0',text)
+        self.assertIn('Gumroad returned 1 seller listings successfully',text)
+        self.assertIn('No matching catalog name:',text)
+        self.assertIn('My Tutor Planner [published]',text)
+        self.assertNotIn('API key',text)
+        self.assertEqual(sales._product({'product':'tutor-sessions'})['url'],'')
+
+    def test_zero_due_to_drafts_is_explained_and_shown_on_screen(self):
+        records=[{'name':'Tutor Session Organizer','published':False}]
+        player=MagicMock()
+        with patch.object(sales,'_cli_json',return_value={'products':records}):
+            text=sales.run({'action':'sync'},player=player)
+        self.assertIn('Not published yet: Tutor Session Organizer',text)
+        self.assertIn('Tutor Session Organizer [draft]',text)
+        player.show_content.assert_called_once_with('GUMROAD CATALOG SYNC',text[:3900])
+
+    def test_failed_detail_lookup_preserves_existing_bindings(self):
+        sales._write_links({'cleaning-jobs':{'published':True,'url':'https://example.gumroad.com/l/clean'}})
+        before=self.links.read_bytes()
+        records=[{'id':'TID','name':'Tutor Session Organizer','published':True}]
+        with patch.object(sales,'_cli_json',side_effect=[{'products':records},RuntimeError('Detail lookup unavailable')]):
+            text=sales.run({'action':'sync'})
+        self.assertIn('Existing links were preserved',text)
+        self.assertNotIn('Connected 0',text)
+        self.assertEqual(self.links.read_bytes(),before)
+
+    def test_detail_lookup_cannot_bind_a_different_product(self):
+        sales._write_links({'cleaning-jobs':{'published':True,'url':'https://example.gumroad.com/l/clean'}})
+        before=self.links.read_bytes()
+        record={'id':'TID','name':'Tutor Session Organizer','published':True}
+        wrong={'id':'OTHER','name':'Tutor Session Organizer','published':True,'short_url':'https://example.gumroad.com/l/other'}
+        with patch.object(sales,'_cli_json',side_effect=[{'products':[record]},{'product':wrong}]):
+            text=sales.run({'action':'sync'})
+        self.assertIn('did not match',text)
+        self.assertEqual(self.links.read_bytes(),before)
+
+    def test_malformed_catalog_does_not_replace_links(self):
+        sales._write_links({'cleaning-jobs':{'published':True,'url':'https://example.gumroad.com/l/clean'}})
+        before=self.links.read_bytes()
+        with patch.object(sales,'_cli_json',return_value={'products':[None]}):
+            text=sales.run({'action':'sync'})
+        self.assertIn('unexpected catalog',text)
+        self.assertEqual(self.links.read_bytes(),before)
+
+    def test_conflicting_publication_flags_require_verification(self):
+        record={'name':'Tutor Session Organizer','published':True,'is_published':False,
+                'short_url':'https://example.gumroad.com/l/tutor'}
+        with patch.object(sales,'_cli_json',return_value={'products':[record]}):
+            text=sales.run({'action':'sync'})
+        self.assertIn('Connected 0',text)
+        self.assertIn('published status missing',text)
+        self.assertEqual(sales._product({'product':'tutor-sessions'})['url'],'')
 
 if __name__=='__main__':unittest.main()
