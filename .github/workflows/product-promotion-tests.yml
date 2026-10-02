@@ -4,6 +4,10 @@ on:
     paths:
       - ".github/workflows/product-promotion-tests.yml"
       - "plugins/product_sales.py"
+      - "data/product_catalog.json"
+      - "tests/test_product_catalog.py"
+      - "tools/upload_gumroad_catalog.py"
+      - "tests/test_product_catalog_upload.py"
       - "plugins/gmail.py"
       - "plugins/daily_briefing.py"
       - "core/confirm.py"
@@ -29,3 +33,5 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_gmail.py' -v
       - name: Gmail briefing tests
         run: python3 -m unittest discover -s tests -p 'test_daily_briefing.py' -v
+      - name: Product selection and publication checks
+        run: python3 -m unittest discover -s tests -p 'test_product_catalog*.py' -v

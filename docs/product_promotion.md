@@ -92,3 +92,37 @@ and sends instead of silently resetting the records.
 Run `python3 -m unittest discover -s tests -p 'test_product_sales.py'` and the
 existing `test_gmail.py` suite. Tests replace Gmail and Gumroad calls; a real
 approved Mac email and real seller sales login still need an owner-side check.
+
+## Choosing another product
+
+`product_sales` now includes the original Soccer Coach Organizer and 15 more
+Excel/PDF organizers. Ask "Show my products" (`action=products`) and select an
+exact name or ID with the `product` parameter. `brief` and `research` work before
+publication. `draft`, `campaign` and `sales` require a verified published link.
+
+The seller launch pack contains 15 separate customer ZIPs and the uploader.
+From the extracted pack on the Mac, run `python3 upload_products.py --create` to
+create drafts with downloads, descriptions, covers, previews and thumbnails.
+Open each draft and use Gumroad's test-purchase feature to verify checkout and
+the actual downloaded files. Then use `python3 upload_products.py --publish
+--tested`. The CLI login stays local. The uploader checkpoints uncertain writes
+and stops rather than risking duplicate uploads. It never emails prospects.
+
+The uploader connects published URLs to ignored local
+`config/product_sales/catalog_links.json`. For products published manually, ask
+"Sync my Gumroad product catalog" (`action=sync`). Sync matches exact unique
+catalog names and only accepts explicit published status and Gumroad URLs.
+Unpublished listings or ambiguous names are not connected.
+
+Examples:
+
+- "Find independent tutors near San Jose for Tutor Session Organizer."
+- "Draft a Tutor Session Organizer pitch for this verified contact."
+- "Check Tutor Session Organizer sales for the last 30 days."
+
+Drafts retain their product name and link even if another product is selected
+later. Contact history and opt-outs are shared across the catalog. Switching
+products does not make a previously pitched contact eligible for another first
+pitch. Gmail sends still require the complete on-screen review and confirmation.
+The new products have 100 prepared rows per working sheet and require desktop
+Excel; their bundled facts describe their actual files and limits.
