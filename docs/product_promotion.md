@@ -135,6 +135,25 @@ key diagnosis. If names differ, compare those returned names with the catalog;
 use the same wording or explicitly resolve which buyer bundle a renamed listing
 contains before connecting it. Sync never publishes products or sends email.
 
+For a renamed listing, say **"Connect Photographer Booking Organizer to this
+Gumroad link: [public product URL]."** (`action=link`,
+`product=photographer-bookings`, `product_url=https://seller.gumroad.com/l/permalink`).
+Select the actual catalog bundle the listing sells; different words alone are
+not evidence that two products contain the same files. The tool reads the listing
+through the local seller login, verifies its published status and public URL,
+and saves its canonical Gumroad ID and title in private configuration. It keeps
+other connected links. A failed login or invalid/unpublished listing leaves the
+file unchanged. It never creates, renames, publishes, or sends anything.
+Then ask "Show my products" or request a brief to check the connected URL.
+The exact connected Gumroad title can also select the product, unless that
+title conflicts with another catalog choice; use the catalog ID in that case.
+
+Future syncs check deliberately mapped listings by their saved Gumroad ID,
+even when the title or permalink changes. An unpublished or missing mapped
+listing is disabled for promotion while its mapping is retained for recovery.
+The original Soccer Coach Organizer purchase link is unchanged. Email drafts
+retain their original product snapshot and sends still require confirmation.
+
 Examples:
 
 - "Find independent tutors near San Jose for Tutor Session Organizer."
