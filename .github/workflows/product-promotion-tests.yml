@@ -14,6 +14,7 @@ on:
       - "core/plugin_loader.py"
       - "memory/config_manager.py"
       - "tests/test_product_sales.py"
+      - "tests/test_website_service.py"
       - "tests/test_gmail.py"
       - "tests/test_daily_briefing.py"
 permissions:
@@ -31,6 +32,8 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_product_sales.py' -v
       - name: Existing Gmail tests
         run: python3 -m unittest discover -s tests -p 'test_gmail.py' -v
+      - name: Website service workflow tests
+        run: python3 -m unittest discover -s tests -p 'test_website_service.py' -v
       - name: Gmail briefing tests
         run: python3 -m unittest discover -s tests -p 'test_daily_briefing.py' -v
       - name: Product selection and publication checks

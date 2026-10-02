@@ -16,9 +16,10 @@ class CatalogTests(unittest.TestCase):
     def tearDown(self):
         for p in self.patches:p.stop()
         self.directory.cleanup()
-    def test_sixteen_distinct_products_and_unpublished_pitch_gate(self):
-        self.assertEqual(len(sales._catalog()),16)
-        self.assertEqual(len({p['id'] for p in sales._catalog()}),16)
+    def test_sixteen_downloads_plus_website_service_and_unpublished_pitch_gate(self):
+        self.assertEqual(len(sales._catalog()),17)
+        self.assertEqual(len({p['id'] for p in sales._catalog()}),17)
+        self.assertEqual(len([p for p in sales._catalog() if p.get('kind') != 'service']),16)
         self.assertIn('100 prepared rows',sales.run({'action':'brief','product':'tutor-sessions'}))
         text=sales.run({'action':'campaign','product':'tutor-sessions'})
         self.assertIn('no verified published',text)
