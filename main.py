@@ -1586,6 +1586,9 @@ class JarvisLive:
                 self.request_reconnect(keep_context=True, reason="tool response failure")
             finally:
                 self._pending_tool_batches -= 1
+                if not closing and self._pending_tool_batches == 0:
+                    # Give the answer a fresh idle window after a long tool.
+                    self._last_user_speech = time.monotonic()
                 if not closing and not self.ui.muted:
                     self._set_ui_state("LISTENING", "tool_batch_finished")
 

@@ -62,6 +62,15 @@ class VoiceReceiveTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(started.wait(), 1)
             self.assertEqual(await asyncio.wait_for(player.audio_in_queue.get(), 1), voice)
             self.assertEqual(player._pending_tool_batches, 1)
+            before = time.monotonic()
+            player._last_user_speech = before - 200
+            release.set()
+            for _ in range(30):
+                if player._pending_tool_batches == 0:
+                    break
+                await asyncio.sleep(0.01)
+            self.assertEqual(player._pending_tool_batches, 0)
+            self.assertGreaterEqual(player._last_user_speech, before)
         finally:
             release.set()
             task.cancel()

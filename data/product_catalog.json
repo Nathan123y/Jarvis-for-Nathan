@@ -1,0 +1,392 @@
+[
+  {
+    "id": "soccer-tournament",
+    "name": "Soccer Tournament Organizer",
+    "subtitle": "Fixtures, results and group points in one workbook.",
+    "audience": "small soccer tournament organisers",
+    "query": "soccer tournament organizers official contact",
+    "facts": "Fixtures, results and group points in one workbook. Four sheets: Overview, Teams, Fixtures, Group Points. Each working sheet has 100 prepared rows. Includes blank and fictional-example Excel workbooks, a quick-start PDF and a printable worksheet. Desktop Excel required, sold separately. Google Sheets and Numbers compatibility unverified. No macros, automatic imports, messages or payment collection. Enter both goal values, including zero, only after a match. Times are text. Group points do not resolve tie-breaks. Type each team once. Points: 3 per win, 1 per draw. No automatic ranking, brackets or tie-break logic.",
+    "angles": [
+      [
+        "overview",
+        "Fixtures, results and group points in one workbook.",
+        "Fixtures, results and group points in one workbook. Four sheets: Overview, Teams, Fixtures, Group Points. "
+      ],
+      [
+        "workflow",
+        "A practical place for your records.",
+        "Use the Teams and Fixtures sheets to keep your own records together."
+      ],
+      [
+        "planning",
+        "Keep the next step visible.",
+        "The Group Points sheet and printable worksheet support your own planning and follow-up."
+      ]
+    ],
+    "url": ""
+  },
+  {
+    "id": "soccer-camp",
+    "name": "Soccer Camp Organizer",
+    "subtitle": "Track enrolment, group capacity and your own sessions.",
+    "audience": "independent soccer camps and coaches",
+    "query": "soccer camps official coaching contact",
+    "facts": "Track enrolment, group capacity and your own sessions. Four sheets: Overview, Groups, Enrolment, Session Plan. Each working sheet has 100 prepared rows. Includes blank and fictional-example Excel workbooks, a quick-start PDF and a printable worksheet. Desktop Excel required, sold separately. Google Sheets and Numbers compatibility unverified. No macros, automatic imports, messages or payment collection. Negative spaces means over capacity. Every entered enrolment counts; remove cancelled registrations. Use participant codes; keep medical, safeguarding and emergency records in an appropriate separate system.",
+    "angles": [
+      [
+        "overview",
+        "Track enrolment, group capacity and your own sessions.",
+        "Track enrolment, group capacity and your own sessions. Four sheets: Overview, Groups, Enrolment, Session Plan. "
+      ],
+      [
+        "workflow",
+        "A practical place for your records.",
+        "Use the Groups and Enrolment sheets to keep your own records together."
+      ],
+      [
+        "planning",
+        "Keep the next step visible.",
+        "The Session Plan sheet and printable worksheet support your own planning and follow-up."
+      ]
+    ],
+    "url": ""
+  },
+  {
+    "id": "private-coaching",
+    "name": "Private Coaching Client Organizer",
+    "subtitle": "Keep purchased session credits and completed visits together.",
+    "audience": "independent sports coaches",
+    "query": "private sports coaching official contact",
+    "facts": "Keep purchased session credits and completed visits together. Four sheets: Overview, Clients, Sessions, Payments. Each working sheet has 100 prepared rows. Includes blank and fictional-example Excel workbooks, a quick-start PDF and a printable worksheet. Desktop Excel required, sold separately. Google Sheets and Numbers compatibility unverified. No macros, automatic imports, messages or payment collection. Each Completed row uses one credit regardless of duration. Negative credits means more sessions used than bought.",
+    "angles": [
+      [
+        "overview",
+        "Keep purchased session credits and completed visits together.",
+        "Keep purchased session credits and completed visits together. Four sheets: Overview, Clients, Sessions, Payments. "
+      ],
+      [
+        "workflow",
+        "A practical place for your records.",
+        "Use the Clients and Sessions sheets to keep your own records together."
+      ],
+      [
+        "planning",
+        "Keep the next step visible.",
+        "The Payments sheet and printable worksheet support your own planning and follow-up."
+      ]
+    ],
+    "url": ""
+  },
+  {
+    "id": "team-fundraiser",
+    "name": "Team Fundraiser Organizer",
+    "subtitle": "Track stock, sales, collections and campaign costs.",
+    "audience": "sports booster clubs and parent organisers",
+    "query": "sports booster clubs fundraiser official contact",
+    "facts": "Track stock, sales, collections and campaign costs. Four sheets: Overview, Items, Sales, Costs. Each working sheet has 100 prepared rows. Includes blank and fictional-example Excel workbooks, a quick-start PDF and a printable worksheet. Desktop Excel required, sold separately. Google Sheets and Numbers compatibility unverified. No macros, automatic imports, messages or payment collection. ",
+    "angles": [
+      [
+        "overview",
+        "Track stock, sales, collections and campaign costs.",
+        "Track stock, sales, collections and campaign costs. Four sheets: Overview, Items, Sales, Costs. "
+      ],
+      [
+        "workflow",
+        "A practical place for your records.",
+        "Use the Items and Sales sheets to keep your own records together."
+      ],
+      [
+        "planning",
+        "Keep the next step visible.",
+        "The Costs sheet and printable worksheet support your own planning and follow-up."
+      ]
+    ],
+    "url": ""
+  },
+  {
+    "id": "tutor-sessions",
+    "name": "Tutor Session Organizer",
+    "subtitle": "Plan lessons, calculate time-based charges and log learning notes.",
+    "audience": "independent tutors and small tutoring groups",
+    "query": "independent tutoring centers official contact",
+    "facts": "Plan lessons, calculate time-based charges and log learning notes. Four sheets: Overview, Students, Sessions, Learning Notes. Each working sheet has 100 prepared rows. Includes blank and fictional-example Excel workbooks, a quick-start PDF and a printable worksheet. Desktop Excel required, sold separately. Google Sheets and Numbers compatibility unverified. No macros, automatic imports, messages or payment collection. Only Completed sessions generate a charge. Paid is entered manually; no invoices or payments are sent.",
+    "angles": [
+      [
+        "overview",
+        "Plan lessons, calculate time-based charges and log learning notes.",
+        "Plan lessons, calculate time-based charges and log learning notes. Four sheets: Overview, Students, Sessions, Learning Notes. "
+      ],
+      [
+        "workflow",
+        "A practical place for your records.",
+        "Use the Students and Sessions sheets to keep your own records together."
+      ],
+      [
+        "planning",
+        "Keep the next step visible.",
+        "The Learning Notes sheet and printable worksheet support your own planning and follow-up."
+      ]
+    ],
+    "url": ""
+  },
+  {
+    "id": "music-lessons",
+    "name": "Music Lesson Studio Organizer",
+    "subtitle": "Track weekly slots, practice tasks and lesson balances.",
+    "audience": "private music teachers and small studios",
+    "query": "private music lessons studio official contact",
+    "facts": "Track weekly slots, practice tasks and lesson balances. Four sheets: Overview, Students, Lesson Ledger, Practice Log. Each working sheet has 100 prepared rows. Includes blank and fictional-example Excel workbooks, a quick-start PDF and a printable worksheet. Desktop Excel required, sold separately. Google Sheets and Numbers compatibility unverified. No macros, automatic imports, messages or payment collection. Fee is entered per lesson; it is not automatically copied from Students. Scheduled and Cancelled rows have zero balance.",
+    "angles": [
+      [
+        "overview",
+        "Track weekly slots, practice tasks and lesson balances.",
+        "Track weekly slots, practice tasks and lesson balances. Four sheets: Overview, Students, Lesson Ledger, Practice Log. "
+      ],
+      [
+        "workflow",
+        "A practical place for your records.",
+        "Use the Students and Lesson Ledger sheets to keep your own records together."
+      ],
+      [
+        "planning",
+        "Keep the next step visible.",
+        "The Practice Log sheet and printable worksheet support your own planning and follow-up."
+      ]
+    ],
+    "url": ""
+  },
+  {
+    "id": "cleaning-jobs",
+    "name": "Cleaning Business Job Organizer",
+    "subtitle": "Keep job quotes, direct costs and follow-up tasks visible.",
+    "audience": "independent residential cleaning operators",
+    "query": "local residential cleaning company official contact",
+    "facts": "Keep job quotes, direct costs and follow-up tasks visible. Four sheets: Overview, Clients, Jobs, Follow-up. Each working sheet has 100 prepared rows. Includes blank and fictional-example Excel workbooks, a quick-start PDF and a printable worksheet. Desktop Excel required, sold separately. Google Sheets and Numbers compatibility unverified. No macros, automatic imports, messages or payment collection. Contribution = quote less entered direct cost; it excludes unentered labour, overhead and tax. Remove cancelled quote amounts from summaries.",
+    "angles": [
+      [
+        "overview",
+        "Keep job quotes, direct costs and follow-up tasks visible.",
+        "Keep job quotes, direct costs and follow-up tasks visible. Four sheets: Overview, Clients, Jobs, Follow-up. "
+      ],
+      [
+        "workflow",
+        "A practical place for your records.",
+        "Use the Clients and Jobs sheets to keep your own records together."
+      ],
+      [
+        "planning",
+        "Keep the next step visible.",
+        "The Follow-up sheet and printable worksheet support your own planning and follow-up."
+      ]
+    ],
+    "url": ""
+  },
+  {
+    "id": "mobile-detailing",
+    "name": "Mobile Car Detailing Organizer",
+    "subtitle": "Plan packages, add-ons, materials and job collections.",
+    "audience": "independent mobile vehicle detailers",
+    "query": "mobile car detailing business official contact",
+    "facts": "Plan packages, add-ons, materials and job collections. Four sheets: Overview, Packages, Job Ledger, Appointments. Each working sheet has 100 prepared rows. Includes blank and fictional-example Excel workbooks, a quick-start PDF and a printable worksheet. Desktop Excel required, sold separately. Google Sheets and Numbers compatibility unverified. No macros, automatic imports, messages or payment collection. Enter the agreed base and add-on amounts manually. Contribution excludes labour, travel, overhead and taxes.",
+    "angles": [
+      [
+        "overview",
+        "Plan packages, add-ons, materials and job collections.",
+        "Plan packages, add-ons, materials and job collections. Four sheets: Overview, Packages, Job Ledger, Appointments. "
+      ],
+      [
+        "workflow",
+        "A practical place for your records.",
+        "Use the Packages and Job Ledger sheets to keep your own records together."
+      ],
+      [
+        "planning",
+        "Keep the next step visible.",
+        "The Appointments sheet and printable worksheet support your own planning and follow-up."
+      ]
+    ],
+    "url": ""
+  },
+  {
+    "id": "pet-care",
+    "name": "Pet Care Booking Organizer",
+    "subtitle": "Coordinate visits, durations and booking balances.",
+    "audience": "independent pet sitters and dog walkers",
+    "query": "pet sitter dog walker business official contact",
+    "facts": "Coordinate visits, durations and booking balances. Four sheets: Overview, Clients, Visits, Visit Notes. Each working sheet has 100 prepared rows. Includes blank and fictional-example Excel workbooks, a quick-start PDF and a printable worksheet. Desktop Excel required, sold separately. Google Sheets and Numbers compatibility unverified. No macros, automatic imports, messages or payment collection. Keep medical, emergency and access-key records in a suitable separate secure system. All entered rows count in scheduled charges. Set zero in unused fee fields. Remove cancelled charges manually.",
+    "angles": [
+      [
+        "overview",
+        "Coordinate visits, durations and booking balances.",
+        "Coordinate visits, durations and booking balances. Four sheets: Overview, Clients, Visits, Visit Notes. "
+      ],
+      [
+        "workflow",
+        "A practical place for your records.",
+        "Use the Clients and Visits sheets to keep your own records together."
+      ],
+      [
+        "planning",
+        "Keep the next step visible.",
+        "The Visit Notes sheet and printable worksheet support your own planning and follow-up."
+      ]
+    ],
+    "url": ""
+  },
+  {
+    "id": "lawn-care",
+    "name": "Lawn Care Route Organizer",
+    "subtitle": "Order visits manually and track job collections.",
+    "audience": "independent lawn care and garden maintenance operators",
+    "query": "lawn care garden maintenance business official contact",
+    "facts": "Order visits manually and track job collections. Four sheets: Overview, Properties, Route Plan, Job Money. Each working sheet has 100 prepared rows. Includes blank and fictional-example Excel workbooks, a quick-start PDF and a printable worksheet. Desktop Excel required, sold separately. Google Sheets and Numbers compatibility unverified. No macros, automatic imports, messages or payment collection. Stop order is manual. No maps, route optimisation, travel-time or weather data. Quote less direct costs excludes labour, overhead and taxes. All entered rows count in totals.",
+    "angles": [
+      [
+        "overview",
+        "Order visits manually and track job collections.",
+        "Order visits manually and track job collections. Four sheets: Overview, Properties, Route Plan, Job Money. "
+      ],
+      [
+        "workflow",
+        "A practical place for your records.",
+        "Use the Properties and Route Plan sheets to keep your own records together."
+      ],
+      [
+        "planning",
+        "Keep the next step visible.",
+        "The Job Money sheet and printable worksheet support your own planning and follow-up."
+      ]
+    ],
+    "url": ""
+  },
+  {
+    "id": "photographer-bookings",
+    "name": "Photographer Booking Organizer",
+    "subtitle": "See shoot deposits, remaining balances and delivery tasks.",
+    "audience": "independent portrait and event photographers",
+    "query": "portrait photography studio official contact",
+    "facts": "See shoot deposits, remaining balances and delivery tasks. Four sheets: Overview, Bookings, Deliverables, Shoot Plan. Each working sheet has 100 prepared rows. Includes blank and fictional-example Excel workbooks, a quick-start PDF and a printable worksheet. Desktop Excel required, sold separately. Google Sheets and Numbers compatibility unverified. No macros, automatic imports, messages or payment collection. Deposit and Other paid must be disjoint actual collections. All entered rows count in fees.",
+    "angles": [
+      [
+        "overview",
+        "See shoot deposits, remaining balances and delivery tasks.",
+        "See shoot deposits, remaining balances and delivery tasks. Four sheets: Overview, Bookings, Deliverables, Shoot Plan. "
+      ],
+      [
+        "workflow",
+        "A practical place for your records.",
+        "Use the Bookings and Deliverables sheets to keep your own records together."
+      ],
+      [
+        "planning",
+        "Keep the next step visible.",
+        "The Shoot Plan sheet and printable worksheet support your own planning and follow-up."
+      ]
+    ],
+    "url": ""
+  },
+  {
+    "id": "freelance-projects",
+    "name": "Freelance Project Organizer",
+    "subtitle": "Compare hour budgets with time logs and project balances.",
+    "audience": "solo creative and professional freelancers",
+    "query": "freelance designer small creative studio official contact",
+    "facts": "Compare hour budgets with time logs and project balances. Four sheets: Overview, Projects, Time Log, Milestones. Each working sheet has 100 prepared rows. Includes blank and fictional-example Excel workbooks, a quick-start PDF and a printable worksheet. Desktop Excel required, sold separately. Google Sheets and Numbers compatibility unverified. No macros, automatic imports, messages or payment collection. Hour budget is a planning target, not a billing calculation. Agreed fee and Paid are manual.",
+    "angles": [
+      [
+        "overview",
+        "Compare hour budgets with time logs and project balances.",
+        "Compare hour budgets with time logs and project balances. Four sheets: Overview, Projects, Time Log, Milestones. "
+      ],
+      [
+        "workflow",
+        "A practical place for your records.",
+        "Use the Projects and Time Log sheets to keep your own records together."
+      ],
+      [
+        "planning",
+        "Keep the next step visible.",
+        "The Milestones sheet and printable worksheet support your own planning and follow-up."
+      ]
+    ],
+    "url": ""
+  },
+  {
+    "id": "craft-fair",
+    "name": "Craft Fair Vendor Organizer",
+    "subtitle": "Track stock movements and sales contribution for a stall.",
+    "audience": "independent makers and craft-market stallholders",
+    "query": "craft market artisan vendor official contact",
+    "facts": "Track stock movements and sales contribution for a stall. Four sheets: Overview, Stock, Sales, Event Costs. Each working sheet has 100 prepared rows. Includes blank and fictional-example Excel workbooks, a quick-start PDF and a printable worksheet. Desktop Excel required, sold separately. Google Sheets and Numbers compatibility unverified. No macros, automatic imports, messages or payment collection. Starting and added stock are manual. Negative units left indicates overselling or a data mismatch. Enter actual sales only. Contribution excludes market fees, labour, overhead and tax; unit cost is entered per sale.",
+    "angles": [
+      [
+        "overview",
+        "Track stock movements and sales contribution for a stall.",
+        "Track stock movements and sales contribution for a stall. Four sheets: Overview, Stock, Sales, Event Costs. "
+      ],
+      [
+        "workflow",
+        "A practical place for your records.",
+        "Use the Stock and Sales sheets to keep your own records together."
+      ],
+      [
+        "planning",
+        "Keep the next step visible.",
+        "The Event Costs sheet and printable worksheet support your own planning and follow-up."
+      ]
+    ],
+    "url": ""
+  },
+  {
+    "id": "workshops",
+    "name": "Workshop and Class Organizer",
+    "subtitle": "Monitor seats, registrations, fees and your class plan.",
+    "audience": "independent workshop hosts and community class organisers",
+    "query": "local art workshop class organizer official contact",
+    "facts": "Monitor seats, registrations, fees and your class plan. Four sheets: Overview, Classes, Registrations, Class Plan. Each working sheet has 100 prepared rows. Includes blank and fictional-example Excel workbooks, a quick-start PDF and a printable worksheet. Desktop Excel required, sold separately. Google Sheets and Numbers compatibility unverified. No macros, automatic imports, messages or payment collection. Each registration row represents one seat. Every row counts; remove cancellations. Negative seats means overbooked.",
+    "angles": [
+      [
+        "overview",
+        "Monitor seats, registrations, fees and your class plan.",
+        "Monitor seats, registrations, fees and your class plan. Four sheets: Overview, Classes, Registrations, Class Plan. "
+      ],
+      [
+        "workflow",
+        "A practical place for your records.",
+        "Use the Classes and Registrations sheets to keep your own records together."
+      ],
+      [
+        "planning",
+        "Keep the next step visible.",
+        "The Class Plan sheet and printable worksheet support your own planning and follow-up."
+      ]
+    ],
+    "url": ""
+  },
+  {
+    "id": "volunteer-events",
+    "name": "Volunteer Event Organizer",
+    "subtitle": "Match volunteer assignments to shift slots and hours.",
+    "audience": "community volunteer coordinators and small event organisers",
+    "query": "community volunteer event organizer official contact",
+    "facts": "Match volunteer assignments to shift slots and hours. Four sheets: Overview, Shifts, Assignments, Event Tasks. Each working sheet has 100 prepared rows. Includes blank and fictional-example Excel workbooks, a quick-start PDF and a printable worksheet. Desktop Excel required, sold separately. Google Sheets and Numbers compatibility unverified. No macros, automatic imports, messages or payment collection. Each assignment row fills one slot. Remove cancelled assignments; no clash or eligibility checks are automatic. Hours are manually entered; shift hours are not copied automatically. No check-in messages are sent.",
+    "angles": [
+      [
+        "overview",
+        "Match volunteer assignments to shift slots and hours.",
+        "Match volunteer assignments to shift slots and hours. Four sheets: Overview, Shifts, Assignments, Event Tasks. "
+      ],
+      [
+        "workflow",
+        "A practical place for your records.",
+        "Use the Shifts and Assignments sheets to keep your own records together."
+      ],
+      [
+        "planning",
+        "Keep the next step visible.",
+        "The Event Tasks sheet and printable worksheet support your own planning and follow-up."
+      ]
+    ],
+    "url": ""
+  }
+]
