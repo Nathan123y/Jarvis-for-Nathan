@@ -82,6 +82,7 @@ from core.action_loader        import discover_actions
 from core.echo                 import EchoGuard
 from core.playback_timing      import playback_idle
 from core.perf_trace          import log_audio_in_status, log_audio_write, log_launch_context, log_state_transition
+from core.live_session        import seconds_until_go_away, exception_details, is_expected_session_expiry
 from core.viseme               import VisemeStream
 from core.wake_word            import (
     WakeWordDetector, is_ready as wake_is_ready, install_and_download as wake_install,
@@ -1526,6 +1527,18 @@ class JarvisLive:
         out_buf, in_buf = [], []
         tool_lock = asyncio.Lock()
         tool_workers: set[asyncio.Task] = set()
+        rotation_task: asyncio.Task | None = None
+
+        async def rotate_before_disconnect(time_left) -> None:
+            # Resume while the server still accepts the current connection.
+            # Prefer a quiet moment, but always leave a second before expiry.
+            deadline = time.monotonic() + max(0.0, seconds_until_go_away(time_left) - 1.0)
+            while time.monotonic() < deadline:
+                if (self._resume_handle and not self._is_speaking
+                        and not tool_workers and self.audio_in_queue.empty()):
+                    break
+                await asyncio.sleep(0.1)
+            self.request_reconnect(keep_context=True, reason="server rotation")
 
         async def respond_to_tools(tool_call):
             # A slow contact lookup or plugin must not stop receive() from
@@ -1561,6 +1574,14 @@ class JarvisLive:
                             if self._resume_handle is None:
                                 print("[JARVIS] 🔗 Session resumption armed")
                             self._resume_handle = _sru.new_handle
+
+                    go_away = getattr(response, "go_away", None)
+                    if go_away is not None and rotation_task is None:
+                        remaining = seconds_until_go_away(getattr(go_away, "time_left", None))
+                        print(f"[JARVIS] Live session ending in {remaining:.1f}s — rotating.")
+                        rotation_task = asyncio.create_task(
+                            rotate_before_disconnect(getattr(go_away, "time_left", None))
+                        )
 
                     if response.data:
                         if self._interrupted:
@@ -1661,9 +1682,13 @@ class JarvisLive:
                         worker.add_done_callback(tool_workers.discard)
         except Exception as e:
             print(f"[JARVIS] ❌ Recv: {e}")
-            traceback.print_exc()
+            if "goaway" not in str(e).lower():
+                traceback.print_exc()
             raise
         finally:
+            if rotation_task is not None:
+                rotation_task.cancel()
+                await asyncio.gather(rotation_task, return_exceptions=True)
             for worker in tool_workers:
                 worker.cancel()
             if tool_workers:
@@ -2220,6 +2245,7 @@ class JarvisLive:
             self._dashboard = None
 
         while True:
+            connected_at = 0.0
             try:
                 print("[JARVIS] Connecting...")
                 self._set_ui_state("THINKING")
@@ -2239,6 +2265,7 @@ class JarvisLive:
                     asyncio.TaskGroup() as tg,
                 ):
                     self.session          = session
+                    connected_at          = time.monotonic()
                     self.audio_in_queue   = asyncio.Queue()
                     self.out_queue        = asyncio.Queue(maxsize=32)  # ~2 s max at 16 kHz/1024 samples
                     self._turn_done_event = asyncio.Event()
@@ -2330,11 +2357,14 @@ class JarvisLive:
                 # assistant would never come back at all: the feature meant to
                 # survive a reconnect would be the thing preventing one. Drop it
                 # once and let the next attempt start clean.
+                err_str = exception_details(e)
+                err_lower = err_str.lower()
+                session_age = time.monotonic() - connected_at if connected_at else 0.0
                 if _resumed_with and (
-                    "resum" in str(e).lower()
-                    or "handle" in str(e).lower()
-                    or "INVALID_ARGUMENT" in str(e)
-                    or "NOT_FOUND" in str(e)
+                    "resum" in err_lower
+                    or "handle" in err_lower
+                    or "invalid_argument" in err_lower
+                    or "not_found" in err_lower
                 ):
                     print("[JARVIS] 🔗 Resumption handle rejected — starting a fresh session")
                     self.ui.write_log("SYS: Could not restore the conversation — starting fresh.")
@@ -2342,8 +2372,23 @@ class JarvisLive:
                     self._conn_backoff = 0
                     continue
 
-                err_str = str(e)
-                print(f"[JARVIS] Error ({type(e).__name__}): {e}")
+                # GoAway is the server's expected session-rotation signal.
+                # A preview server may also report a bare 1008 abort at the
+                # end of a long-lived connection. Neither needs the scary
+                # SLEEPING state or an immediate retry with a stale handle.
+                server_expiry = is_expected_session_expiry(err_str, session_age)
+                if server_expiry and connected_at:
+                    print("[JARVIS] Live connection expired — resuming session.")
+                    self._conn_backoff = 0
+                    continue
+                if (_resumed_with and connected_at and session_age < 10.0
+                        and "1008" in err_lower):
+                    print("[JARVIS] Resumed session aborted immediately — starting fresh.")
+                    self._resume_handle = None
+                    self._conn_backoff = 3
+                    continue
+
+                print(f"[JARVIS] Error ({type(e).__name__}): {err_str}")
                 traceback.print_exc()
 
                 # Turn-taking / media / thinking knobs rejected by the server
@@ -2393,7 +2438,7 @@ class JarvisLive:
                     "ConnectionRefusedError", "OSError", "Cannot connect",
                 ))
                 if is_net_err:
-                    _conn_backoff = min(getattr(self, "_conn_backoff", 3) * 2, 60)
+                    _conn_backoff = min(max(getattr(self, "_conn_backoff", 3), 3) * 2, 60)
                     self._conn_backoff = _conn_backoff
                     self.ui.write_log(
                         f"NET: Connection failed — retrying in {_conn_backoff}s. "
@@ -2407,7 +2452,8 @@ class JarvisLive:
                 if len(self._session_log) >= 3:
                     asyncio.create_task(self._save_session_summary())
 
-            self.set_speaking(False)
+            if self._is_speaking:
+                self.set_speaking(False)
             self._set_ui_state("SLEEPING")
 
             if self._dashboard:
