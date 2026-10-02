@@ -24,12 +24,15 @@ from memory.config_manager import get_plugin_config, get_plugin_enabled
 
 _CATALOG_FILE = Path(__file__).resolve().parents[1] / "data/product_catalog.json"
 _LINKS_FILE = Path(__file__).resolve().parents[1] / "config/product_sales/catalog_links.json"
+_WEBSITE_FILE = Path(__file__).resolve().parents[1] / "config/product_sales/website_service.json"
 _STATE_FILE = Path(__file__).resolve().parents[1] / "config/product_sales/state.json"
 _LOCK = threading.RLock()
 _LINKS_LOCK = threading.RLock()
 _SEND_LOCK = threading.Lock()
 _PRODUCT_URL = "https://attontios.gumroad.com/l/kvaya"
 _PRODUCT_NAME = "Soccer Coach Organizer"
+_WEBSITE_ID = "soccer-coach-website"
+_WEBSITE_URL = "https://fieldwork-soccer-nathan.danipaul-fan-page.chatgpt.site"
 _FACTS = (
     "An Excel and PDF download for small soccer teams and coaching groups. "
     "Six workbook sheets: Overview, Roster, Attendance, Session Planner, "
@@ -66,11 +69,16 @@ PLUGIN = {
     "name": "product_sales",
     "behavior": "NON_BLOCKING",
     "description": (
-        "Promote the user's Gumroad product catalog. Select product by exact name or ID; products lists choices, sync reads published listings. Use for 'start "
+        "Promote the user's Gumroad downloads and Soccer Coach Website service. Select product by exact name or ID; products lists choices, sync reads Gumroad listings. Use for 'start "
         "selling my soccer organizer', 'prepare my product promotion', 'find "
         "clubs to pitch', 'draft a pitch', or 'check my product sales'. Actions: "
         "brief, campaign, research, add_lead, draft, show, copy, send, record, "
-        "status, sales, products, sync, link. link connects a user-supplied public Gumroad URL "
+        "status, sales, products, sync, link, payment. Soccer Coach Website (soccer-coach-website) "
+        "is a $249 USD custom one-page website service with a public fictional demo, not an Excel bundle. "
+        "Its initial pitch shows the demo and asks for a reply; agree scope before payment. "
+        "For this service, link saves an owner-supplied live buy.stripe.com checkout URL locally; "
+        "payment shows setup or the saved link. Never claim a URL validates its amount, ownership or a received payment. "
+        "Website sales are not read through Gumroad. link otherwise connects a user-supplied public Gumroad URL "
         "to an explicitly selected catalog product, including renamed listings. Establish "
         "which buyer bundle it contains; never guess a mapping between different products. "
         "Research public official business/contact pages; never "
@@ -90,9 +98,9 @@ PLUGIN = {
     "parameters": {
         "type": "OBJECT",
         "properties": {
-            "action": {"type": "STRING", "description": "products, sync, link, brief, campaign, research, add_lead, draft, show, copy, send, record, status, or sales"},
+            "action": {"type": "STRING", "description": "products, sync, link, payment, brief, campaign, research, add_lead, draft, show, copy, send, record, status, or sales"},
             "product": {"type": "STRING", "description": "Exact catalog name or ID, or a connected Gumroad title. Required for link; otherwise omit for original Soccer Coach Organizer. Draft/show/send always retain the draft product."},
-            "product_url": {"type": "STRING", "description": "For link: user-supplied public https://seller.gumroad.com/l/permalink URL. Verified through the local seller login before saving; no publishing or email send."},
+            "product_url": {"type": "STRING", "description": "For link: public Gumroad /l/permalink verified via seller login; for Soccer Coach Website, owner-supplied live https://buy.stripe.com/... payment link. Saves configuration only; no charge, publish or send."},
             "channel": {"type": "STRING", "description": "email, facebook, or instagram; campaign defaults to facebook"},
             "region": {"type": "STRING", "description": "For research: location, default San Jose, California"},
             "email": {"type": "STRING", "description": "One exact recipient email address; no names or address lists"},
@@ -113,7 +121,7 @@ PLUGIN = {
 
 PLUGIN_SETTINGS = {
     "namespace": "product_sales",
-    "title": "Product promotion — Gumroad catalog",
+    "title": "Product promotion — downloads and website service",
     "fields": [
         {"key": "gmail_account", "type": "text", "label": "Gmail sender account", "placeholder": "personal, school, or spam"},
         {"key": "sender_name", "type": "text", "label": "Sender / business name", "placeholder": "Name recipients should see"},
@@ -126,6 +134,33 @@ def _original_product():
     return {"id": "soccer-coach", "name": _PRODUCT_NAME, "url": _PRODUCT_URL,
             "facts": _FACTS, "angles": _ANGLES, "audience": "small soccer teams",
             "query": "youth soccer clubs official coaching director contact community partnerships"}
+
+
+def _website_service():
+    return {
+        "id": _WEBSITE_ID, "name": "Soccer Coach Website", "kind": "service",
+        "url": _WEBSITE_URL, "audience": "private soccer coaches",
+        "facts": (
+            "A custom one-page website service for private soccer coaches. Test offer: $249 USD once, "
+            "not a subscription. Includes client branding and approved copy, a responsive mobile layout, "
+            "training/services information, client contact or existing booking links, and one revision. "
+            "Domain and hosting costs are separate; ongoing maintenance, custom booking/payment backends "
+            "and guaranteed leads, rankings or revenue are not included. Client supplies accurate business "
+            "details and assets they have permission to use. Agree scope and delivery timing before "
+            "accepting payment. Fieldwork is a fictional example with AI-generated photography; its "
+            "inquiry form is a local preview and does not send messages or book sessions. This is "
+            "custom work, not an instant download or an automatically delivered website."
+        ),
+        "query": "private soccer coach individual soccer training official website contact",
+        "angles": (
+            ("overview", "A clear home for your coaching business.",
+             "Show your training options, approach and contact details on a custom one-page website."),
+            ("mobile", "Make your coaching information easy to find on a phone.",
+             "A mobile-friendly page gives parents and players one place to explore your sessions and contact you."),
+            ("inquiries", "Give interested players a clear next step.",
+             "Bring your services and existing contact or booking links together, with your branding and approved copy."),
+        ),
+    }
 
 
 def _catalog():
@@ -143,7 +178,7 @@ def _catalog():
             product["gumroad_name"] = str(link.get("gumroad_name") or "")
             if link.get("published") is True:
                 product["url"] = _catalog_url(link)
-    return products
+    return products + [_website_service()]
 
 
 def _product(args):
@@ -172,14 +207,18 @@ def _read_links():
 
 
 def _write_links(links):
-    _LINKS_FILE.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd, filename = tempfile.mkstemp(dir=_LINKS_FILE.parent, prefix="catalog-", suffix=".tmp")
+    _write_private_json(_LINKS_FILE, links)
+
+
+def _write_private_json(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, filename = tempfile.mkstemp(dir=path.parent, prefix="promotion-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            json.dump(links, stream, indent=2)
+            json.dump(data, stream, indent=2)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(filename, _LINKS_FILE)
+        os.replace(filename, path)
     finally:
         Path(filename).unlink(missing_ok=True)
 
@@ -224,6 +263,63 @@ def _link_url(value):
     return urlunsplit(("https", parsed.hostname, "/l/" + parts[2], "", ""))
 
 
+def _stripe_url(value):
+    url = str(value or "").strip()
+    try:
+        parts = urlsplit(url)
+        code = parts.path.strip("/")
+        valid = (parts.scheme == "https" and parts.hostname == "buy.stripe.com"
+                 and not parts.username and not parts.password and parts.port in (None, 443)
+                 and not parts.query and not parts.fragment and code
+                 and parts.path in {"/" + code, "/" + code + "/"}
+                 and not code.casefold().startswith("test_")
+                 and all(c.isascii() and (c.isalnum() or c in "-_") for c in code)
+                 and not any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in url))
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ValueError("Use an owner-supplied live HTTPS buy.stripe.com payment link, without test_, extra path segments, query parameters or fragments.")
+    return urlunsplit(("https", "buy.stripe.com", "/" + code, "", ""))
+
+
+def _website_payment_url():
+    if not _WEBSITE_FILE.exists():
+        return ""
+    try:
+        data = json.loads(_WEBSITE_FILE.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Invalid payment configuration")
+        return _stripe_url(data.get("payment_url"))
+    except (OSError, ValueError):
+        raise RuntimeError("Website payment configuration could not be read. Preserve and repair config/product_sales/website_service.json; no checkout or payment was verified.") from None
+
+
+def _link_website_payment(args, player):
+    url = _stripe_url(args.get("product_url"))
+    with _LINKS_LOCK:
+        if _WEBSITE_FILE.exists():
+            _website_payment_url()  # Never silently overwrite damaged configuration.
+        _write_private_json(_WEBSITE_FILE, {"payment_url": url, "updated_at": _now()})
+    text = (f"Saved the Soccer Coach Website Stripe payment link: {url}\n"
+            "Check in your Stripe dashboard that it belongs to your account and sells this service for $249 USD once. "
+            "Jarvis has saved the URL, not verified the checkout amount or received a payment. "
+            "Agree scope with the client before sharing it; initial pitches show the fictional sample. No email sent.")
+    _show(player, "WEBSITE PAYMENT LINK", text)
+    return text
+
+
+def _payment(args, player=None):
+    product = _product(args)
+    if product.get("kind") != "service":
+        return f"Gumroad product link: {product['url']}" if product["url"] else "Connect this product's published Gumroad link first."
+    url = _website_payment_url()
+    text = (f"Soccer Coach Website: $249 USD once.\nSample: {product['url']}\n"
+            + (f"Owner-supplied Stripe payment link: {url}\nCheck the service, one-time amount and seller account in Stripe before sharing; agree scope first. This does not report a payment."
+               if url else "No live Stripe payment link connected yet. Create this service's one-time $249 USD link in your Stripe account, then say: Connect Soccer Coach Website to this payment link: [live buy.stripe.com URL]. No Stripe key is needed in Jarvis."))
+    _show(player, "WEBSITE PAYMENT SETUP", text)
+    return text
+
+
 def _product_detail(identifier):
     data = _cli_json(["products", "view", str(identifier)])
     detail = data.get("product")
@@ -239,6 +335,8 @@ def _link_product(args, player=None):
     if not str(args.get("product") or "").strip():
         raise ValueError("Choose the exact catalog product name or ID to connect to this link; do not guess the buyer bundle.")
     product = _product(args)
+    if product.get("kind") == "service":
+        return _link_website_payment(args, player)
     if product["id"] == "soccer-coach":
         raise ValueError("The original Soccer Coach Organizer link is already configured. Choose the new catalog product to connect.")
     requested = _link_url(args.get("product_url"))
@@ -278,6 +376,8 @@ def _sync_catalog_locked(player=None):
     saved = _read_links()
     links, ambiguous, unpublished, unmatched, unverified = {}, [], [], [], []
     for product in _catalog()[1:]:
+        if product.get("kind") == "service":
+            continue
         name = product["name"]
         binding = saved.get(product["id"], {})
         explicit = isinstance(binding, dict) and binding.get("mapping") == "explicit"
@@ -441,7 +541,19 @@ def _new_draft(state, channel, angle, *, email="", body="", product=None):
     key, heading, text = _angle(angle, product)
     draft_id = uuid.uuid4().hex[:12]
     lead = state["leads"].get(email, {})
-    if channel == "email":
+    is_service = product.get("kind") == "service"
+    if is_service:
+        introduction = (f"Hi {lead.get('name', 'there')},\n\nI build custom one-page websites for private soccer coaches.\n\n"
+                        if channel == "email" else f"{heading}\n\n")
+        content = body.strip() or (
+            f"{introduction}{text}\n\nThe test offer is $249 USD for one mobile-friendly page with your branding, "
+            "approved content, contact or existing booking links, and one revision. Domain and hosting costs are separate. "
+            "Scope and timing are agreed before payment.\n\nInterested in a version for your coaching business? "
+            "Reply with your business name and what you'd like players or parents to be able to do."
+        )
+        subject = (f"A website idea for {lead.get('name', 'your coaching business')}"[:180]
+                   if channel == "email" else heading)
+    elif channel == "email":
         content = body.strip() or (
             f"Hi {lead.get('name', 'there')},\n\n"
             f"I'm sharing {product['name']}, an Excel and PDF bundle for {product['audience']}. "
@@ -455,10 +567,13 @@ def _new_draft(state, channel, angle, *, email="", body="", product=None):
         subject = heading
     if len(content) > 2000:
         raise ValueError("Keep pitch text under 2,000 characters so the complete email can be reviewed.")
-    content += f"\n\nSee previews and the current price: {_link(channel, draft_id, product)}"
+    label = "See a fictional coaching website example (not a real coaching business)" if is_service else "See previews and the current price"
+    content += f"\n\n{label}: {_link(channel, draft_id, product)}"
     draft = {"id": draft_id, "channel": channel, "email": email, "subject": subject,
              "body": content, "angle": key, "product_id": product["id"], "product_name": product["name"],
              "product_url": product["url"], "created_at": _now(), "status": "draft"}
+    if is_service:
+        draft["product_kind"] = "service"
     state["drafts"][draft_id] = draft
     return draft
 
@@ -494,8 +609,10 @@ def _campaign(args, player):
     _show(player, "PRODUCT PROMOTION DRAFTS", content)
     return (f"Saved {'six' if len(drafts) == 6 else len(drafts)} {channel} drafts. None posted.\n"
             + "\n".join(f"{d['id']}: {d['subject']}" for d in drafts)
-            + "\nUse show or copy with a draft ID. For Instagram, set up a purchase link in your profile or story before sharing the post. "
-            "Use only your own account or communities that allow product promotion.")
+            + "\nUse show or copy with a draft ID. "
+            + ("Website service posts link to the fictional sample; agree scope and timing before sharing a payment link. "
+               if product.get("kind") == "service" else "For Instagram, set up a purchase link in your profile or story before sharing the post. ")
+            + "Use only your own account or communities that allow product promotion.")
 
 
 def _get_draft(draft_id):
@@ -634,6 +751,9 @@ def _sales(args, player):
     except (TypeError, ValueError):
         days = 30
     selected = _product(args)
+    if selected.get("kind") == "service":
+        return ("Website payments are not connected to Gumroad sales reporting. Check your Stripe dashboard for actual payments. "
+                "After checking a client outcome, use record to update outreach history; that is not a revenue or payout report.")
     if not selected["url"]:
         raise ValueError("Publish this product and run sync before checking its sales.")
     permalink = urlsplit(selected["url"]).path.rstrip("/").split("/")[-1]
@@ -681,15 +801,24 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
     try:
         if action == "products":
             return "Available products (choose a name or ID):\n" + "\n".join(
-                f"{p['id']}: {p['name']} — {'published link connected' if p['url'] else 'awaiting published Gumroad link'}"
+                f"{p['id']}: {p['name']} — "
+                + ("service; public sample connected; use payment to check checkout setup" if p.get("kind") == "service"
+                   else 'published link connected' if p['url'] else 'awaiting published Gumroad link')
                 + (f" — Gumroad title: {_line(p['gumroad_name'], 100)}" if p.get("gumroad_name") and _catalog_name_key(p['gumroad_name']) != _catalog_name_key(p['name']) else "")
                 for p in _catalog())
         if action == "sync":
             return _sync_catalog(player)
         if action == "link":
             return _link_product(args, player)
+        if action == "payment":
+            return _payment(args, player)
         if action == "brief":
             product = _product(args)
+            if product.get("kind") == "service":
+                return (f"{product['name']}: {product['facts']}\nSample link: {product['url']}\n"
+                        "Research private coaches and verify their official contact and actual website needs. "
+                        "Draft shows the fictional sample; send still requires on-screen approval. "
+                        "Use payment for Stripe link setup. Website payments are not read from Gumroad. No scheduled promotion is running.")
             return (f"{product['name']}: {product['facts']}\nProduct link: {product['url'] or 'not published/connected yet'}\n"
                     "Campaign makes local social drafts. Research finds candidate official club pages; verify the contact before adding a lead. Draft tailors an email for a saved contact. Send presents the complete pitch for on-screen approval. Status tracks outreach; sales reads Gumroad on demand. No scheduled promotion is running.")
         if action == "campaign":
@@ -723,7 +852,7 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
             return _status()
         if action == "sales":
             return _sales(args, player)
-        return "Product promotion actions: products, sync, link, brief, campaign, research, add_lead, draft, show, copy, send, record, status, sales."
+        return "Product promotion actions: products, sync, link, payment, brief, campaign, research, add_lead, draft, show, copy, send, record, status, sales."
     except (RuntimeError, ValueError) as exc:
         return str(exc)
     except subprocess.TimeoutExpired:

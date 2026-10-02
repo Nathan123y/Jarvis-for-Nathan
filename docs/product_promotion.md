@@ -93,7 +93,59 @@ Run `python3 -m unittest discover -s tests -p 'test_product_sales.py'` and the
 existing `test_gmail.py` suite. Tests replace Gmail and Gumroad calls; a real
 approved Mac email and real seller sales login still need an owner-side check.
 
-## Choosing another product
+## Soccer Coach Website service
+
+The catalog also contains **Soccer Coach Website** (`soccer-coach-website`), a
+custom one-page website service at a **$249 USD one-time test price**. It includes
+the client's branding and approved copy, mobile layout, services information,
+contact or existing booking links, and one revision. Domain and hosting costs
+are separate. Agree the scope and timing before taking payment. This is custom
+work, not an instantly delivered download. It does not include a custom booking
+backend, ongoing maintenance, or promised clients/results.
+
+The public fictional example is:
+https://fieldwork-soccer-nathan.danipaul-fan-page.chatgpt.site
+Its sample inquiry form sends nothing and books nothing. Its photography is
+AI-generated. Replace sample business details with a client's approved details
+when delivering actual work.
+
+After pulling this update and reopening Jarvis, try:
+
+- **"Explain my Soccer Coach Website offer."**
+- **"Find three private soccer coaches near San Jose for Soccer Coach Website.
+  Check their actual websites and official business contacts."**
+- After checking a contact: **"Draft a Soccer Coach Website pitch for [email]
+  using my spam Gmail."** Then ask to send that specific draft and approve it
+  on screen. Choose and verify each recipient individually.
+- **"Show the payment setup for Soccer Coach Website."**
+
+Initial email/social drafts include the fictional example and invite a reply.
+They never call this service an Excel bundle and do not attach checkout before
+the client has discussed the work. Gumroad sync only handles downloads and
+never overwrites website payment configuration. Website payments cannot be
+reported by the Gumroad sales action; check Stripe directly and record outreach
+outcomes only after verifying them.
+
+Create a live Stripe payment link in your own account for **Soccer Coach Website**,
+**$249 USD, one-time**. Verify the actual checkout's product, price, account, and
+service scope, then say:
+
+**"Connect Soccer Coach Website to this payment link: https://buy.stripe.com/[code]."**
+
+This uses `action=link`, `product=soccer-coach-website`, and `product_url` set to
+that live link. Jarvis validates the URL's shape and saves it atomically to the
+ignored private `config/product_sales/website_service.json`. It rejects test
+links, extra paths, queries, fragments, and other hosts. It does not create a
+Stripe product, verify the amount/account, read transactions, or charge anyone.
+No Stripe secret key is stored in Jarvis. The `payment` action displays the saved
+link for sharing after scope agreement; an absent link reports incomplete setup.
+
+The Gmail sender/address settings, approval gate, shared contact history,
+opt-outs, and uncertain-send handling are the same as for the downloads.
+See [the Stripe implementation plan](website_stripe_plan.md) for checkout,
+client invoicing, payment events, key handling, and future Connect scope.
+
+## Choosing another download
 
 `product_sales` now includes the original Soccer Coach Organizer and 15 more
 Excel/PDF organizers. Ask "Show my products" (`action=products`) and select an
