@@ -5,11 +5,13 @@ on:
       - ".github/workflows/product-promotion-tests.yml"
       - "plugins/product_sales.py"
       - "plugins/gmail.py"
+      - "plugins/daily_briefing.py"
       - "core/confirm.py"
       - "core/plugin_loader.py"
       - "memory/config_manager.py"
       - "tests/test_product_sales.py"
       - "tests/test_gmail.py"
+      - "tests/test_daily_briefing.py"
 permissions:
   contents: read
 jobs:
@@ -25,3 +27,5 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_product_sales.py' -v
       - name: Existing Gmail tests
         run: python3 -m unittest discover -s tests -p 'test_gmail.py' -v
+      - name: Gmail briefing tests
+        run: python3 -m unittest discover -s tests -p 'test_daily_briefing.py' -v

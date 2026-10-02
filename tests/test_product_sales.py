@@ -166,6 +166,45 @@ class ProductSalesTests(unittest.TestCase):
             self.assertIn("cancelled", captured["run"]())
         send.assert_not_called()
 
+    def test_spam_sender_setting_uses_its_real_address_and_requires_confirmation(self):
+        self.settings["gmail_account"] = "spam"
+        self.service.users.return_value.getProfile.return_value.execute.return_value = {
+            "emailAddress": "promotion@example.com"
+        }
+        draft_id, captured = self.draft(), {}
+
+        def request(**kwargs):
+            captured.update(kwargs)
+            return "[CONFIRMATION_PENDING]"
+
+        with patch.object(gmail, "_service", return_value=self.service) as connect, \
+                patch.object(gmail, "_send", return_value="Email sent.") as send, \
+                patch.object(sales.confirm, "pending_title", return_value=""), \
+                patch.object(sales.confirm, "request", side_effect=request):
+            result = sales.run({"action": "send", "draft_id": draft_id}, player=self.player)
+            connect.assert_called_once_with("spam")
+            self.assertEqual(result, "[CONFIRMATION_PENDING]")
+            review = self.player.show_content.call_args.args[1]
+            self.assertIn("Account: spam\nFrom: promotion@example.com", review)
+            self.assertIn("From spam Gmail: promotion@example.com", captured["detail"])
+            send.assert_not_called()
+            self.settings["gmail_account"] = "personal"
+            self.assertEqual(captured["run"](), "Email sent.")
+            send.assert_called_once()
+            self.assertIs(send.call_args.args[0], self.service)
+            self.assertEqual(send.call_args.args[4], "promotion@example.com")
+            self.assertTrue(review.endswith(send.call_args.args[3]))
+
+    def test_explicit_spam_account_overrides_the_personal_default(self):
+        draft_id = self.draft()
+        with patch.object(gmail, "_service", return_value=self.service) as connect, \
+                patch.object(sales.confirm, "pending_title", return_value=""), \
+                patch.object(sales.confirm, "request", return_value="[CONFIRMATION_PENDING]"):
+            result = sales.run({"action": "send", "draft_id": draft_id, "account": "spam"}, player=self.player)
+        connect.assert_called_once_with("spam")
+        self.assertEqual(result, "[CONFIRMATION_PENDING]")
+        self.service.users().messages().send.assert_not_called()
+
     def test_uncertain_send_is_not_retried_and_can_be_resolved_explicitly(self):
         draft_id = self.draft()
         _, captured = self.queue(draft_id)

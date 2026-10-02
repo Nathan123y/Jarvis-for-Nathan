@@ -92,7 +92,7 @@ PLUGIN = {
             "draft_id": {"type": "STRING", "description": "ID returned by campaign or draft; required for show, copy, send"},
             "angle": {"type": "STRING", "description": "team_admin, roster, attendance, sessions, progress, or payments"},
             "body": {"type": "STRING", "description": "Optional tailored pitch text, grounded in brief; signature and product link are added automatically"},
-            "account": {"type": "STRING", "description": "For send, personal or school Gmail when explicitly chosen; otherwise use the configured account"},
+            "account": {"type": "STRING", "description": "For send, personal, school, or spam Gmail when explicitly chosen; otherwise use the configured account"},
             "outcome": {"type": "STRING", "description": "For record: replied, bought, do_not_contact, sent, or not_sent; resolve an uncertain send only after checking Gmail Sent"},
             "days": {"type": "INTEGER", "description": "For sales: reporting window, 1 to 90 days, default 30"},
         },
@@ -104,7 +104,7 @@ PLUGIN_SETTINGS = {
     "namespace": "product_sales",
     "title": "Product promotion — Soccer Coach Organizer",
     "fields": [
-        {"key": "gmail_account", "type": "text", "label": "Gmail sender account", "placeholder": "personal or school"},
+        {"key": "gmail_account", "type": "text", "label": "Gmail sender account", "placeholder": "personal, school, or spam"},
         {"key": "sender_name", "type": "text", "label": "Sender / business name", "placeholder": "Name recipients should see"},
         {"key": "postal_address", "type": "text", "label": "Business postal address for promotional email", "placeholder": "Valid business address, registered PO box, or registered mailbox"},
     ],
@@ -274,8 +274,8 @@ def _send(args, player):
     settings = get_plugin_config("product_sales")
     account = str(args.get("account") or settings.get("gmail_account") or "").strip().lower()
     sender, address = _line(settings.get("sender_name"), 100), _line(settings.get("postal_address"), 400)
-    if account not in {"personal", "school"} or not sender or not address:
-        return "In Jarvis Plugin Settings, set Product promotion's Gmail account (personal or school), sender name, and valid business postal address. Drafts and research work before this setup."
+    if account not in gmail._ACCOUNTS or not sender or not address:
+        return "In Jarvis Plugin Settings, set Product promotion's Gmail account (personal, school, or spam), sender name, and valid business postal address. Drafts and research work before this setup."
     with _SEND_LOCK:
         if confirm.pending_title():
             return "A confirmation is already on screen. Answer it before sending a pitch."
