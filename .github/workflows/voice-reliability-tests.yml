@@ -1,0 +1,31 @@
+name: Voice reliability tests
+on:
+  pull_request:
+    paths:
+      - 'main.py'
+      - 'core/live_session.py'
+      - 'core/voice_state.py'
+      - 'core/playback_timing.py'
+      - 'tests/test_voice*.py'
+      - 'tests/test_live_session.py'
+      - 'tests/test_playback_timing.py'
+      - '.github/workflows/voice-reliability-tests.yml'
+permissions:
+  contents: read
+jobs:
+  voice:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+      - name: Install speaker test dependency
+        run: python3 -m pip install 'numpy>=1.24,<3'
+      - name: Voice receive, recovery and state checks
+        run: python3 -m unittest discover -s tests -p 'test_voice*.py' -v
+      - name: Session rotation checks
+        run: python3 -m unittest discover -s tests -p 'test_live_session.py' -v
+      - name: Speaker drain timing checks
+        run: python3 -m unittest discover -s tests -p 'test_playback_timing.py' -v

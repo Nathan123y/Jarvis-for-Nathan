@@ -83,6 +83,7 @@ from core.echo                 import EchoGuard
 from core.playback_timing      import playback_idle
 from core.perf_trace          import log_audio_in_status, log_audio_write, log_launch_context, log_state_transition
 from core.live_session        import seconds_until_go_away, exception_details, is_expected_session_expiry
+from core.voice_state         import runtime_state, can_auto_sleep
 from core.viseme               import VisemeStream
 from core.wake_word            import (
     WakeWordDetector, is_ready as wake_is_ready, install_and_download as wake_install,
@@ -535,6 +536,8 @@ class JarvisLive:
     def __init__(self, ui: JarvisUI):
         self.ui             = ui
         self._trace_ui_state = None
+        self._state_lock = threading.RLock()
+        self._pending_tool_batches = 0
         threading.Thread(target=log_launch_context, args=(BASE_DIR,), name="jarvis-trace-launch", daemon=True).start()
         self._asst_name     = "JARVI    S"   # updated each session from config
         self.session              = None
@@ -711,7 +714,10 @@ class JarvisLive:
                 continue
             with self._speaking_lock:
                 speaking = self._is_speaking
-            if speaking:
+            queue = self.audio_in_queue
+            if not can_auto_sleep(speaking=speaking,
+                                  pending_tools=self._pending_tool_batches,
+                                  queued_audio=queue is not None and not queue.empty()):
                 continue
             if (time.monotonic() - self._last_user_speech) > self._wake_sleep_timeout:
                 self.sleep(reason="no speech for 2 minutes")
@@ -860,11 +866,31 @@ class JarvisLive:
         return time.monotonic() < self._tail_until
 
     def _set_ui_state(self, state: str, reason: str = "runtime") -> None:
-        previous = self._trace_ui_state
-        self.ui.set_state(state)
-        if previous != state:
-            self._trace_ui_state = state
-            log_state_transition(previous or "UNKNOWN", state, reason)
+        # Speaker and tool callbacks can overlap. Resolve their requests from
+        # current activity, and avoid restarting the same UI animation.
+        with self._state_lock:
+            state = runtime_state(state, awake=self._awake,
+                                  speaking=self._is_speaking,
+                                  pending_tools=self._pending_tool_batches)
+            previous = self._trace_ui_state
+            if previous != state:
+                self._trace_ui_state = state
+                self.ui.set_state(state)
+                log_state_transition(previous or "UNKNOWN", state, reason)
+
+    def _show_session_ready(self) -> None:
+        # _awake is initialised once at launch. A reconnect must preserve the
+        # user's current wake/sleep choice, including when resumption fails.
+        if self._wake_enabled:
+            self._ensure_wake_detector()
+        else:
+            self._awake = True
+        if self._awake:
+            self._set_ui_state("INITIALISING", "session_connected")
+            self.ui.write_log("SYS: Connected — opening microphone.")
+        else:
+            self._set_ui_state("SLEEPING", "session_connected")
+            self.ui.write_log("SYS: JARVIS online — sleeping. Say 'Hey Jarvis' to wake me.")
 
     def set_speaking(self, value: bool):
         with self._speaking_lock:
@@ -1528,6 +1554,7 @@ class JarvisLive:
         tool_lock = asyncio.Lock()
         tool_workers: set[asyncio.Task] = set()
         rotation_task: asyncio.Task | None = None
+        closing = False
 
         async def rotate_before_disconnect(time_left) -> None:
             # Resume while the server still accepts the current connection.
@@ -1557,6 +1584,10 @@ class JarvisLive:
                 print(f"[JARVIS] ❌ Tool response: {exc}")
                 traceback.print_exc()
                 self.request_reconnect(keep_context=True, reason="tool response failure")
+            finally:
+                self._pending_tool_batches -= 1
+                if not closing and not self.ui.muted:
+                    self._set_ui_state("LISTENING", "tool_batch_finished")
 
         try:
             while True:
@@ -1677,6 +1708,7 @@ class JarvisLive:
                                 asyncio.create_task(_cam_close())
 
                     if response.tool_call:
+                        self._pending_tool_batches += 1
                         worker = asyncio.create_task(respond_to_tools(response.tool_call))
                         tool_workers.add(worker)
                         worker.add_done_callback(tool_workers.discard)
@@ -1686,6 +1718,7 @@ class JarvisLive:
                 traceback.print_exc()
             raise
         finally:
+            closing = True
             if rotation_task is not None:
                 rotation_task.cancel()
                 await asyncio.gather(rotation_task, return_exceptions=True)
@@ -1693,6 +1726,7 @@ class JarvisLive:
                 worker.cancel()
             if tool_workers:
                 await asyncio.gather(*tool_workers, return_exceptions=True)
+            self._pending_tool_batches = 0
 
     async def _play_audio(self):
         print("[JARVIS] 🔊 Play started")
@@ -2286,17 +2320,7 @@ class JarvisLive:
                         # is the whole point, and it is invisible otherwise.
                         self.ui.write_log("SYS: Reconnected — conversation restored.")
 
-                    # Wake word: if enabled, come up ASLEEP (mic gated, silent)
-                    # until the user says "Hey Jarvis" or taps wake in the UI.
-                    if self._wake_enabled:
-                        self._ensure_wake_detector()
-                        self._awake = False
-                        self._set_ui_state("SLEEPING")
-                        self.ui.write_log("SYS: JARVIS online — sleeping. Say 'Hey Jarvis' to wake me.")
-                    else:
-                        self._awake = True
-                        self._set_ui_state("INITIALISING")
-                        self.ui.write_log("SYS: Connected — opening microphone.")
+                    self._show_session_ready()
 
                     if self._dashboard:
                         await self._dashboard.broadcast({"type": "status", "state": "active"})
