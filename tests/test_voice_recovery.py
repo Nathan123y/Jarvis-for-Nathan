@@ -90,7 +90,8 @@ class VoiceRecoveryTests(unittest.IsolatedAsyncioTestCase):
         Player = _method("_execute_tool", namespace)
         player = Player()
         player._is_speaking = True
-        player.ui = SimpleNamespace(muted=False, set_state=states.append)
+        player.ui = SimpleNamespace(muted=False)
+        player._set_ui_state = states.append
         fc = SimpleNamespace(name="save_memory", id="1",
                              args={"category": "notes", "key": "test", "value": "ok"})
         with contextlib.redirect_stdout(io.StringIO()):
