@@ -79,6 +79,9 @@ PLUGIN = {
         "Send requires an explicit send request and the on-screen CONFIRM "
         "button. Never say an email is sent while confirmation is pending. "
         "No bulk messages, automatic follow-ups or ad spending."
+        " Sync returns the observed Gumroad names and reasons each listing was skipped. "
+        "Report those results; do not infer incorrect API keys or Mac accessibility "
+        "permissions from zero matched products."
     ),
     "parameters": {
         "type": "OBJECT",
@@ -164,30 +167,86 @@ def _write_links(links):
         Path(filename).unlink(missing_ok=True)
 
 
-def _sync_catalog():
+def _catalog_name_key(value):
+    return " ".join(str(value or "").split()).casefold()
+
+
+def _published_state(record):
+    states = {record[key] for key in ("published", "is_published")
+              if isinstance(record.get(key), bool)}
+    return states.pop() if len(states) == 1 else None
+
+
+def _catalog_url(record):
+    url = str(record.get("short_url") or record.get("url") or "").strip()
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return ""
+    if (parsed.scheme == "https" and parsed.hostname
+            and (parsed.hostname == "gumroad.com" or parsed.hostname.endswith(".gumroad.com"))
+            and parsed.path.startswith("/l/") and parsed.path[len("/l/"):]
+            and not parsed.username and not parsed.password):
+        return url
+    return ""
+
+
+def _sync_catalog(player=None):
     records = _cli_json(["products", "list", "--all"]).get("products")
-    if not isinstance(records, list):
+    if not isinstance(records, list) or any(not isinstance(r, dict) or not isinstance(r.get("name"), str) for r in records):
         raise RuntimeError("Gumroad returned an unexpected catalog; existing links were preserved.")
-    links, ambiguous = {}, []
+    links, ambiguous, unpublished, unmatched, unverified = {}, [], [], [], []
     for product in _catalog()[1:]:
-        matches = [r for r in records if isinstance(r, dict) and r.get("name") == product["name"]]
+        name = product["name"]
+        matches = [r for r in records if _catalog_name_key(r.get("name")) == _catalog_name_key(name)]
         if len(matches) > 1:
-            ambiguous.append(product["name"])
+            ambiguous.append(name)
             continue
         if not matches:
+            unmatched.append(name)
             continue
         record = matches[0]
-        published = record.get("published") is True or record.get("is_published") is True
-        url = record.get("short_url") or record.get("url") or ""
-        parsed = urlsplit(str(url))
-        if (published and parsed.scheme == "https" and parsed.hostname
-                and (parsed.hostname == "gumroad.com" or parsed.hostname.endswith(".gumroad.com"))
-                and parsed.path.startswith("/l/") and not parsed.username and not parsed.password):
+        published, url = _published_state(record), _catalog_url(record)
+        if published is False:
+            unpublished.append(name)
+            continue
+        if (published is None or not url) and record.get("id"):
+            # Some list responses are summaries. Verify this exact owned listing;
+            # never guess a permalink from its name or use another product's URL.
+            try:
+                data = _cli_json(["products", "view", str(record["id"])])
+                detail = data.get("product")
+                if not isinstance(detail, dict) and isinstance(data.get("result"), dict):
+                    detail = data["result"].get("product")
+                if (not isinstance(detail, dict) or str(detail.get("id")) != str(record["id"])
+                        or _catalog_name_key(detail.get("name")) != _catalog_name_key(name)):
+                    raise RuntimeError("Returned product details did not match the requested listing.")
+                published, url = _published_state(detail), _catalog_url(detail)
+            except (RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+                raise RuntimeError(f"Gumroad returned {len(records)} listings, but details for {name} could not be verified. Existing links were preserved. {exc}") from None
+        if published is True and url:
             links[product["id"]] = {"url": url, "published": True}
+        elif published is False:
+            unpublished.append(name)
+        else:
+            unverified.append(name + (" (published status missing or inconsistent)" if published is None else " (public Gumroad link missing)"))
     with _LOCK:
         _write_links(links)
-    return (f"Connected {len(links)} published catalog listings. Unpublished or unverified listings cannot be pitched. "
-            + ("Resolve duplicate product names: " + ", ".join(ambiguous) if ambiguous else "Use products to see availability."))
+    lines = [f"Connected {len(links)} published catalog listings. Gumroad returned {len(records)} seller listings successfully.",
+             "The original Soccer Coach Organizer link remains available separately."]
+    for label, values in (("Not published yet", unpublished), ("No matching catalog name", unmatched),
+                          ("Resolve duplicate product names", ambiguous), ("Could not verify", unverified)):
+        if values:
+            lines.append(label + ": " + "; ".join(_line(v, 100) for v in values))
+    labels = {True: "published", False: "draft", None: "status not verified"}
+    observed = [f"{_line(r['name'], 100)} [{labels[_published_state(r)]}]" for r in records[:20]]
+    lines.append("Names returned by Gumroad: " + ("; ".join(observed) or "none"))
+    if len(records) > 20:
+        lines.append(f"Showing the first 20 of {len(records)} returned names.")
+    lines.append("Unpublished or unverified products cannot be pitched. Name matching ignores capitalization and extra spaces; changed wording does not match automatically. Use products to see availability.")
+    text = "\n".join(lines)
+    _show(player, "GUMROAD CATALOG SYNC", text)
+    return text
 
 
 def _now():
@@ -449,7 +508,7 @@ def _status():
 
 
 def _cli_path():
-    candidates = [shutil.which("gumroad"), str(Path.home() / ".local/bin/gumroad"), "/opt/homebrew/bin/gumroad", "/usr/local/bin/gumroad"]
+    candidates = [str(Path.home() / ".local/bin/gumroad"), shutil.which("gumroad"), "/opt/homebrew/bin/gumroad", "/usr/local/bin/gumroad"]
     for value in candidates:
         if value and Path(value).is_file() and os.access(value, os.X_OK):
             return value
@@ -457,14 +516,19 @@ def _cli_path():
 
 
 def _cli_json(arguments):
+    command = " ".join(arguments[:2])
     result = subprocess.run([_cli_path(), *arguments, "--json", "--no-input", "--non-interactive"],
                             capture_output=True, text=True, timeout=15, check=False)
     try:
         data = json.loads(result.stdout)
     except (ValueError, TypeError):
-        raise RuntimeError("Gumroad could not return sales data. Check its login on your Mac.") from None
+        raise RuntimeError(f"Gumroad {command} returned unreadable JSON; no result was verified.") from None
     if not isinstance(data, dict) or result.returncode or data.get("success") is not True:
-        raise RuntimeError("Gumroad access is unavailable. On your Mac, run ~/.local/bin/gumroad auth login --web; no token needs to be shared in chat.")
+        error = data.get("error", {}) if isinstance(data, dict) else {}
+        code = error.get("code") if isinstance(error, dict) else None
+        if isinstance(code, str) and code in {"not_authenticated", "invalid_token", "invalid_access_token", "token_expired"}:
+            raise RuntimeError("Gumroad seller login is unavailable. On your Mac, run ~/.local/bin/gumroad auth login --web; no token needs to be shared in chat.")
+        raise RuntimeError(f"Gumroad {command} failed; no result was verified. Inspect that read command in your Mac Terminal for the actual error.")
     return data
 
 
@@ -522,7 +586,7 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
         if action == "products":
             return "Available products (choose a name or ID):\n" + "\n".join(f"{p['id']}: {p['name']} — {'published link connected' if p['url'] else 'awaiting published Gumroad link'}" for p in _catalog())
         if action == "sync":
-            return _sync_catalog()
+            return _sync_catalog(player)
         if action == "brief":
             product = _product(args)
             return (f"{product['name']}: {product['facts']}\nProduct link: {product['url'] or 'not published/connected yet'}\n"
