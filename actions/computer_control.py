@@ -20,7 +20,12 @@ try:
     pyautogui.FAILSAFE = True
     pyautogui.PAUSE    = 0.05
     _PYAUTOGUI = True
-except ImportError:
+except Exception:
+    # Importing PyAutoGUI opens the platform display.  An installed package can
+    # therefore raise KeyError/OSError while a desktop session is still coming
+    # up.  Desktop automation is optional and must not take down action
+    # discovery (or the whole app) during launch.
+    pyautogui = None
     _PYAUTOGUI = False
 
 try:
@@ -77,7 +82,10 @@ def _safe_screenshot_path(requested: str | None) -> Path:
 
 def _require_pyautogui():
     if not _PYAUTOGUI:
-        raise RuntimeError("PyAutoGUI not installed. Run: pip install pyautogui")
+        raise RuntimeError(
+            "Desktop automation is unavailable. Make sure PyAutoGUI is installed "
+            "and Jarvis is running inside an active desktop session."
+        )
 
 _FIRST_NAMES = [
     "Alex", "Jordan", "Taylor", "Morgan", "Casey", "Riley", "Drew", "Quinn",
