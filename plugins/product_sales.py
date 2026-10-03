@@ -69,7 +69,7 @@ PLUGIN = {
     "name": "product_sales",
     "behavior": "NON_BLOCKING",
     "description": (
-        "Gumroad-only product promotion plus the separate Soccer Coach Website service; never use this tool for Etsy. Select product by exact name or ID; products lists choices, sync reads Gumroad listings. Use for 'start "
+        "Promote the user's Gumroad downloads and Soccer Coach Website service. Select product by exact name or ID; products lists choices, sync reads Gumroad listings. Use for 'start "
         "selling my soccer organizer', 'prepare my product promotion', 'find "
         "clubs to pitch', 'draft a pitch', or 'check my product sales'. Actions: "
         "brief, campaign, research, add_lead, draft, show, copy, send, record, "
@@ -121,7 +121,7 @@ PLUGIN = {
 
 PLUGIN_SETTINGS = {
     "namespace": "product_sales",
-    "title": "Gumroad products + website service (not Etsy)",
+    "title": "Product promotion — downloads and website service",
     "fields": [
         {"key": "gmail_account", "type": "text", "label": "Gmail sender account", "placeholder": "personal, school, or spam"},
         {"key": "sender_name", "type": "text", "label": "Sender / business name", "placeholder": "Name recipients should see"},

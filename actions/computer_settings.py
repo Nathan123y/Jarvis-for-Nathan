@@ -12,13 +12,7 @@ try:
     pyautogui.FAILSAFE = True
     pyautogui.PAUSE    = 0.05
     _PYAUTOGUI = True
-except Exception:
-    # PyAutoGUI can be installed but still fail during import when the desktop
-    # session is not ready (for example a Linux launch before DISPLAY exists).
-    # Treat that exactly like an unavailable optional dependency: keyboard and
-    # mouse actions can report the limitation without preventing Jarvis itself
-    # or the rest of its actions from starting.
-    pyautogui = None
+except ImportError:
     _PYAUTOGUI = False
 
 try:
