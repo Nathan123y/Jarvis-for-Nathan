@@ -5,24 +5,38 @@
 # never be.
 
 # ── Secrets. Committing any of these publishes them. ──────────────────────────
-config/api_keys.json          # your Gemini API key, plus per-plugin credentials
-config/certs/                 # the dashboard's TLS private key and certificate
-config/whatsapp_web/          # a LINKED WhatsApp session — committing it hands
-                              # somebody your WhatsApp account, not just a key
-**/token*.json                # Google OAuth tokens (Gmail / Calendar plugins)
-**/client_secret*.json        # Google OAuth client secrets
+# Git does not allow a comment after a pattern on the same line: the text becomes
+# part of the pattern and the rule silently matches nothing. So every comment sits
+# on its own line above the pattern it describes.
+
+# Your Gemini API key, plus per-plugin credentials (Alpaca paper keys included)
+config/api_keys.json
+# The dashboard's TLS private key and certificate
+config/certs/
+# A LINKED WhatsApp session. Committing it hands somebody your WhatsApp account,
+# not just a key
+config/whatsapp_web/
+# Google OAuth tokens (Gmail / Calendar plugins)
+**/token*.json
+# Google OAuth client secrets
+**/client_secret*.json
 *credentials*.json
 config/gmail_token.json
 config/gmail_token.json.tmp
 config/gmail_*_token.json
 config/gmail_*_token.json.tmp
-config/product_sales/         # private promotion drafts, contacts, and opt-outs
+# Private promotion drafts, contacts, and opt-outs
+config/product_sales/
+# Paper-trading journal, state and runner log (numbers only)
+config/trading/
 .env
 .env.*
 
 # ── Personal data the assistant accumulates about you ─────────────────────────
 memory/long_term.json
 memory/*.db
+# Runtime lock files (for example Mission Control's)
+memory/*.lock
 
 # ── Python build noise ────────────────────────────────────────────────────────
 __pycache__/
