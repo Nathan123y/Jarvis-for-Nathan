@@ -73,6 +73,7 @@ from memory.config_manager     import (
     get_brief_enabled, get_media_resolution, get_proactive_audio_enabled,
     get_push_to_talk_enabled, get_thinking_enabled, get_turn_tuning, get_voice,
     get_wake_word_enabled, save_wake_word_enabled,    get_input_device, get_output_device,
+    get_output_latency,
 )
 from core.plugin_loader        import discover_plugins
 from core                      import undo as undo_stack
@@ -80,9 +81,15 @@ from core                      import confirm as confirm_gate
 from core                      import audio_devices
 from core.action_loader        import discover_actions
 from core.echo                 import EchoGuard
-from core.playback_timing      import playback_idle
-from core.perf_trace          import log_audio_in_status, log_audio_write, log_launch_context, log_state_transition
-from core.live_session        import seconds_until_go_away, exception_details, is_expected_session_expiry
+from core.playback_timing      import playback_idle, parse_output_latency
+from core.perf_trace          import (
+    HeartbeatLag, log_audio_in_status, log_audio_write, log_lag,
+    log_launch_context, log_reconnect, log_state_transition,
+)
+from core.live_session        import (
+    seconds_until_go_away, exception_details, is_expected_session_expiry,
+    classify_disconnect, leaf_exception_name, safe_label,
+)
 from core.voice_state         import runtime_state, can_auto_sleep
 from core.viseme               import VisemeStream
 from core.wake_word            import (
@@ -695,15 +702,18 @@ class JarvisLive:
         self._awake = True
         self._last_user_speech = time.monotonic()   # start the auto-sleep clock now
         if not self.ui.muted:
-            self._set_ui_state("LISTENING")
+            self._set_ui_state("LISTENING", "wake:" + safe_label(reason))
         self.ui.write_log(f"SYS: Awake — {reason}.")
 
     def sleep(self, reason: str = "timeout") -> None:
         if not self._awake:
             return
         self._awake = False
-        self.set_speaking(False)
-        self._set_ui_state("SLEEPING")
+        # The reason travels with the state change so the performance trace can
+        # say which of the several paths into SLEEPING produced it.
+        label = "sleep:" + safe_label(reason)
+        self.set_speaking(False, label)
+        self._set_ui_state("SLEEPING", label)
         self.ui.write_log(f"SYS: Sleeping — {reason}. Say 'Hey Jarvis' to wake me.")
 
     async def _run_sleep_watch(self) -> None:
@@ -892,7 +902,11 @@ class JarvisLive:
             self._set_ui_state("SLEEPING", "session_connected")
             self.ui.write_log("SYS: JARVIS online — sleeping. Say 'Hey Jarvis' to wake me.")
 
-    def set_speaking(self, value: bool):
+    def set_speaking(self, value: bool, reason: str | None = None):
+        """`reason` only labels the state change in the performance trace; it
+        never changes behaviour. Callers that know *why* speech ended — the
+        turn finished, or the server stalled mid-answer — say so, which is what
+        separates a normal end from a flicker."""
         with self._speaking_lock:
             self._is_speaking = value
         if value:
@@ -909,9 +923,9 @@ class JarvisLive:
             # tail expires. What the guard learned about the room always stays.
             self._out_level = 0.0
         if value:
-            self._set_ui_state("SPEAKING", "audio_start")
+            self._set_ui_state("SPEAKING", reason or "audio_start")
         elif not self.ui.muted:
-            self._set_ui_state("LISTENING", "audio_stop")
+            self._set_ui_state("LISTENING", reason or "audio_stop")
 
     def set_push_to_talk(self, enabled: bool) -> str:
         """Turn hold-to-talk on or off. Returns the scope actually achieved."""
@@ -950,7 +964,14 @@ class JarvisLive:
                 self._awake = True
                 self._last_user_speech = time.monotonic()
         try:
-            self._set_ui_state("LISTENING" if held else "SLEEPING")
+            # Letting go of the chord closes the microphone; it does not put the
+            # assistant to sleep. This used to request SLEEPING on release, which
+            # the state resolver passes through untouched, so the HUD said
+            # "sleeping" while Jarvis was awake — and sometimes while it was
+            # already answering. Asking for LISTENING lets the resolver decide:
+            # SPEAKING mid-answer, THINKING while a tool runs, SLEEPING only if
+            # the wake-word gate really is closed.
+            self._set_ui_state("LISTENING", "ptt_press" if held else "ptt_release")
         except Exception:
             pass
 
@@ -1169,7 +1190,7 @@ class JarvisLive:
         # A tool can run while an earlier sentence is still playing. Keep the
         # HUD in SPEAKING until the speaker drains.
         if not self._is_speaking:
-            self._set_ui_state("THINKING")
+            self._set_ui_state("THINKING", "tool_start")
 
         if name == "save_memory":
             category = args.get("category", "notes")
@@ -1179,7 +1200,7 @@ class JarvisLive:
                 update_memory({category: {key: {"value": value}}})
                 print(f"[Memory] 💾 save_memory: {category}/{key} = {value}")
             if not self.ui.muted and not self._is_speaking:
-                self._set_ui_state("LISTENING")
+                self._set_ui_state("LISTENING", "tool_end")
             return types.FunctionResponse(
                 id=fc.id, name=name,
                 response={"result": "ok", "silent": True}
@@ -1312,7 +1333,7 @@ class JarvisLive:
             self.speak_error(name, e)
 
         if not self.ui.muted and not self._is_speaking:
-            self._set_ui_state("LISTENING")
+            self._set_ui_state("LISTENING", "tool_end")
 
         print(f"[JARVIS] 📤 {name} → {str(result)[:80]}")
 
@@ -1739,14 +1760,33 @@ class JarvisLive:
         if _spk_dev is not None:
             print(f"[JARVIS] 🔊 Output device: {_spk_name}")
 
+        # Optional speaker buffer size. Unset (the default) passes nothing, so the
+        # stream opens exactly as it always has. A larger device buffer is the
+        # standard cure for underflow when Python is slow to hand over the next
+        # block; see core.playback_timing.parse_output_latency and
+        # docs/lag-diagnosis.md for when it is worth turning on.
+        _spk_latency = parse_output_latency(get_output_latency())
+        if _spk_latency is not None:
+            print(f"[JARVIS] 🔊 Output latency requested: {_spk_latency}")
+
         def _open_spk(dev):
-            st = sd.RawOutputStream(
+            kwargs = dict(
                 samplerate=RECEIVE_SAMPLE_RATE,
                 channels=CHANNELS,
                 dtype="int16",
                 blocksize=CHUNK_SIZE,
                 device=dev,
             )
+            if _spk_latency is None:
+                st = sd.RawOutputStream(**kwargs)
+            else:
+                try:
+                    st = sd.RawOutputStream(latency=_spk_latency, **kwargs)
+                except Exception as _le:
+                    # A setting the device refuses must never cost the user
+                    # their voice: fall back to the library default.
+                    print(f"[JARVIS] ⚠️  Output latency {_spk_latency} refused: {_le} — using default")
+                    st = sd.RawOutputStream(**kwargs)
             st.start()
             return st
 
@@ -1806,10 +1846,13 @@ class JarvisLive:
                         and (not last_audio_at or time.time() >= self._play_cursor)
                     ):
                         if self._is_speaking:
-                            self.set_speaking(False)
+                            self.set_speaking(False, "turn_complete")
                         self._turn_done_event.clear()
                     elif paused and self._is_speaking:
-                        self.set_speaking(False)
+                        # No turn_complete yet: the server went quiet mid-answer.
+                        # Labelled apart from a normal ending because this is the
+                        # path that makes the HUD leave SPEAKING and come back.
+                        self.set_speaking(False, "stall_gap")
                     continue
 
                 if not self._is_speaking:
@@ -1891,11 +1934,21 @@ class JarvisLive:
                     pass
 
                 try:
+                    # Measured for the trace only. Queue depth at the moment of
+                    # the write is what tells a starved network (nothing was
+                    # waiting) from a slow hand-over (audio was waiting but this
+                    # process was late); the gap and write time bound the latter.
+                    _queued = self.audio_in_queue.qsize()
+                    _write_began = time.monotonic()
+                    _gap_ms = (_write_began - last_audio_at) * 1000 if last_audio_at else None
                     underflowed = await asyncio.get_running_loop().run_in_executor(
                         speaker_executor, stream.write, bytes(batch)
                     )
                     last_audio_at = time.monotonic()
-                    log_audio_write(self._out_latency, len(batch) // 2, bool(underflowed))
+                    log_audio_write(self._out_latency, len(batch) // 2, bool(underflowed),
+                                    queued_chunks=_queued,
+                                    write_ms=(last_audio_at - _write_began) * 1000,
+                                    gap_ms=_gap_ms)
                     if underflowed and time.monotonic() - last_underflow_log > 5.0:
                         print("[JARVIS] Speaker underflow: playback starved of audio", flush=True)
                         last_underflow_log = time.monotonic()
@@ -2092,6 +2145,23 @@ class JarvisLive:
         except Exception as e:
             print(f"[Memory] ⚠️ Session summary failed: {e}")
 
+    # ── Event-loop lag trace ────────────────────────────────────────────────────
+
+    async def _run_loop_lag_monitor(self) -> None:
+        """Record every time this event loop was scheduled much later than asked.
+
+        Speech hand-off, state changes and the live connection all share this
+        loop, so a stall here is heard as a gap in the voice. The monitor asks
+        to be woken every 50 ms and logs a wake-up that arrives 40 ms or more
+        late, with no content. It writes nothing while the loop is healthy.
+        """
+        beat = HeartbeatLag(interval=0.05, threshold=0.04)
+        while True:
+            await asyncio.sleep(0.05)
+            late = beat.tick(time.monotonic())
+            if late is not None:
+                log_lag("asyncio", late)
+
     # ── System monitor ──────────────────────────────────────────────────────────
 
     async def _run_system_monitor(self) -> None:
@@ -2281,11 +2351,15 @@ class JarvisLive:
             print(f"[Dashboard] Disabled: {e}")
             self._dashboard = None
 
+        # Performance trace: if the loop itself is ever blocked, say for how long.
+        self._lag_task = asyncio.create_task(self._run_loop_lag_monitor())
+        pending_reconnect = None      # (coarse reason, monotonic start) of the last drop
+
         while True:
             connected_at = 0.0
             try:
                 print("[JARVIS] Connecting...")
-                self._set_ui_state("THINKING")
+                self._set_ui_state("THINKING", "connecting")
                 _resumed_with = self._resume_handle is not None
                 config = self._build_config()
 
@@ -2324,6 +2398,12 @@ class JarvisLive:
                         self.ui.write_log("SYS: Reconnected — conversation restored.")
 
                     self._show_session_ready()
+                    if pending_reconnect is not None:
+                        # How long there was no live session, and why — a label,
+                        # never the error text.
+                        _why, _since = pending_reconnect
+                        log_reconnect(_why, _resumed_with, time.monotonic() - _since)
+                        pending_reconnect = None
 
                     if self._dashboard:
                         await self._dashboard.broadcast({"type": "status", "state": "active"})
@@ -2335,7 +2415,7 @@ class JarvisLive:
                     async def _show_mic_ready():
                         await self._mic_ready.wait()
                         if self._awake and not self.ui.muted:
-                            self._set_ui_state("LISTENING")
+                            self._set_ui_state("LISTENING", "mic_ready")
                         self.ui.write_log("SYS: Microphone ready.")
                     tg.create_task(_show_mic_ready())
                     tg.create_task(self._receive_audio())
@@ -2371,6 +2451,9 @@ class JarvisLive:
                 # session immediately with no backoff and no scary logs.
                 if _is_reconnect_signal(e):
                     print("[JARVIS] Voluntary reconnect requested.")
+                    pending_reconnect = (
+                        "requested:" + safe_label(getattr(self, "_reconnect_reason", "") or "settings"),
+                        time.monotonic())
                     if not _keep_context_of(e):
                         # A deliberate clean slate (voice change) — drop the
                         # handle so the next connect really does start empty.
@@ -2387,6 +2470,10 @@ class JarvisLive:
                 err_str = exception_details(e)
                 err_lower = err_str.lower()
                 session_age = time.monotonic() - connected_at if connected_at else 0.0
+                pending_reconnect = (
+                    classify_disconnect(leaf_exception_name(e), err_str, _resumed_with,
+                                        is_expected_session_expiry(err_str, session_age)),
+                    time.monotonic())
                 if _resumed_with and (
                     "resum" in err_lower
                     or "handle" in err_lower
@@ -2451,7 +2538,7 @@ class JarvisLive:
                 # Invalid API key — stop hammering the API, prompt re-configuration
                 if "API key not valid" in err_str or "1007" in err_str:
                     self.ui.write_log("ERR: API key invalid — please re-enter your key.")
-                    self._set_ui_state("SLEEPING")
+                    self._set_ui_state("SLEEPING", "api_key_invalid")
                     self.ui.prompt_reconfig()
                     while not self.ui._win._ready:
                         await asyncio.sleep(1)
@@ -2480,8 +2567,8 @@ class JarvisLive:
                     asyncio.create_task(self._save_session_summary())
 
             if self._is_speaking:
-                self.set_speaking(False)
-            self._set_ui_state("SLEEPING")
+                self.set_speaking(False, "disconnected")
+            self._set_ui_state("SLEEPING", "disconnected")
 
             if self._dashboard:
                 await self._dashboard.broadcast({"type": "status", "state": "sleeping"})

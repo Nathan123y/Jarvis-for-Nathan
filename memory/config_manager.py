@@ -130,6 +130,18 @@ def save_push_to_talk_enabled(enabled: bool) -> None:
     _save_flag("push_to_talk_enabled", enabled)
 
 
+def get_output_latency():
+    """Raw speaker-buffer setting, or None when the user has not chosen one.
+
+    ``JARVIS_OUTPUT_LATENCY`` in the environment wins, which makes it a quick
+    A/B switch from a terminal; otherwise the ``output_latency`` key in the
+    config file is used. Interpreted by core.playback_timing.parse_output_latency,
+    which treats anything unrecognised as "leave the default alone".
+    """
+    from os import environ
+    return environ.get("JARVIS_OUTPUT_LATENCY") or load_api_keys().get("output_latency")
+
+
 HUD_STYLES = ("face", "core")
 
 

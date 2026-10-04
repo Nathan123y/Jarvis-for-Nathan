@@ -5308,6 +5308,31 @@ class JarvisUI:
             self._menu_timer.start(250)
             self._poll_menu_control()
 
+        # Performance trace: a timer on this (Qt) thread. If a firing arrives
+        # much later than it asked for, the Qt thread was busy or macOS was
+        # throttling the app. Diagnostics must never be able to stop the HUD
+        # from starting, hence the guard.
+        try:
+            from core.perf_trace import HeartbeatLag
+            self._gui_beat = HeartbeatLag(interval=0.1, threshold=0.08)
+            self._gui_beat_timer = QTimer(self._win)
+            self._gui_beat_timer.timeout.connect(self._gui_heartbeat)
+            self._gui_beat_timer.start(100)
+        except Exception:
+            pass
+
+    def _gui_heartbeat(self):
+        try:
+            late = self._gui_beat.tick(time.monotonic())
+            if late is not None:
+                from core.perf_trace import log_lag
+                win = self._win
+                # Visible or not matters: a stall that only happens while the
+                # window is hidden or covered is macOS throttling, not Jarvis.
+                log_lag("gui", late, visible=bool(win.isVisible() and not win.isMinimized()))
+        except Exception:
+            pass
+
     def _poll_menu_control(self):
         # A crashed native speech announcer must not silence the mic forever.
         marker = self._menu_dir / "announcing"
