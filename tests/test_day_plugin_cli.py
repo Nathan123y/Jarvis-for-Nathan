@@ -160,6 +160,16 @@ class CommandLineTests(unittest.TestCase):
         self.assertIn("practice money only", text)
         self.assertLess(text.index("keys  Keys read from"), text.index("ok    keys and account"))
 
+    def test_check_fails_when_the_balance_is_too_small_to_day_trade(self):
+        code, text = self.run_cli("check", broker=DayFakeBroker(equity=10_000.0))
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL  keys and account", text)
+        self.assertIn("$10,000", text)
+        self.assertIn("$25,000", text)
+        self.assertIn("create a new one", text)
+        code, _ = self.run_cli("check", broker=DayFakeBroker(equity=25_000.0))
+        self.assertEqual(code, 0, "exactly the minimum is allowed, the same line the runner uses")
+
     def test_check_fails_on_the_weekly_traders_account(self):
         with patch.object(cli, "shares_weekly_account", lambda broker: True):
             code, text = self.run_cli("check", broker=DayFakeBroker())

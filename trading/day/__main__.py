@@ -25,7 +25,7 @@ from trading.credentials import (SAME_ACCOUNT, UNVERIFIED, key_report, make_brok
                                  shares_weekly_account)
 from trading.day import report as reports
 from trading.day.rule import STATUS_TEXT, DayConfig, backtest, to_sessions
-from trading.day.runner import DayRunner, review_latest_session
+from trading.day.runner import DAY_TRADING_MINIMUM, DayRunner, review_latest_session
 from trading.day.store import day_journal
 
 
@@ -65,6 +65,14 @@ def cmd_check(args) -> int:
             continue
         detail = ""
         if label == "keys and account":
+            if result["equity"] < DAY_TRADING_MINIMUM:
+                ok = False
+                print(f"  FAIL  {label}: this account holds {_usd(result['equity'])} but the day trader needs at "
+                      f"least {_usd(DAY_TRADING_MINIMUM)} (every trade here is a day trade, which brokers "
+                      "restrict on smaller accounts), so it would sit out every day. An Alpaca paper "
+                      "account's balance can't be changed once it exists: delete this paper account, create "
+                      "a new one with $100,000, and generate new keys for it.")
+                continue
             detail = f" (status {result['status'] or 'unknown'}, value {_usd(result['equity'])}, practice money only)"
         elif label == "its own account":
             if result is not False:

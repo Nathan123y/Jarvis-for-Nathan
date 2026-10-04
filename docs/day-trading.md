@@ -17,15 +17,20 @@ which refuses any address except Alpaca's paper-trading one.
 The day trader sells everything it holds at the end of every day. If it shared an account
 with the weekly trader it would sell the weekly trader's holdings too. So:
 
-1. In the Alpaca **Paper Trading** area, open a second paper account (the account switcher
-   near the top of the dashboard offers to create a new paper account; each one starts with
-   $100,000 of fake money).
+1. In the Alpaca **Paper Trading** area, open a second paper account (click the paper account
+   number in the upper left of the dashboard and choose "Open New Paper Account"). **Give it
+   at least $25,000, ideally $100,000.** Alpaca's docs say only the first paper account gets
+   $100,000 by default; a new one can start with less (one came up with $10,000), and a
+   balance cannot be changed after the account is created. If it starts too small, delete it
+   and create it again with the right amount. The day trader will not trade below $25,000,
+   and `check` tells you if the balance is too low.
 2. In that second account, generate API keys. You get a key ID and a secret. The secret is
    shown once.
 3. Open Jarvis **Plugin Settings**, find **Alpaca paper day trading**, paste both, and save.
    (Or set `ALPACA_PAPER_DAY_KEY_ID` and `ALPACA_PAPER_DAY_SECRET_KEY`.) Never paste keys
    into chat or a screenshot.
-4. Run `python3 -m trading.day check`. Every line should say `ok`.
+4. Run `python3 -m trading.day check`. Every line should say `ok`. Generate keys for each
+   new account separately: keys never carry over from another paper account.
 
 Four guards stop you mixing the accounts up: it refuses keys identical to the weekly
 trader's; `check` and `run` compare the two accounts themselves (different keys can still
