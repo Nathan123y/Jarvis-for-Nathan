@@ -32,6 +32,13 @@ python3 -m trading backtest    # the rule replayed over about 8 past years
 `backtest` prints the rule next to simply holding SPY, year by year, so you can
 see the bad years too. It is a replay, not a forecast.
 
+The free IEX price feed only reaches back to mid-2020 for most funds, so the
+default replay is about five years and contains a single down year (2022). For a
+longer replay, including the 2018 and early-2020 drops, try
+`python3 -m trading backtest --feed sip`. That asks Alpaca for the full-market
+history, which the free plan allows for data older than 15 minutes. If Alpaca
+refuses, it says so and nothing is harmed.
+
 ## Start it
 
 ```

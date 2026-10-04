@@ -70,6 +70,14 @@ class AlpacaPaper:
         except Exception:                       # network down, DNS, timeout, TLS
             raise BrokerError("Could not reach Alpaca. Check the internet connection.") from None
         status = getattr(response, "status_code", 0)
+        if status == 403:
+            try:
+                said = self._scrub(response.json().get("message", "")).lower()
+            except Exception:
+                said = ""
+            if "subscription" in said or "sip" in said:
+                raise BrokerError("Alpaca's free plan does not allow that price feed for the period asked. "
+                                  "Run again without --feed sip.")
         if status in (401, 403):
             raise BrokerError(f"Alpaca rejected the paper keys (HTTP {status}). Check the key ID and "
                               "secret, and that they came from a paper account.")
@@ -182,14 +190,20 @@ class AlpacaPaper:
                 out[str(symbol).upper()] = price
         return out
 
-    def daily_bars(self, symbols: list[str], start: str, end: Optional[str] = None
-                   ) -> dict[str, list[tuple[str, float]]]:
-        """Adjusted daily closes as {symbol: [(YYYY-MM-DD, close), ...]}, oldest first."""
+    def daily_bars(self, symbols: list[str], start: str, end: Optional[str] = None,
+                   feed: str = "iex") -> dict[str, list[tuple[str, float]]]:
+        """Adjusted daily closes as {symbol: [(YYYY-MM-DD, close), ...]}, oldest first.
+
+        feed "iex" is the free real-time feed (one exchange, history from mid-2020 for most
+        funds). feed "sip" is the full consolidated market; on the free plan it is limited to
+        data older than 15 minutes, so pass an `end` of yesterday or earlier."""
+        if feed not in ("iex", "sip"):
+            raise BrokerError("The price feed must be iex or sip.")
         out: dict[str, list[tuple[str, float]]] = {s: [] for s in symbols}
         token = None
         for _ in range(_MAX_PAGES):
             params = {"symbols": ",".join(symbols), "timeframe": "1Day", "start": start,
-                      "adjustment": "all", "feed": "iex", "limit": 10000, "sort": "asc"}
+                      "adjustment": "all", "feed": feed, "limit": 10000, "sort": "asc"}
             if end:
                 params["end"] = end
             if token:

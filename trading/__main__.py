@@ -150,8 +150,11 @@ def _pct(value: float) -> str:
 
 def cmd_backtest(args) -> int:
     start = (date.today() - timedelta(days=int(args.years * 365.25))).isoformat()
-    print(f"Fetching daily prices from {start} (free IEX data, adjusted for splits and dividends)...")
-    series = make_broker().daily_bars(list(UNIVERSE), start)
+    feed = args.feed
+    kind = "IEX-exchange" if feed == "iex" else "full-market (SIP)"
+    print(f"Fetching daily prices from {start} (free {kind} data, adjusted for splits and dividends)...")
+    end = (date.today() - timedelta(days=1)).isoformat() if feed == "sip" else None
+    series = make_broker().daily_bars(list(UNIVERSE), start, end, feed=feed)
     try:
         result = backtest(series, StrategyConfig(), rebalance=args.rebalance, slippage_bps=args.slippage_bps)
     except ValueError as exc:
@@ -163,7 +166,8 @@ def cmd_backtest(args) -> int:
         firsts = ", ".join(f"{s} {v[0][0]}" for s, v in sorted(series.items()) if v)
         print(f"\nNote: you asked for {args.years:g} years but this replay covers {covered:.1f}. The rule needs "
               f"about ten months of prices before its first decision, and the free data may start later for "
-              f"some funds. First price on file: {firsts}.")
+              f"some funds. First price on file: {firsts}."
+              + (" Try again with --feed sip, which may reach further back." if feed == "iex" else ""))
     print(f"\n{result['start']} to {result['end']}, decisions {result['rebalance']}, "
           f"{result['slippage_bps']:g} bp cost per dollar traded, {result['rebalances']} rebalances, "
           f"invested {result['time_invested']:.0%} of days\n")
@@ -175,10 +179,11 @@ def cmd_backtest(args) -> int:
     for year in sorted(result["strategy_by_year"]):
         print(f"{year:<8}{_pct(result['strategy_by_year'][year]):>12}"
               f"{_pct(result['benchmark_by_year'].get(year, 0.0)):>12}")
+    source = "the IEX exchange only" if feed == "iex" else "the consolidated market tape"
     print("\nRead this carefully: it is a replay, not a forecast. The rule's numbers were fixed before"
-          "\nany result was seen, but the period is one slice of history, prices are from the IEX"
-          "\nexchange only, and real fills can differ. A rule like this usually gives up some gain in"
-          "\nsteady rises to fall less in crashes; check whether the years above show that trade.")
+          "\nany result was seen, but the period is one slice of history, prices are from " + source + ","
+          "\nand real fills can differ. A rule like this usually gives up some gain in steady rises to"
+          "\nfall less in crashes; check whether the years above show that trade.")
     return 0
 
 
@@ -224,6 +229,8 @@ def main(argv=None) -> int:
         if name == "backtest":
             p.add_argument("--years", type=float, default=8.0)
             p.add_argument("--slippage-bps", type=float, default=2.0)
+            p.add_argument("--feed", choices=("iex", "sip"), default="iex",
+                           help="price feed: iex (default) or sip, which may reach further back")
     args = parser.parse_args(argv)
     try:
         return args.handler(args)
