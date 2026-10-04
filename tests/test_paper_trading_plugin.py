@@ -165,6 +165,11 @@ class CommandLineTests(unittest.TestCase):
             self.assertIn(f"ok    {label}", text)
         self.assertIn("practice money only", text)
 
+    def test_check_prints_key_hints_before_the_connection_tests(self):
+        with patch.object(cli, "key_report", return_value=["Keys read from: somewhere."]):
+            code, text = self.run_cli("check", broker=FakeBroker())
+        self.assertLess(text.index("keys  Keys read from"), text.index("ok    keys and account"))
+
     def test_check_failure_is_specific_and_nonzero(self):
         class NoData(FakeBroker):
             def latest_prices(self, symbols):

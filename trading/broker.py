@@ -71,8 +71,8 @@ class AlpacaPaper:
             raise BrokerError("Could not reach Alpaca. Check the internet connection.") from None
         status = getattr(response, "status_code", 0)
         if status in (401, 403):
-            raise BrokerError("Alpaca rejected the paper keys. Check the key ID and secret, "
-                              "and that they came from a paper account.")
+            raise BrokerError(f"Alpaca rejected the paper keys (HTTP {status}). Check the key ID and "
+                              "secret, and that they came from a paper account.")
         if status == 429:
             raise BrokerError("Alpaca is rate-limiting requests. It will retry shortly.")
         if status >= 500:

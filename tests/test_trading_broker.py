@@ -54,6 +54,10 @@ class SafetyTests(unittest.TestCase):
             with self.assertRaises(BrokerError) as caught:
                 api.account()
             self.assertIn(fragment, str(caught.exception))
+        api, _ = client(FakeResponse(401, {}))
+        with self.assertRaises(BrokerError) as caught:
+            api.account()
+        self.assertIn("HTTP 401", str(caught.exception))
 
     def test_unreadable_reply_is_handled(self):
         api, _ = client(FakeResponse(200, ValueError("not json")))

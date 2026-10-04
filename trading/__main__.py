@@ -19,7 +19,7 @@ from datetime import date, datetime, timedelta
 
 from trading import report as reports
 from trading.broker import BrokerError
-from trading.credentials import make_broker
+from trading.credentials import key_report, make_broker
 from trading.journal import Journal
 from trading.runner import Runner
 from trading.strategy import UNIVERSE, StrategyConfig, backtest
@@ -35,6 +35,9 @@ def _usd(value: float) -> str:
 
 def cmd_check(args) -> int:
     broker = make_broker()
+    for line in key_report():
+        print(f"  keys  {line}")
+    print()
     ok = True
     for label, call in (
         ("keys and account", lambda: broker.account()),
