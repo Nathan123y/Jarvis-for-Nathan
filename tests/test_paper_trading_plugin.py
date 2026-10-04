@@ -56,6 +56,14 @@ class StatusTests(PluginCase):
     def test_before_any_trading_it_explains_the_next_step(self):
         self.assertIn("hasn't traded yet", plugin.run({}))
 
+    def test_before_the_first_decision_it_says_whether_the_trader_is_running(self):
+        with patch.object(Journal, "runner_pid", return_value=4242):
+            self.assertIn("running and waiting for the market", plugin.run({}))
+        with patch.object(Journal, "runner_pid", return_value=None):
+            text = plugin.run({})
+        self.assertIn("isn't running", text)
+        self.assertIn("start the practice trader", text)
+
     def test_without_keys_it_points_to_settings(self):
         with patch.object(plugin, "load_keys", return_value=("", "")):
             self.assertIn("Plugin Settings", plugin.run({"action": "status"}))
@@ -239,6 +247,15 @@ class CommandLineTests(unittest.TestCase):
                         for s in symbols}
         _, text = self.run_cli("backtest", "--years", "8", broker=LateStart())
         self.assertIn("--feed sip", text)
+
+    def test_report_before_the_first_trade_says_if_the_trader_is_running(self):
+        for pid, expected in ((4242, "running and waiting"), (None, "not running")):
+            with patch.object(Journal, "runner_pid", return_value=pid), \
+                 patch.object(cli, "make_broker", side_effect=BrokerError("offline")):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    cli.main(["report"])
+            self.assertIn(expected, out.getvalue())
 
     def test_report_works_offline_from_the_record(self):
         self.journal.update_state(**STATE)
