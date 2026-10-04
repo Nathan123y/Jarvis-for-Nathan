@@ -158,6 +158,12 @@ def cmd_backtest(args) -> int:
         print(f"Could not run the backtest: {exc}")
         return 1
     mine, base = result["strategy"], result["benchmark"]
+    covered = (date.fromisoformat(result["end"]) - date.fromisoformat(result["start"])).days / 365.25
+    if covered < args.years - 1.0:
+        firsts = ", ".join(f"{s} {v[0][0]}" for s, v in sorted(series.items()) if v)
+        print(f"\nNote: you asked for {args.years:g} years but this replay covers {covered:.1f}. The rule needs "
+              f"about ten months of prices before its first decision, and the free data may start later for "
+              f"some funds. First price on file: {firsts}.")
     print(f"\n{result['start']} to {result['end']}, decisions {result['rebalance']}, "
           f"{result['slippage_bps']:g} bp cost per dollar traded, {result['rebalances']} rebalances, "
           f"invested {result['time_invested']:.0%} of days\n")

@@ -206,6 +206,17 @@ class CommandLineTests(unittest.TestCase):
         self.assertIn("Hold SPY", text)
         self.assertIn("not a forecast", text)
 
+    def test_backtest_explains_a_shorter_replay_than_requested(self):
+        class LateStart(FakeBroker):
+            def daily_bars(self, symbols, start, end=None):
+                stamps = weekdays_before("2026-10-06", 700)
+                return {s: [(d, 100.0 * 1.0004 ** i) for i, d in enumerate(stamps[(400 if s == "GLD" else 0):])]
+                        for s in symbols}
+        code, text = self.run_cli("backtest", "--years", "8", broker=LateStart())
+        self.assertEqual(code, 0)
+        self.assertIn("you asked for 8 years", text)
+        self.assertIn("GLD 20", text)
+
     def test_report_works_offline_from_the_record(self):
         self.journal.update_state(**STATE)
         with patch.object(cli, "make_broker", side_effect=BrokerError("Could not reach Alpaca.")):
