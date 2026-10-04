@@ -20,7 +20,8 @@ from trading.runner import Runner
 PLUGIN = {
     "name": "paper_trading",
     "description": (
-        "Check on and control the automatic PRACTICE stock trader, which uses fake money in an "
+        "Check on and control the slow, once-a-week PRACTICE stock trader (the weekly rotation rule, not "
+        "the day trader, which is the day_trading tool), which uses fake money in an "
         "Alpaca paper account. Use for 'how is my practice trading doing', 'is the trading bot "
         "beating the market', 'start the practice trader', 'pause trading', 'resume trading', "
         "'stop the trading bot', 'what would the trader do now'. Actions: status (default), plan, "

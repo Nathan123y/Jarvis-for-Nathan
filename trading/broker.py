@@ -75,6 +75,10 @@ class AlpacaPaper:
                 said = self._scrub(response.json().get("message", "")).lower()
             except Exception:
                 said = ""
+            if "pattern day" in said:
+                raise BrokerError("Alpaca blocked the order under the pattern day trading rule, which "
+                                  "applies to accounts under $25,000. Reset the paper account to "
+                                  "$100,000, or stop day trading.")
             if "subscription" in said or "sip" in said:
                 raise BrokerError("Alpaca's free plan does not allow that price feed for the period asked. "
                                   "Run again without --feed sip.")
@@ -111,6 +115,7 @@ class AlpacaPaper:
         if not isinstance(raw, dict):
             raise BrokerError("Alpaca sent an unexpected account reply.")
         return {
+            "account_id": str(raw.get("id") or raw.get("account_number") or ""),
             "status": str(raw.get("status", "")),
             "cash": _num(raw.get("cash")),
             "equity": _num(raw.get("equity")),
@@ -178,6 +183,66 @@ class AlpacaPaper:
     def cancel_open_orders(self) -> None:
         self._trading("DELETE", "/v2/orders")
 
+    def submit_entry_with_stop(self, symbol: str, qty: int, stop_price: float, *,
+                               client_order_id: Optional[str] = None) -> dict:
+        """Buy whole shares at market, with a protective stop that lives at Alpaca.
+
+        The stop is an "OTO" leg: it is created the moment the buy fills and keeps working even
+        if this computer sleeps or Jarvis closes. It lasts for the day only."""
+        symbol = str(symbol).upper()
+        if not _SYMBOL.match(symbol):
+            raise BrokerError("That is not a valid ticker symbol.")
+        if int(qty) != qty or qty < 1:
+            raise BrokerError("An entry order needs a whole number of shares, at least one.")
+        if not (stop_price > 0):
+            raise BrokerError("The protective stop price must be above zero.")
+        body: dict[str, Any] = {"symbol": symbol, "side": "buy", "type": "market",
+                                "time_in_force": "day", "qty": str(int(qty)), "order_class": "oto",
+                                "stop_loss": {"stop_price": f"{float(stop_price):.2f}"}}
+        if client_order_id:
+            body["client_order_id"] = str(client_order_id)[:128]
+        raw = self._trading("POST", "/v2/orders", body=body)
+        return {"id": str(raw.get("id", "")), "status": str(raw.get("status", "")),
+                "client_order_id": str(raw.get("client_order_id", ""))}
+
+    def cancel_order(self, order_id: str) -> None:
+        """Cancel one open order (for example a protective stop) by its id."""
+        order_id = str(order_id or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9-]{8,64}", order_id):
+            raise BrokerError("That is not a valid order id.")
+        self._trading("DELETE", f"/v2/orders/{order_id}")
+
+    def close_position(self, symbol: str) -> None:
+        """Sell the whole position in one fund at market. Any open order that still holds some of
+        the shares (a protective stop) must be cancelled first, or Alpaca refuses."""
+        symbol = str(symbol).upper()
+        if not _SYMBOL.match(symbol):
+            raise BrokerError("That is not a valid ticker symbol.")
+        self._trading("DELETE", f"/v2/positions/{symbol}")
+
+    def closed_orders(self, after: str) -> list[dict]:
+        """Filled orders since `after` (an RFC 3339 time), legs included, oldest first."""
+        raw = self._trading("GET", "/v2/orders", params={
+            "status": "closed", "after": after, "limit": 500, "direction": "asc", "nested": "true"})
+        out: list[dict] = []
+
+        def add(order: Any) -> None:
+            if not isinstance(order, dict):
+                return
+            qty = _num(order.get("filled_qty"))
+            if qty > 0:
+                out.append({"symbol": str(order.get("symbol", "")).upper(),
+                            "side": str(order.get("side", "")), "qty": qty,
+                            "price": _num(order.get("filled_avg_price")),
+                            "type": str(order.get("type", "")),
+                            "filled_at": str(order.get("filled_at", ""))})
+            for leg in order.get("legs") or []:
+                add(leg)
+
+        for order in raw if isinstance(raw, list) else []:
+            add(order)
+        return out
+
     # ── market data (free IEX feed) ───────────────────────────────────────────
     def latest_prices(self, symbols: list[str]) -> dict[str, float]:
         raw = self._data("/v2/stocks/trades/latest",
@@ -219,3 +284,37 @@ class AlpacaPaper:
             if not token:
                 break
         return out
+
+    def minute_bars(self, symbols: list[str], start: str, end: Optional[str] = None,
+                    feed: str = "iex", *, max_pages: int = 400,
+                    progress=None) -> dict[str, list[tuple]]:
+        """One-minute bars as {symbol: [(utc_time, open, high, low, close), ...]}, oldest first.
+
+        Prices are as traded (not adjusted), which is right for a rule that is flat every night.
+        Extended-hours minutes are included; the caller keeps the regular session. A minute with
+        no trades on the chosen feed simply has no bar."""
+        if feed not in ("iex", "sip"):
+            raise BrokerError("The price feed must be iex or sip.")
+        out: dict[str, list[tuple]] = {s: [] for s in symbols}
+        token = None
+        for page in range(max_pages):
+            params = {"symbols": ",".join(symbols), "timeframe": "1Min", "start": start,
+                      "feed": feed, "limit": 10000, "sort": "asc"}
+            if end:
+                params["end"] = end
+            if token:
+                params["page_token"] = token
+            raw = self._data("/v2/stocks/bars", params=params)
+            bars = raw.get("bars") if isinstance(raw, dict) else None
+            for symbol, items in (bars.items() if isinstance(bars, dict) else []):
+                for bar in items or []:
+                    o, h, l, c = (_num(bar.get(k)) for k in ("o", "h", "l", "c"))
+                    if min(o, h, l, c) > 0 and bar.get("t"):
+                        out.setdefault(str(symbol).upper(), []).append((str(bar["t"]), o, h, l, c))
+            if progress:
+                progress(page + 1)
+            token = raw.get("next_page_token") if isinstance(raw, dict) else None
+            if not token:
+                return out
+        raise BrokerError("That much minute-by-minute history is more than one run can fetch. "
+                          "Ask for fewer years.")

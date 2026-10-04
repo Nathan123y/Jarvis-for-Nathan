@@ -29,6 +29,7 @@ config/gmail_*_token.json.tmp
 config/product_sales/
 # Paper-trading journal, state and runner log (numbers only)
 config/trading/
+config/trading_day/
 .env
 .env.*
 
