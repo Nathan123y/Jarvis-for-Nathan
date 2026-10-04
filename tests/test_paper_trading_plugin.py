@@ -157,7 +157,7 @@ class CommandLineTests(unittest.TestCase):
 
     def test_check_passes_and_names_each_step(self):
         class Healthy(FakeBroker):
-            def daily_bars(self, symbols, start, end=None):
+            def daily_bars(self, symbols, start, end=None, feed="iex"):
                 return {"SPY": [("2026-10-01", 500.0), ("2026-10-02", 501.0)]}
         code, text = self.run_cli("check", broker=Healthy())
         self.assertEqual(code, 0)
@@ -197,7 +197,7 @@ class CommandLineTests(unittest.TestCase):
 
     def test_backtest_prints_both_columns_and_the_caveat(self):
         class History(FakeBroker):
-            def daily_bars(self, symbols, start, end=None):
+            def daily_bars(self, symbols, start, end=None, feed="iex"):
                 stamps = weekdays_before("2026-10-06", 700)
                 return {s: [(d, 100.0 * 1.0004 ** i) for i, d in enumerate(stamps)] for s in symbols}
         code, text = self.run_cli("backtest", broker=History())
@@ -208,7 +208,7 @@ class CommandLineTests(unittest.TestCase):
 
     def test_backtest_explains_a_shorter_replay_than_requested(self):
         class LateStart(FakeBroker):
-            def daily_bars(self, symbols, start, end=None):
+            def daily_bars(self, symbols, start, end=None, feed="iex"):
                 stamps = weekdays_before("2026-10-06", 700)
                 return {s: [(d, 100.0 * 1.0004 ** i) for i, d in enumerate(stamps[(400 if s == "GLD" else 0):])]
                         for s in symbols}
@@ -216,6 +216,29 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("you asked for 8 years", text)
         self.assertIn("GLD 20", text)
+
+    def test_backtest_sip_feed_asks_for_data_ending_yesterday(self):
+        seen = {}
+
+        class Recorder(FakeBroker):
+            def daily_bars(self, symbols, start, end=None, feed="iex"):
+                seen.update(feed=feed, end=end)
+                stamps = weekdays_before("2026-10-06", 700)
+                return {s: [(d, 100.0 * 1.0004 ** i) for i, d in enumerate(stamps)] for s in symbols}
+        code, text = self.run_cli("backtest", "--feed", "sip", broker=Recorder())
+        self.assertEqual(code, 0)
+        self.assertEqual(seen["feed"], "sip")
+        self.assertRegex(seen["end"], r"^\d{4}-\d{2}-\d{2}$")
+        self.assertIn("consolidated market tape", text)
+
+    def test_the_short_replay_note_suggests_the_sip_feed(self):
+        class LateStart(FakeBroker):
+            def daily_bars(self, symbols, start, end=None, feed="iex"):
+                stamps = weekdays_before("2026-10-06", 700)
+                return {s: [(d, 100.0 * 1.0004 ** i) for i, d in enumerate(stamps[(400 if s == "GLD" else 0):])]
+                        for s in symbols}
+        _, text = self.run_cli("backtest", "--years", "8", broker=LateStart())
+        self.assertIn("--feed sip", text)
 
     def test_report_works_offline_from_the_record(self):
         self.journal.update_state(**STATE)

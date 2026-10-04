@@ -73,7 +73,7 @@ class FakeBroker:
     def latest_prices(self, symbols):
         return {s: (self.spy if s == "SPY" else 100.0) for s in symbols}
 
-    def daily_bars(self, symbols, start, end=None):
+    def daily_bars(self, symbols, start, end=None, feed="iex"):
         return {s: list(self.bars.get(s, [])) for s in symbols}
 
     def submit_market_order(self, symbol, side, *, qty=None, notional=None, client_order_id=None):

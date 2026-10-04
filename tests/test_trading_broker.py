@@ -109,6 +109,30 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(session.calls[0]["params"]["adjustment"], "all")
 
 
+class FeedTests(unittest.TestCase):
+    def test_the_price_feed_is_selectable_and_validated(self):
+        api, session = client(FakeResponse(200, {"bars": {}, "next_page_token": None}))
+        api.daily_bars(["SPY"], "2019-01-01", "2026-10-03", feed="sip")
+        self.assertEqual(session.calls[0]["params"]["feed"], "sip")
+        self.assertEqual(session.calls[0]["params"]["end"], "2026-10-03")
+        api, _ = client()
+        with self.assertRaises(BrokerError):
+            api.daily_bars(["SPY"], "2019-01-01", feed="bogus")
+
+    def test_a_plan_refusal_is_not_blamed_on_the_keys(self):
+        api, _ = client(FakeResponse(403, {"message": "subscription does not permit querying recent SIP data"}))
+        with self.assertRaises(BrokerError) as caught:
+            api.daily_bars(["SPY"], "2019-01-01", feed="sip")
+        self.assertIn("free plan", str(caught.exception))
+        self.assertNotIn("keys", str(caught.exception))
+
+    def test_a_plain_403_is_still_a_key_problem(self):
+        api, _ = client(FakeResponse(403, {"message": "forbidden."}))
+        with self.assertRaises(BrokerError) as caught:
+            api.account()
+        self.assertIn("rejected the paper keys", str(caught.exception))
+
+
 class OrderTests(unittest.TestCase):
     def test_dollar_buy_is_a_day_market_order(self):
         api, session = client(FakeResponse(200, {"id": "o1", "status": "accepted", "client_order_id": "c1"}))
