@@ -4,6 +4,9 @@ Jarvis can run an automatic stock-trading experiment on an Alpaca **paper**
 account: real market prices, fake money. The point is to find out, with no risk,
 whether the rule beats simply holding the market.
 
+Looking for the same-day version? See [day-trading.md](day-trading.md). It is a separate
+experiment with its own paper account.
+
 **This cannot touch real money.** The code only accepts Alpaca's paper-trading
 address and refuses any other, and there is no setting that changes that.
 
