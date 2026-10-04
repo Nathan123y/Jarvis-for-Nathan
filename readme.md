@@ -305,7 +305,9 @@ plugins stay in place. It does not require a new API key or another dependency
 installation. If you pull updates in VS Code, quit and reopen the app to run
 the updated code. If you move the project folder or replace that Python,
 run the installer again. Startup errors are recorded in
-`~/Library/Logs/Jarvis/launch.log`.
+`~/Library/Logs/Jarvis/launch.log`. If Jarvis stutters, lags or its status
+flickers, see [docs/lag-diagnosis.md](docs/lag-diagnosis.md) to measure where
+it comes from.
 
 If macOS blocks the launched Python process from opening `main.py` on your
 Desktop, use this command in the current Jarvis folder after pulling updates:

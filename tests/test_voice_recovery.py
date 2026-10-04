@@ -50,6 +50,9 @@ class VoiceRecoveryTests(unittest.IsolatedAsyncioTestCase):
             "ThreadPoolExecutor": ThreadPoolExecutor,
             "audio_devices": SimpleNamespace(resolve=lambda *args: None),
             "get_output_device": lambda: None,
+            "get_output_latency": lambda: None,
+            "parse_output_latency": lambda value: None,
+            "log_audio_write": lambda *args, **kwargs: None,
             "sd": SimpleNamespace(RawOutputStream=lambda **kwargs: speaker),
             "RECEIVE_SAMPLE_RATE": 24000, "CHANNELS": 1, "CHUNK_SIZE": 1024,
             "_TAIL_MARGIN": 0.25, "_CURSOR_SLACK": 0.15,
@@ -70,7 +73,7 @@ class VoiceRecoveryTests(unittest.IsolatedAsyncioTestCase):
         player._echo = SimpleNamespace(note_output=lambda *args: None)
         player.ui = SimpleNamespace(set_audio_level=lambda value: None)
 
-        def set_speaking(value):
+        def set_speaking(value, reason=None):
             player._is_speaking = value
 
         player.set_speaking = set_speaking
@@ -91,7 +94,7 @@ class VoiceRecoveryTests(unittest.IsolatedAsyncioTestCase):
         player = Player()
         player._is_speaking = True
         player.ui = SimpleNamespace(muted=False)
-        player._set_ui_state = states.append
+        player._set_ui_state = lambda state, reason="runtime": states.append(state)
         fc = SimpleNamespace(name="save_memory", id="1",
                              args={"category": "notes", "key": "test", "value": "ok"})
         with contextlib.redirect_stdout(io.StringIO()):
