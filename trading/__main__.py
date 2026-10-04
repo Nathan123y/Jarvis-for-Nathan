@@ -140,7 +140,13 @@ def cmd_report(args) -> int:
     except BrokerError as exc:
         print(f"(Using the last recorded numbers: {exc})\n")
         account = positions = None
-    print(reports.render(reports.build(state, snapshots, account=account, positions=positions, spy_price=spy)))
+    built = reports.build(state, snapshots, account=account, positions=positions, spy_price=spy)
+    print(reports.render(built))
+    if not built["started"]:
+        running = journal.runner_pid() is not None
+        print("The background trader is running and waiting for the market." if running else
+              "The background trader is not running. Start it with `python3 -m trading run`, or tell Jarvis "
+              "\"start the practice trader\".")
     return 0
 
 

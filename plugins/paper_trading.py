@@ -63,8 +63,12 @@ def _status() -> str:
         key, secret = load_keys()
         if not (key and secret):
             return "The practice trader isn't set up yet. " + _connect()
-        return ("The practice trader hasn't traded yet. Say 'start the practice trader' and it "
-                "will make its first decision during the next market session.")
+        if journal.runner_pid() is not None:
+            paused = " Trading is paused." if journal.paused() else ""
+            return ("The practice trader is running and waiting for the market. Its first decision "
+                    "comes after the market has been open for half an hour." + paused)
+        return ("The practice trader hasn't traded yet and isn't running. Say 'start the practice "
+                "trader' and it will make its first decision during the next market session.")
     snapshots = reports.latest_per_day(journal.events("snapshot"))
     text = reports.spoken(reports.build(state, snapshots))
     if journal.runner_pid() is None:
