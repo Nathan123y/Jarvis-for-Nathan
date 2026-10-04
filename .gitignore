@@ -17,6 +17,7 @@ config/gmail_token.json.tmp
 config/gmail_*_token.json
 config/gmail_*_token.json.tmp
 config/product_sales/         # private promotion drafts, contacts, and opt-outs
+config/trading/              # paper-trading journal, state and runner log (numbers only)
 .env
 .env.*
 
