@@ -53,10 +53,10 @@ def key_report() -> list[str]:
         problems.append("The key ID does not start with PK, which paper key IDs normally do. "
                         "It may be the secret, or the two boxes may be swapped.")
     if len(key) > 30:
-        problems.append(f"The key ID box holds {len(key)} characters. A key ID is normally about 20, "
+        problems.append(f"The key ID box holds {len(key)} characters. A key ID is usually 20 to 30, "
                         "so the secret may be in the wrong box.")
     if len(secret) < 35:
-        problems.append(f"The secret box holds only {len(secret)} characters. A secret is normally 40; "
+        problems.append(f"The secret box holds only {len(secret)} characters. A secret is usually 40 or more; "
                         "it may have been cut short when copying.")
     if any(ch.isspace() or ch in "\"'" for ch in key + secret):
         problems.append("A key contains a space or a quote mark inside it. Re-copy it cleanly.")
