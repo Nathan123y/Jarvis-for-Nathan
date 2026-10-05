@@ -197,6 +197,47 @@ class CommandLineTests(unittest.TestCase):
         self.assertIn("sold them first", text)
         self.assertIsNone(self.journal.runner_pid())
 
+    def test_run_says_which_sizes_it_uses_and_writes_them_down(self):
+        with patch.object(cli.DayRunner, "run_forever", lambda self, stop=None: None):
+            _, standard = self.run_cli("run", broker=DayFakeBroker())
+            self.assertIn("Sizes: up to 0.25% of the account at risk per trade, at most 25% of it in one fund "
+                          "(the standard).", standard)
+            _, bigger = self.run_cli("run", "--risk-pct", "0.5", "--max-fund-pct", "50", broker=DayFakeBroker())
+        self.assertIn("Sizes: up to 0.5% of the account at risk per trade, at most 50% of it in one fund", bigger)
+        self.assertIn("gains and losses scale", bigger)
+        self.assertNotIn("(the standard)", bigger)
+        configs = self.journal.events("config")
+        self.assertEqual([(c["risk_pct"], c["max_fund_pct"]) for c in configs], [(0.25, 25.0), (0.5, 50.0)])
+
+    def test_bigger_settings_buy_bigger_positions_but_never_borrow(self):
+        standard, bigger = DayFakeBroker(), DayFakeBroker()
+        self.run_cli("run", "--once", broker=standard)
+        second_day = tempfile.TemporaryDirectory()                    # a fresh record: one buy per fund per day
+        self.addCleanup(second_day.cleanup)
+        self.journal = Journal(Path(second_day.name))
+        self.run_cli("run", "--once", "--risk-pct", "0.5", "--max-fund-pct", "50", broker=bigger)
+        by_symbol = lambda broker: {o["symbol"]: o["qty"] for o in broker.entry_orders}
+        self.assertGreater(by_symbol(bigger)["SPY"], by_symbol(standard)["SPY"] * 1.8)
+        self.assertGreaterEqual(bigger.cash, 0, "the second fund must be limited by the cash left, not borrow")
+        self.assertLessEqual(bigger.held["SPY"] * 100.7, 50_100, "half the account in one fund at most")
+
+    def test_sizes_it_cannot_use_are_refused_before_anything_is_contacted(self):
+        for flags in (("--max-fund-pct", "80"), ("--risk-pct", "0"), ("--risk-pct", "nan"),
+                      ("--risk-pct", "3"), ("--max-fund-pct", "-1")):
+            with self.subTest(flags=flags):
+                err = io.StringIO()
+                with patch.object(cli, "make_broker", side_effect=AssertionError("contacted Alpaca")), \
+                        contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as caught:
+                    cli.main(["run", *flags])
+                self.assertEqual(caught.exception.code, 2)
+                self.assertIn("must be more than 0%", err.getvalue())
+        self.assertIsNone(self.journal.runner_pid())
+
+    def test_only_run_plan_and_backtest_take_size_settings(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
+            cli.main(["check", "--risk-pct", "1"])
+        self.assertEqual(caught.exception.code, 2)
+
     def test_a_second_runner_is_refused(self):
         self.journal.claim_runner()
         self.addCleanup(self.journal.release_runner)
@@ -233,6 +274,31 @@ class CommandLineTests(unittest.TestCase):
         for expected in ("This rule", "Hold SPY", "Trades: 140", "Cost check", "not a forecast",
                          "IEX exchange", "without dividends"):
             self.assertIn(expected, text)
+
+    def test_backtest_with_other_sizes_says_so_and_stops_claiming_the_rule_was_fixed_in_advance(self):
+        class History(DayFakeBroker):
+            def minute_bars(self, symbols, start, end=None, feed="iex", **_):
+                raw = history_raw(70)
+                return {s: raw[s] for s in symbols}
+        _, standard = self.run_cli("backtest", broker=History())
+        self.assertNotIn("Sizes:", standard)
+        self.assertIn("The rule's numbers were fixed before", standard)
+        code, bigger = self.run_cli("backtest", "--risk-pct", "0.5", "--max-fund-pct", "50", broker=History())
+        self.assertEqual(code, 0)
+        self.assertIn("Sizes: up to 0.5% of the account at risk per trade, at most 50% of it in one fund "
+                      "(standard: 0.25% and 25%).", bigger)
+        self.assertIn("These sizes were chosen after", bigger)
+        self.assertNotIn("fixed before", bigger)
+        self.assertIn("not a forecast", bigger)
+
+    def test_plan_with_other_sizes_names_them(self):
+        class Full(DayFakeBroker):
+            def minute_bars(self, symbols, start, end=None, feed="iex", **_):
+                return {s: raw_bars(DAY, self.bars[s]) for s in symbols}
+        _, standard = self.run_cli("plan", broker=Full())
+        self.assertNotIn("these sizes", standard)
+        _, bigger = self.run_cli("plan", "--max-fund-pct", "50", "--risk-pct", "1", broker=Full())
+        self.assertIn("these sizes: up to 1% of the account at risk per trade, at most 50%", bigger)
 
     def test_backtest_asks_for_yesterday_as_the_end_on_the_sip_feed(self):
         seen = {}

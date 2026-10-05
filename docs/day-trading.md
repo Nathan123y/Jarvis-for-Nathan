@@ -78,6 +78,32 @@ It sits out early-close days, days with a missing opening range, a very narrow r
 room to be wrong) and a stop more than 1.5% away. Every number was fixed from round values
 before any result was seen, not tuned to history.
 
+## Bigger or smaller positions
+
+Two size settings can be changed when you start it (and in `plan` and `backtest`, to see what a
+size would have done):
+
+```
+python3 -m trading.day run --risk-pct 0.5 --max-fund-pct 50
+```
+
+| Setting | Standard | Largest allowed | Meaning |
+| --- | --- | --- | --- |
+| `--risk-pct` | 0.25 | 2 | most of the account to lose if the stop is hit, in percent |
+| `--max-fund-pct` | 25 | 50 | most of the account to hold in one fund, in percent |
+
+The start-up line shows the sizes in use, and the journal records them. Only the sizes change; the
+entry, the stop, the sale before the close, the 1% daily-loss halt and every other safety check stay
+as they are. It never borrows, so 50% in each of its two funds is the ceiling, and the second fund is
+limited by the cash left after the first.
+
+Please keep in mind what a bigger size does and does not do. It multiplies whatever the rule does,
+good days and bad days alike; it does not make the rule better. On a typical day the standard 25%
+cap is what limits the size, so `--max-fund-pct` is the setting that matters most. The size settings
+are only for the command line: starting it by voice always uses the standard sizes. And if you run
+`backtest` with other sizes, remember that picking the best-looking size from several runs only
+fits the past.
+
 ## Safety limits
 
 | Limit | What happens |

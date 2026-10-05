@@ -22,7 +22,8 @@ from datetime import date, datetime, timedelta
 from trading.broker import BrokerError
 from trading.credentials import key_report, make_broker
 from trading.day import report as reports
-from trading.day.rule import STATUS_TEXT, DayConfig, backtest, to_sessions
+from trading.day.rule import (LIMIT_MAX_FUND_PCT, LIMIT_RISK_PCT, STANDARD_MAX_FUND_PCT, STANDARD_RISK_PCT,
+                              STATUS_TEXT, DayConfig, backtest, size_text, sized_config, to_sessions)
 from trading.day.runner import DAY_TRADING_MINIMUM, DayRunner, review_latest_session
 from trading.day.store import day_journal
 
@@ -37,6 +38,11 @@ def _usd(value: float) -> str:
 
 def _pct(value: float) -> str:
     return f"{value * 100:+.1f}%"
+
+
+def _cfg(args) -> DayConfig:
+    """The rule with whatever size settings were given on the command line (else the standard)."""
+    return getattr(args, "cfg", None) or DayConfig()
 
 
 def cmd_check(args) -> int:
@@ -97,11 +103,13 @@ def cmd_check(args) -> int:
 
 
 def cmd_plan(args) -> int:
-    review = review_latest_session(make_broker())
+    cfg = _cfg(args)
+    review = review_latest_session(make_broker(), cfg)
     if not review["day"]:
         print("No full trading session of minute prices came back from the last week.")
         return 1
-    print(f"The rule on the latest full session, {review['day']}, with a {_usd(review['equity'])} account:\n")
+    print(f"The rule on the latest full session, {review['day']}, with a {_usd(review['equity'])} account"
+          + (f" and these sizes: {size_text(cfg)}" if cfg != DayConfig() else "") + ":\n")
     for symbol, result in review["results"].items():
         text = STATUS_TEXT.get(result["status"], result["status"])
         rng = result.get("range")
@@ -130,13 +138,18 @@ def cmd_run(args) -> int:
     for name in ("SIGTERM", "SIGHUP"):                       # SIGHUP: the terminal window was closed
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), lambda *_: stop.set())
-    runner = DayRunner(broker, journal, log=_stamp)
+    cfg = _cfg(args)
+    runner = DayRunner(broker, journal, cfg=cfg, log=_stamp)
     left = "flat"
     try:
         if args.once:
             print(runner.step())
             return 0
         _stamp("Day trader running with practice money only. Ctrl+C stops it.")
+        _stamp(f"Sizes: {size_text(cfg)}" + (" (the standard)." if cfg == DayConfig() else " (bigger or smaller "
+               "than standard: gains and losses scale with it)."))
+        journal.record("config", risk_pct=round(cfg.risk_per_trade * 100, 4),
+                       max_fund_pct=round(cfg.max_position_pct * 100, 4))
         _stamp("It looks every 15 seconds in market hours and sells everything before the close. "
                "Keep this Mac awake and online during the session.")
         try:
@@ -176,7 +189,7 @@ def cmd_report(args) -> int:
 
 
 def cmd_backtest(args) -> int:
-    cfg = DayConfig()
+    cfg = _cfg(args)
     today = date.today()
     start = (today - timedelta(days=int(args.years * 365.25))).isoformat()
     feed = args.feed
@@ -200,7 +213,11 @@ def cmd_backtest(args) -> int:
         return 1
     mine, base = result["strategy"], result["benchmark"]
     print(f"\n{result['start']} to {result['end']}: {result['days']} full trading days, "
-          f"{result['slippage_bps']:g} bp cost on every buy and every sale\n")
+          f"{result['slippage_bps']:g} bp cost on every buy and every sale")
+    custom = cfg != DayConfig()
+    if custom:
+        print(f"Sizes: {size_text(cfg)} (standard: {STANDARD_RISK_PCT:g}% and {STANDARD_MAX_FUND_PCT:g}%).")
+    print()
     print(f"{'':<24}{'This rule':>12}{'Hold SPY':>12}")
     for label, key in (("Total return", "total_return"), ("Per year (CAGR)", "cagr"),
                        ("Worst fall from a high", "max_drawdown")):
@@ -234,8 +251,10 @@ def cmd_backtest(args) -> int:
     source = "the IEX exchange only" if feed == "iex" else "the consolidated market tape"
     benchmark = ("dividend-adjusted" if result["benchmark_adjusted"] else
                  "without dividends, so it understates holding SPY by about 1.3 points a year")
-    print("\nRead this carefully: it is a replay, not a forecast. The rule's numbers were fixed before"
-          f"\nany result was seen. Candles come from {source}, so highs and lows can differ from the"
+    fixed = ("The rule's numbers were fixed before\nany result was seen." if not custom else
+             "These sizes were chosen after\nseeing a result, and picking the best-looking size from several runs only fits the past.")
+    print(f"\nRead this carefully: it is a replay, not a forecast. {fixed} Candles come from {source}, "
+          "so highs and lows can differ from the"
           "\nfull market. Buys fill at the next candle's open and stops at their price (or the open"
           "\nafter a gap), so real fills can be worse; real stops are also triggered by Alpaca's own"
           "\nprice feed, not these candles. The live safety checks (1% down on the day, skipping a"
@@ -280,6 +299,13 @@ def main(argv=None) -> int:
                                     ("stop", cmd_stop, "stop the background day trader")):
         p = sub.add_parser(name, help=helptext)
         p.set_defaults(handler=handler)
+        if name in ("run", "plan", "backtest"):
+            p.add_argument("--risk-pct", type=float, default=STANDARD_RISK_PCT, metavar="PCT",
+                           help=f"most of the account to risk on one trade, in percent "
+                                f"(standard {STANDARD_RISK_PCT:g}, at most {LIMIT_RISK_PCT:g})")
+            p.add_argument("--max-fund-pct", type=float, default=STANDARD_MAX_FUND_PCT, metavar="PCT",
+                           help=f"most of the account to put in one fund, in percent "
+                                f"(standard {STANDARD_MAX_FUND_PCT:g}, at most {LIMIT_MAX_FUND_PCT:g})")
         if name == "run":
             p.add_argument("--once", action="store_true", help="do one pass and exit")
         if name == "backtest":
@@ -288,6 +314,11 @@ def main(argv=None) -> int:
             p.add_argument("--feed", choices=("iex", "sip"), default="iex",
                            help="price feed: iex (default, same as live) or sip (full market)")
     args = parser.parse_args(argv)
+    if hasattr(args, "risk_pct"):
+        try:
+            args.cfg = sized_config(args.risk_pct, args.max_fund_pct)
+        except ValueError as exc:
+            parser.error(str(exc))
     try:
         return args.handler(args)
     except BrokerError as exc:

@@ -92,6 +92,65 @@ class SizingTests(unittest.TestCase):
         self.assertIsNone(rule.size_entry(100, 101, 99, 0, CFG)[0])
 
 
+class SizeSettingTests(unittest.TestCase):
+    def test_no_settings_is_the_standard_rule(self):
+        self.assertEqual(rule.sized_config(), DayConfig())
+
+    def test_only_the_two_sizes_change_and_percentages_become_fractions(self):
+        import dataclasses
+        bigger = rule.sized_config(0.5, 50)
+        self.assertEqual(bigger, dataclasses.replace(DayConfig(), risk_per_trade=0.005, max_position_pct=0.5))
+        self.assertEqual((bigger.daily_loss_halt, bigger.max_risk_pct, bigger.flatten_before_close,
+                          bigger.last_entry_minute), (0.01, 0.015, 15, 14 * 60))
+
+    def test_a_bigger_setting_buys_more_shares(self):
+        bigger = rule.sized_config(0.5, 50)
+        # $1 stop: standard 250 shares (risk), bigger 500 (the 50% cap: 50,000 / 100)
+        self.assertEqual(rule.size_entry(100.0, 100.0, 99.0, 100_000, bigger)[0]["qty"], 500)
+        # the cap decides when the stop is close: 25% buys 247, 50% buys 495
+        self.assertEqual(rule.size_entry(100.81, 100.6, 100.0, 100_000, bigger)[0]["qty"], 495)
+
+    def test_the_cap_still_limits_a_large_risk_setting(self):
+        riskier = rule.sized_config(2.0, 25)
+        self.assertEqual(rule.size_entry(100.0, 100.0, 99.0, 100_000, riskier)[0]["qty"], 250)
+
+    def test_a_smaller_setting_buys_fewer_shares(self):
+        self.assertEqual(rule.size_entry(100.0, 100.0, 99.0, 100_000, rule.sized_config(0.1, 25))[0]["qty"], 100)
+
+    def test_the_largest_allowed_values_are_accepted(self):
+        self.assertEqual(rule.sized_config(2, 50).max_position_pct, 0.5)
+
+    def test_values_the_trader_cannot_use_are_refused(self):
+        nan, inf = float("nan"), float("inf")
+        for risk, fund in ((0, 25), (-1, 25), (2.01, 25), (nan, 25), (inf, 25), ("1", 25), (True, 25), (None, 25),
+                           (0.25, 0), (0.25, -5), (0.25, 50.01), (0.25, 100), (0.25, nan), (0.25, inf), (0.25, "50")):
+            with self.subTest(risk=risk, fund=fund):
+                with self.assertRaises(ValueError):
+                    rule.sized_config(risk, fund)
+
+    def test_the_refusal_says_which_setting_and_the_limit(self):
+        with self.assertRaisesRegex(ValueError, r"Most in one fund.*at most 50%"):
+            rule.sized_config(0.25, 80)
+        with self.assertRaisesRegex(ValueError, r"Risk per trade.*at most 2%"):
+            rule.sized_config(5, 25)
+
+    def test_the_sizes_read_back_in_words(self):
+        self.assertEqual(rule.size_text(DayConfig()),
+                         "up to 0.25% of the account at risk per trade, at most 25% of it in one fund")
+        self.assertIn("at most 50% of it in one fund", rule.size_text(rule.sized_config(0.5, 50)))
+
+    def test_a_bigger_size_scales_a_backtest_in_both_directions(self):
+        bigger = rule.sized_config(0.5, 50)
+        sessions, _ = sessions_for(70)
+        win_std = rule.backtest(sessions, CFG, slippage_bps=0.0)["strategy"]["total_return"]
+        win_big = rule.backtest(sessions, bigger, slippage_bps=0.0)["strategy"]["total_return"]
+        self.assertGreater(win_big, win_std * 1.5)
+        sessions, _ = sessions_for(70, crash_at=700)
+        loss_std = rule.backtest(sessions, CFG, slippage_bps=0.0)["strategy"]["total_return"]
+        loss_big = rule.backtest(sessions, bigger, slippage_bps=0.0)["strategy"]["total_return"]
+        self.assertLess(loss_big, loss_std * 1.5)                      # a bigger loss (both negative)
+
+
 class SimulationTests(unittest.TestCase):
     def test_a_quiet_climb_is_sold_before_the_close(self):
         result = rule.simulate_day(day_bars(), CFG, 100_000, 0.0)
