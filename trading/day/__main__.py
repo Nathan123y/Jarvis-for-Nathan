@@ -4,6 +4,7 @@
     plan        show what the rule did (or would have done) in the latest full session
     backtest    replay the rule over past years, next to simply holding SPY
     analyst     preview what the pre-market analyst would pick today (sends nothing, saves nothing)
+    autostart   start the day trader by itself every weekday morning (macOS): install | remove | status
     run         start the automatic day trader (leave it running; Ctrl+C stops it)
                   add --analyst to let the pre-market analyst choose what to trade each day
     report      results so far, next to simply holding SPY, with estimated costs
@@ -366,6 +367,48 @@ def cmd_backtest(args) -> int:
     return 0
 
 
+def cmd_autostart(args) -> int:
+    import platform
+    from pathlib import Path
+
+    from trading.day import autostart as auto
+    if platform.system() != "Darwin":
+        print("Starting by itself is set up with macOS's launchd, so it only works on a Mac.")
+        return 1
+    repo = Path(__file__).resolve().parents[2]
+    try:
+        if args.action == "install":
+            auto.parse_time(args.at)                              # refuse a bad time before touching anything
+            flags = ["--risk-pct", f"{args.risk_pct:g}", "--max-fund-pct", f"{args.max_fund_pct:g}"]
+            if args.analyst:
+                flags.insert(0, "--analyst")
+            for line in auto.install(python=auto.current_python(), repo=repo, log=day_journal().log_path,
+                                     run_flags=flags, at=args.at):
+                print(line)
+            print("\nIt starts at the next weekday time. Check it with `python3 -m trading.day autostart status`. "
+                  "If your Jarvis folder is inside Documents, Desktop or Downloads, macOS may stop a background "
+                  "job reading it: `status` then shows a permission error in the log, and the fix is to move the "
+                  "folder or give Terminal 'Full Disk Access'.")
+        elif args.action == "remove":
+            for line in auto.remove():
+                print(line)
+        else:
+            exists, loaded = auto.status()
+            running = day_journal().runner_pid()
+            print(f"Start-up job installed: {'yes' if exists else 'no'}; loaded by macOS: {'yes' if loaded else 'no'}.")
+            print(f"Day trader running right now: {f'yes (process {running})' if running else 'no'}.")
+            log = day_journal().log_path
+            if log.exists():
+                tail = log.read_text(errors="replace").splitlines()[-5:]
+                print(f"Last lines of {log}:")
+                for line in tail:
+                    print(f"  {line[:160]}")
+    except (ValueError, RuntimeError, OSError) as exc:
+        print(f"Could not do that: {exc}")
+        return 1
+    return 0
+
+
 def cmd_pause(args) -> int:
     day_journal().pause()
     print("Paused. The day trader will make no new buys. It still sells what it holds on schedule. "
@@ -396,6 +439,7 @@ def main(argv=None) -> int:
                                     ("plan", cmd_plan, "what the rule did in the latest full session"),
                                     ("backtest", cmd_backtest, "replay the rule over past years"),
                                     ("analyst", cmd_analyst, "preview the pre-market analyst's plan (sends nothing)"),
+                                    ("autostart", cmd_autostart, "start the trader by itself every weekday (macOS)"),
                                     ("run", cmd_run, "run the automatic day trader"),
                                     ("report", cmd_report, "results versus holding SPY"),
                                     ("pause", cmd_pause, "stop new buys"),
@@ -403,18 +447,22 @@ def main(argv=None) -> int:
                                     ("stop", cmd_stop, "stop the background day trader")):
         p = sub.add_parser(name, help=helptext)
         p.set_defaults(handler=handler)
-        if name in ("run", "plan", "backtest", "analyst"):
+        if name in ("run", "plan", "backtest", "analyst", "autostart"):
             p.add_argument("--risk-pct", type=float, default=STANDARD_RISK_PCT, metavar="PCT",
                            help=f"most of the account to risk on one trade, in percent "
                                 f"(standard {STANDARD_RISK_PCT:g}, at most {LIMIT_RISK_PCT:g})")
             p.add_argument("--max-fund-pct", type=float, default=STANDARD_MAX_FUND_PCT, metavar="PCT",
                            help=f"most of the account to put in one fund, in percent "
                                 f"(standard {STANDARD_MAX_FUND_PCT:g}, at most {LIMIT_MAX_FUND_PCT:g})")
-        if name in ("run", "check"):
+        if name == "autostart":
+            p.add_argument("action", choices=("install", "remove", "status"))
+            p.add_argument("--at", default="06:30", metavar="HH:MM",
+                           help="start time on this Mac's clock, Monday to Friday (default 06:30)")
+        if name in ("run", "check", "autostart"):
             p.add_argument("--analyst", action="store_true",
                            help="let the pre-market analyst choose what to trade each day (AI reading of "
                                 "prices and news; the breakout rule still decides entries and stops)"
-                                if name == "run" else "also check what the analyst needs")
+                                if name in ("run", "autostart") else "also check what the analyst needs")
         if name == "analyst":
             p.add_argument("--show-input", action="store_true", help="also print exactly what the model is shown")
         if name == "run":

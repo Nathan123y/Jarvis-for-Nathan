@@ -58,6 +58,35 @@ or say **"start the practice day trader"** and Jarvis starts it in the backgroun
 Mac awake and online during market hours (a closed lid puts it to sleep). Closing Jarvis does
 not stop it.
 
+## Start it by itself every weekday (Mac)
+
+```
+python3 -m trading.day autostart install --analyst --risk-pct 0.5 --max-fund-pct 50
+python3 -m trading.day autostart status      # is it installed, is it running, last log lines
+python3 -m trading.day autostart remove
+```
+
+`install` adds a small macOS start-up job (in your own `~/Library/LaunchAgents`, no admin rights) that starts
+the trader Monday to Friday at 6:30 (`--at 06:15` to change it; it is this Mac's clock, and 6:30 am Pacific is
+the New York open). It starts the same command you would type, with the flags you give `install`, kept awake with
+`caffeinate`, in the background, logging to `config/trading_day/runner.log`. No key is stored in the job: the trader
+reads them from Jarvis Plugin Settings as usual. It runs until the Mac sleeps or restarts; the next weekday
+start brings it back. If it is already running (say you started it by hand), the new start just says so and exits.
+
+What it cannot do:
+
+- **Wake a sleeping Mac.** `install` prints one line to run yourself, once, which makes the Mac wake five minutes
+  before: `sudo pmset repeat wakeorpoweron MTWRF 06:25:00`. Without it, the Mac must already be awake (a Mac left
+  plugged in with the lid open and "prevent sleep" works). A start that falls while the Mac sleeps happens when it
+  wakes. Clear the wake time with `sudo pmset repeat cancel`.
+- Run with the Mac off, or on battery with the lid closed.
+- Read a Jarvis folder inside Documents, Desktop or Downloads: macOS can block background jobs there. If
+  `status` shows a permission error, move the folder or give Terminal "Full Disk Access".
+- Change its flags later: run `install` again with the new ones.
+
+Not yet confirmed on a real Mac: the launchd job. Run `autostart status` after installing, and check the log the
+first morning.
+
 ## What the rule does
 
 It trades only SPY and QQQ, in New York time:
