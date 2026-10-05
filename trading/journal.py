@@ -1,8 +1,9 @@
 """Local record of what the paper trader saw and did, plus its pause switch and run lock.
 
 Everything lives in config/trading_day/ (ignored by git). It holds numbers, ticker
-symbols and short labels only: no keys, no account numbers, nothing from your
-conversations. Delete the folder at any time to start the experiment over.
+symbols and short labels, plus, when the pre-market analyst is on, its short written plan
+(outlook, picks and reasons, in the model's words). No keys, no account numbers, nothing from
+your conversations. Delete the folder at any time to start the experiment over.
 
     journal.jsonl   append-only events (decisions, orders, rejections, snapshots, errors)
     state.json      start line for the comparison, last rebalance date, last-seen account

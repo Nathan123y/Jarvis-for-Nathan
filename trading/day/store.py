@@ -1,8 +1,8 @@
-"""Where the day trader keeps its record: config/trading_day/ (git-ignored, numbers only).
+"""Where the day trader keeps its record: config/trading_day/ (git-ignored).
 
-Holds the decisions, entries, results, daily account values, the pause switch, the run lock
-and the background process's log. No keys, no conversations. Delete the folder to start the
-comparison over.
+Holds the decisions, entries, results, daily account values, the analyst's plans (when it is
+on), the pause switch, the run lock and the background process's log. No keys, no
+conversations. Delete the folder to start the comparison over.
 """
 from __future__ import annotations
 

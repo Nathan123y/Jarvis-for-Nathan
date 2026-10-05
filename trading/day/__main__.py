@@ -3,7 +3,9 @@
     check       test the keys and each connection, sending nothing
     plan        show what the rule did (or would have done) in the latest full session
     backtest    replay the rule over past years, next to simply holding SPY
+    analyst     preview what the pre-market analyst would pick today (sends nothing, saves nothing)
     run         start the automatic day trader (leave it running; Ctrl+C stops it)
+                  add --analyst to let the pre-market analyst choose what to trade each day
     report      results so far, next to simply holding SPY, with estimated costs
     pause       stop buying (it still sells what it holds, on schedule)
     resume      start buying again
@@ -19,13 +21,17 @@ import sys
 import threading
 from datetime import date, datetime, timedelta
 
-from trading.broker import BrokerError
+from trading.broker import BrokerError, parse_ts
 from trading.credentials import key_report, make_broker
 from trading.day import report as reports
-from trading.day.rule import (LIMIT_MAX_FUND_PCT, LIMIT_RISK_PCT, STANDARD_MAX_FUND_PCT, STANDARD_RISK_PCT,
-                              STATUS_TEXT, DayConfig, backtest, size_text, sized_config, to_sessions)
+from trading.day.analyst import (HEADLINE_QUERIES, MAX_PICKS, PlanError, gather_headlines, gather_numbers,
+                                 make_plan, opening_coverage, plan_text)
+from trading.day.rule import (EASTERN, LIMIT_MAX_FUND_PCT, LIMIT_RISK_PCT, STANDARD_MAX_FUND_PCT,
+                              STANDARD_RISK_PCT, STATUS_TEXT, DayConfig, backtest, size_text, sized_config,
+                              to_sessions)
 from trading.day.runner import DAY_TRADING_MINIMUM, DayRunner, review_latest_session
 from trading.day.store import day_journal
+from trading.day.universe import UNIVERSE
 
 
 def _stamp(message: str) -> None:
@@ -52,6 +58,8 @@ def cmd_check(args) -> int:
     print()
     ok = True
     cfg = DayConfig()
+    analyst = bool(getattr(args, "analyst", False))
+    allowed = cfg.symbols + (UNIVERSE if analyst else ())
     steps = (
         ("keys and account", lambda: broker.account()),
         ("market clock", lambda: broker.clock()),
@@ -80,14 +88,19 @@ def cmd_check(args) -> int:
         elif label == "market clock":
             detail = " (market is open)" if result["is_open"] else " (market is closed right now)"
         elif label == "positions":
-            foreign = sorted(set(result) - set(cfg.symbols))
+            foreign = sorted(set(result) - set(allowed))
             if foreign:
                 ok = False
+                handles = ("SPY, QQQ and the analyst's short list of funds and large stocks" if analyst
+                           else "SPY and QQQ")
                 print(f"  FAIL  {label}: this account holds {', '.join(foreign)}. The day trader only "
-                      "ever handles SPY and QQQ and sells everything at the end of its day, so use a "
+                      f"ever handles {handles} and sells everything at the end of its day, so use a "
                       "fresh paper account with nothing else in it.")
                 continue
             detail = f" ({', '.join(sorted(result)) or 'none held'})"
+            if result:
+                detail += (". The trader sells any of these it did not buy that day when the market opens, "
+                           "so use an account with nothing in it you want to keep")
         elif label == "minute prices":
             total = sum(len(to_sessions(result.get(s, [])).get(day, []))
                         for s in cfg.symbols for day in to_sessions(result.get(s, [])))
@@ -97,9 +110,81 @@ def cmd_check(args) -> int:
                 continue
             detail = f" ({total} regular-hours candles over the last few days)"
         print(f"  ok    {label}{detail}")
+    if analyst:
+        ok = _check_analyst(broker) and ok
     print("\nAll good. Next: python3 -m trading.day plan, then backtest" if ok else
           "\nSomething above failed. Fix that first; nothing was sent to Alpaca.")
     return 0 if ok else 1
+
+
+def _check_analyst(broker) -> bool:
+    """The extra checks for `check --analyst`. Sends nothing to Alpaca and never prints a key."""
+    from core import gemini
+    ok = True
+    if gemini.api_key():
+        print("  ok    Gemini key (found in Jarvis's settings; `analyst` tests that it works)")
+    else:
+        ok = False
+        print("  FAIL  Gemini key: none found in Jarvis. The analyst needs it to read the news and decide. "
+              "Add it where Jarvis keeps its other keys, or leave --analyst off.")
+    try:
+        numbers = gather_numbers(broker, UNIVERSE, date.today().isoformat())
+        missing = [s for s in UNIVERSE if s not in numbers]
+        print(f"  ok    recent daily prices ({len(numbers)} of {len(UNIVERSE)} names)")
+        if missing:
+            print(f"        no recent prices for {', '.join(missing)}; the analyst will not be shown those")
+    except PlanError as exc:
+        ok = False
+        print(f"  FAIL  recent daily prices: {exc}")
+    headlines = gather_headlines(queries=HEADLINE_QUERIES[:1], per_query=3)
+    if headlines:
+        print(f"  ok    news headlines ({len(headlines)} came back for a test search)")
+    else:
+        print("  warn  news headlines: none came back. The analyst would then judge from prices alone, "
+              "which is weaker. Try `pip install -U ddgs`, or just try again in a minute.")
+    try:
+        raw = broker.minute_bars(list(UNIVERSE), (date.today() - timedelta(days=5)).isoformat() + "T00:00:00Z")
+        day, counts = opening_coverage(raw, DayConfig())
+    except BrokerError as exc:
+        print(f"  warn  minute prices for the list: {exc}")
+        return ok
+    if day:
+        thin = sorted(s for s in UNIVERSE if counts.get(s, 0) < DayConfig().min_range_bars)
+        print(f"  ok    opening-range candles on {day} (of the first 15 minutes, on the free price feed): "
+              + ", ".join(f"{s} {counts.get(s, 0)}" for s in UNIVERSE))
+        if thin:
+            print(f"        {', '.join(thin)} had fewer than {DayConfig().min_range_bars}, so the rule would "
+                  "skip them on a day like that (too patchy to trust the range).")
+    return ok
+
+
+def cmd_analyst(args) -> int:
+    cfg = _cfg(args)
+    broker = make_broker()
+    clock = broker.clock()
+    try:
+        when = parse_ts(clock["timestamp"] if clock["is_open"] else clock["next_open"])
+        day = when.astimezone(EASTERN).date().isoformat()
+    except (ValueError, KeyError):
+        print("Could not read the market calendar from Alpaca. Try again in a minute.")
+        return 1
+    print(f"Asking the analyst for its plan for {day}. Preview only: nothing is saved and nothing is sent to "
+          "Alpaca. It uses a little Gemini quota and can take a minute or two.\n")
+    show = (lambda prompt: print(f"--- what the model is shown ---\n{prompt}\n--- end ---\n")
+            if args.show_input else None)
+    try:
+        plan = make_plan(broker, day, on_prompt=show)
+    except PlanError as exc:
+        print(f"No plan: {exc}.")
+        return 1
+    except Exception as exc:                                # noqa: BLE001 - say what kind of problem, never a traceback with a URL
+        print(f"No plan: something unexpected went wrong ({type(exc).__name__}).")
+        return 1
+    print(plan_text(plan, cfg))
+    print("\n`run --analyst` makes a plan like this each morning and trades on it. A pick is only bought if "
+          "the opening-range breakout then fires on it, with that rule's stop, and everything is sold "
+          "before the close. This is an AI's reading of the day, not a forecast.")
+    return 0
 
 
 def cmd_plan(args) -> int:
@@ -139,7 +224,16 @@ def cmd_run(args) -> int:
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), lambda *_: stop.set())
     cfg = _cfg(args)
-    runner = DayRunner(broker, journal, cfg=cfg, log=_stamp)
+    use_analyst = bool(getattr(args, "analyst", False))
+    if use_analyst:
+        from core import gemini
+        if not gemini.api_key():
+            journal.release_runner()
+            print("--analyst needs the Gemini key Jarvis already uses, and none was found. Add it, or start "
+                  "without --analyst to run the plain rule on SPY and QQQ.")
+            return 1
+    runner = DayRunner(broker, journal, cfg=cfg, log=_stamp,
+                       analyst=(lambda day: make_plan(broker, day)) if use_analyst else None)
     left = "flat"
     try:
         if args.once:
@@ -149,7 +243,16 @@ def cmd_run(args) -> int:
         _stamp(f"Sizes: {size_text(cfg)}" + (" (the standard)." if cfg == DayConfig() else " (bigger or smaller "
                "than standard: gains and losses scale with it)."))
         journal.record("config", risk_pct=round(cfg.risk_per_trade * 100, 4),
-                       max_fund_pct=round(cfg.max_position_pct * 100, 4))
+                       max_fund_pct=round(cfg.max_position_pct * 100, 4), analyst=use_analyst)
+        if use_analyst:
+            _stamp(f"Analyst on. About 90 minutes before each open it reads recent prices and news, picks what to "
+                   f"watch from a fixed list of {len(UNIVERSE)} funds and large stocks, and sizes each pick by its "
+                   "confidence.")
+            _stamp("A pick is still only bought if the opening-range breakout fires, with that rule's stop. "
+                   "If no plan can be made, it trades nothing that day.")
+            _stamp(f"Up to {MAX_PICKS} picks a day, so if every stop were hit in one day it could lose up to about "
+                   f"{MAX_PICKS * cfg.risk_per_trade * 100:.2g}% of the account (the {cfg.daily_loss_halt * 100:g}% "
+                   "daily-loss halt sells everything sooner if the account is down that much).")
         _stamp("It looks every 15 seconds in market hours and sells everything before the close. "
                "Keep this Mac awake and online during the session.")
         try:
@@ -292,6 +395,7 @@ def main(argv=None) -> int:
     for name, handler, helptext in (("check", cmd_check, "test keys and connections"),
                                     ("plan", cmd_plan, "what the rule did in the latest full session"),
                                     ("backtest", cmd_backtest, "replay the rule over past years"),
+                                    ("analyst", cmd_analyst, "preview the pre-market analyst's plan (sends nothing)"),
                                     ("run", cmd_run, "run the automatic day trader"),
                                     ("report", cmd_report, "results versus holding SPY"),
                                     ("pause", cmd_pause, "stop new buys"),
@@ -299,13 +403,20 @@ def main(argv=None) -> int:
                                     ("stop", cmd_stop, "stop the background day trader")):
         p = sub.add_parser(name, help=helptext)
         p.set_defaults(handler=handler)
-        if name in ("run", "plan", "backtest"):
+        if name in ("run", "plan", "backtest", "analyst"):
             p.add_argument("--risk-pct", type=float, default=STANDARD_RISK_PCT, metavar="PCT",
                            help=f"most of the account to risk on one trade, in percent "
                                 f"(standard {STANDARD_RISK_PCT:g}, at most {LIMIT_RISK_PCT:g})")
             p.add_argument("--max-fund-pct", type=float, default=STANDARD_MAX_FUND_PCT, metavar="PCT",
                            help=f"most of the account to put in one fund, in percent "
                                 f"(standard {STANDARD_MAX_FUND_PCT:g}, at most {LIMIT_MAX_FUND_PCT:g})")
+        if name in ("run", "check"):
+            p.add_argument("--analyst", action="store_true",
+                           help="let the pre-market analyst choose what to trade each day (AI reading of "
+                                "prices and news; the breakout rule still decides entries and stops)"
+                                if name == "run" else "also check what the analyst needs")
+        if name == "analyst":
+            p.add_argument("--show-input", action="store_true", help="also print exactly what the model is shown")
         if name == "run":
             p.add_argument("--once", action="store_true", help="do one pass and exit")
         if name == "backtest":
