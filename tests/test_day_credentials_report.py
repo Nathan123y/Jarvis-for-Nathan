@@ -6,90 +6,43 @@ from trading import credentials
 from trading.broker import BrokerError
 from trading.day import report as reports
 
-WEEKLY_ID = "PK" + "A1B2C3D4E5F6G7H8I9"
-DAY_ID = "PK" + "Z9Y8X7W6V5U4T3S2R1"
+PAPER_ID = "PK" + "Z9Y8X7W6V5U4T3S2R1"
 SECRET = "x9Y8w7V6u5T4s3R2q1P0o9N8m7L6k5J4i3H2g1F0"
 
 
-def reader(weekly=(WEEKLY_ID, SECRET), day=(DAY_ID, SECRET)):
-    table = {"weekly": ("Jarvis Plugin Settings", *weekly), "day": ("Jarvis Plugin Settings", *day)}
-    return lambda profile="weekly": table[profile]
-
-
-class DayKeyTests(unittest.TestCase):
-    def test_the_day_trader_reads_its_own_environment_variables(self):
-        env = {"ALPACA_PAPER_DAY_KEY_ID": DAY_ID, "ALPACA_PAPER_DAY_SECRET_KEY": SECRET,
-               "ALPACA_PAPER_KEY_ID": WEEKLY_ID, "ALPACA_PAPER_SECRET_KEY": SECRET}
+class KeyTests(unittest.TestCase):
+    def test_environment_variables_win_and_are_named(self):
+        env = {"ALPACA_PAPER_KEY_ID": PAPER_ID, "ALPACA_PAPER_SECRET_KEY": SECRET}
         with patch.dict(os.environ, env):
-            self.assertEqual(credentials.load_keys("day"), (DAY_ID, SECRET))
-            self.assertEqual(credentials.load_keys(), (WEEKLY_ID, SECRET))
-            self.assertIn("environment variables", " ".join(credentials.key_report("day")))
+            self.assertEqual(credentials.load_keys(), (PAPER_ID, SECRET))
+            self.assertIn("environment variables", " ".join(credentials.key_report()))
 
-    def test_plugin_settings_use_a_separate_namespace(self):
+    def test_plugin_settings_are_read_from_one_namespace(self):
         seen = []
         with patch.dict(os.environ, {}, clear=True), \
              patch("memory.config_manager.get_plugin_config", side_effect=lambda ns: seen.append(ns) or {}):
-            credentials.load_keys("day")
-            credentials.load_keys("weekly")
-        self.assertEqual(seen, ["alpaca_paper_day", "alpaca_paper"])
+            credentials.load_keys()
+        self.assertEqual(seen, ["alpaca_paper"])
 
-    def test_missing_day_keys_explain_the_second_account(self):
-        with patch.object(credentials, "_read", reader(day=("", ""))):
+    def test_the_plugin_settings_section_uses_that_same_namespace(self):
+        from plugins import day_trading
+        self.assertEqual(day_trading.PLUGIN_SETTINGS["namespace"], credentials.NAMESPACE)
+
+    def test_missing_keys_say_what_to_do_and_what_balance_is_needed(self):
+        with patch.object(credentials, "_read", return_value=("Jarvis Plugin Settings", "", "")):
             with self.assertRaises(BrokerError) as caught:
-                credentials.make_broker("day")
-        self.assertIn("second", str(caught.exception))
-        self.assertIn("Alpaca paper day trading", str(caught.exception))
+                credentials.make_broker()
+        text = str(caught.exception)
+        self.assertIn("Alpaca paper day trading", text)
+        self.assertIn("$25,000", text)
 
-    def test_the_weekly_keys_are_refused_for_the_day_trader(self):
-        with patch.object(credentials, "_read", reader(day=(WEEKLY_ID, SECRET))):
-            with self.assertRaises(BrokerError) as caught:
-                credentials.make_broker("day")
-            self.assertIn("same keys", str(caught.exception))
-            self.assertIn("same keys", " ".join(credentials.key_report("day")))
-
-    def test_two_different_key_pairs_build_a_broker(self):
-        with patch.object(credentials, "_read", reader()):
-            self.assertIsNotNone(credentials.make_broker("day"))
-
-    def test_the_weekly_trader_is_unaffected(self):
-        with patch.object(credentials, "_read", reader(weekly=(WEEKLY_ID, SECRET), day=("", ""))):
+    def test_present_keys_build_a_paper_only_broker(self):
+        with patch.object(credentials, "_read", return_value=("Jarvis Plugin Settings", PAPER_ID, SECRET)):
             self.assertIsNotNone(credentials.make_broker())
 
-
-class FakeAccount:
-    def __init__(self, key, secret, ident=None, fail=False):
-        self.ident, self.fail = ident, fail
-
-    def account(self):
-        if self.fail:
-            raise BrokerError("Could not reach Alpaca.")
-        return {"account_id": self.ident}
-
-
-class SameAccountTests(unittest.TestCase):
-    def check(self, day_id, weekly_id, weekly_keys=(WEEKLY_ID, SECRET), weekly_fails=False, day_fails=False):
-        day = FakeAccount(DAY_ID, SECRET, day_id, day_fails)
-        with patch.object(credentials, "_read", reader(weekly=weekly_keys)), \
-             patch.object(credentials, "AlpacaPaper", lambda k, s: FakeAccount(k, s, weekly_id, weekly_fails)):
-            return credentials.shares_weekly_account(day)
-
-    def test_the_same_account_behind_different_keys_is_caught(self):
-        self.assertIs(self.check("acct-1", "acct-1"), True)
-
-    def test_two_different_accounts_are_fine(self):
-        self.assertIs(self.check("acct-1", "acct-2"), False)
-
-    def test_no_weekly_keys_means_nothing_to_clash_with(self):
-        self.assertIs(self.check("acct-1", "acct-1", weekly_keys=("", "")), False)
-
-    def test_an_unreadable_weekly_side_is_unknown_not_fine(self):
-        self.assertIsNone(self.check("acct-1", "acct-1", weekly_fails=True))
-        self.assertIsNone(self.check("acct-1", ""))
-        self.assertIsNone(self.check("", "acct-1"))
-
-    def test_a_failure_on_the_day_traders_own_side_is_raised(self):
-        with self.assertRaises(BrokerError):
-            self.check("acct-1", "acct-2", day_fails=True)
+    def test_no_weekly_trader_code_is_left_behind(self):
+        for name in ("shares_weekly_account", "SAME_ACCOUNT", "UNVERIFIED", "MISSING_DAY", "DAY_NAMESPACE"):
+            self.assertFalse(hasattr(credentials, name), name)
 
 
 STATE = {"start_equity": 100_000.0, "start_spy": 500.0, "started_at": "2026-10-05"}
@@ -156,6 +109,22 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(report["holding"], ["SPY"])
         self.assertAlmostEqual(report["spy_return"], 0.002)
         self.assertIn("last recorded", reports.spoken(report))
+
+
+class ReportHelperTests(unittest.TestCase):
+    def test_latest_snapshot_per_day_wins(self):
+        events = [{"date": "d1", "equity": 1}, {"date": "d1", "equity": 2}, {"date": "d2", "equity": 3}, {"equity": 9}]
+        self.assertEqual([e["equity"] for e in reports.latest_per_day(events)], [2, 3])
+
+    def test_money_and_percent_formatting(self):
+        self.assertEqual(reports._usd(100_400.4), "$100,400")
+        self.assertEqual(reports._usd(None), "n/a")
+        self.assertEqual(reports._pct(0.004), "+0.40%")
+        self.assertEqual(reports._pct(-0.1, signed=False), "-10.0%")
+        self.assertEqual(reports._pct(None), "n/a")
+
+    def test_the_sample_size_before_a_verdict_is_sixty_days(self):
+        self.assertEqual(reports.MIN_TRADING_DAYS, 60)
 
 
 if __name__ == "__main__":

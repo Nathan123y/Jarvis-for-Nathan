@@ -1,7 +1,8 @@
 """Where the day trader keeps its record: config/trading_day/ (git-ignored, numbers only).
 
-Same files and rules as the weekly trader's record in config/trading/, in a folder of its own,
-so the two never share a pause switch, a run lock or a history.
+Holds the decisions, entries, results, daily account values, the pause switch, the run lock
+and the background process's log. No keys, no conversations. Delete the folder to start the
+comparison over.
 """
 from __future__ import annotations
 

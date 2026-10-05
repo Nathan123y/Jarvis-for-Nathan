@@ -1,6 +1,6 @@
 """Local record of what the paper trader saw and did, plus its pause switch and run lock.
 
-Everything lives in config/trading/ (ignored by git). It holds numbers, ticker
+Everything lives in config/trading_day/ (ignored by git). It holds numbers, ticker
 symbols and short labels only: no keys, no account numbers, nothing from your
 conversations. Delete the folder at any time to start the experiment over.
 
@@ -22,7 +22,7 @@ from typing import Optional
 
 def default_dir() -> Path:
     from memory.config_manager import CONFIG_DIR
-    return CONFIG_DIR / "trading"
+    return CONFIG_DIR / "trading_day"
 
 
 def _now() -> str:

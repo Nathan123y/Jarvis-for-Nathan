@@ -274,5 +274,30 @@ class FillSummaryTests(unittest.TestCase):
         self.assertEqual(rule.summarize_fills(orders, ("SPY",), "2026-10-05"), [])
 
 
+class CurveTests(unittest.TestCase):
+    def test_two_years_of_steady_growth_annualise_to_ten_percent(self):
+        curve = [("2024-01-01", 100.0), ("2025-01-01", 110.0), ("2026-01-01", 121.0)]
+        metrics = rule.curve_metrics(curve)
+        self.assertAlmostEqual(metrics["total_return"], 0.21)
+        self.assertAlmostEqual(metrics["cagr"], 0.10, places=2)
+        self.assertEqual(metrics["max_drawdown"], 0.0)
+
+    def test_the_worst_fall_is_measured_from_the_highest_point_so_far(self):
+        curve = [("2025-01-01", 100.0), ("2025-02-01", 120.0), ("2025-03-01", 90.0), ("2025-04-01", 110.0)]
+        self.assertAlmostEqual(rule.curve_metrics(curve)["max_drawdown"], -0.25)
+
+    def test_under_half_a_year_reports_the_plain_total_not_an_annualised_number(self):
+        curve = [("2025-01-01", 100.0), ("2025-02-01", 110.0)]
+        metrics = rule.curve_metrics(curve)
+        self.assertEqual(metrics["cagr"], metrics["total_return"])
+
+    def test_returns_are_split_by_calendar_year(self):
+        curve = [("2024-12-31", 100.0), ("2025-06-01", 150.0), ("2025-12-31", 120.0), ("2026-03-01", 132.0)]
+        years = rule.curve_by_year(curve)
+        self.assertAlmostEqual(years[2024], 0.0)
+        self.assertAlmostEqual(years[2025], 0.20)
+        self.assertAlmostEqual(years[2026], 0.10)
+
+
 if __name__ == "__main__":
     unittest.main()

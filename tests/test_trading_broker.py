@@ -1,6 +1,6 @@
 import unittest
 
-from trading.broker import DATA_URL, PAPER_URL, AlpacaPaper, BrokerError
+from trading.broker import DATA_URL, PAPER_URL, AlpacaPaper, BrokerError, parse_ts
 
 from trading_fakes import FakeResponse, FakeSession
 
@@ -156,6 +156,26 @@ class OrderTests(unittest.TestCase):
             with self.assertRaises(BrokerError):
                 api.submit_market_order(*args, **kwargs)
         self.assertEqual(session.calls, [])
+
+
+class TimestampTests(unittest.TestCase):
+    def test_alpaca_stamps_with_any_number_of_fraction_digits_parse(self):
+        for text in ("2026-10-05T13:30:00Z", "2026-10-05T13:30:00.123Z", "2026-10-05T13:30:00.123456789Z",
+                     "2026-10-05T09:30:00.123456789-04:00"):
+            stamp = parse_ts(text)
+            self.assertIsNotNone(stamp.tzinfo, text)
+            self.assertEqual((stamp.hour, stamp.minute), (13, 30) if text.endswith("Z") else (9, 30))
+
+    def test_a_stamp_without_a_zone_is_taken_as_utc(self):
+        self.assertEqual(parse_ts("2026-10-05T13:30:00").utcoffset().total_seconds(), 0)
+
+    def test_the_offset_is_respected(self):
+        self.assertEqual(parse_ts("2026-10-05T09:30:00-04:00"), parse_ts("2026-10-05T13:30:00Z"))
+
+    def test_garbage_raises_a_value_error_the_runner_handles(self):
+        for bad in ("", "not a time"):
+            with self.assertRaises(ValueError):
+                parse_ts(bad)
 
 
 if __name__ == "__main__":

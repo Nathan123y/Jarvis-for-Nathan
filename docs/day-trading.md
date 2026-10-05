@@ -1,42 +1,40 @@
 # Practice day trading with Jarvis (fake money)
 
-A second experiment, next to the slow weekly trader in [paper-trading.md](paper-trading.md).
-This one buys and sells within a single day on an Alpaca **paper** account: real market
-prices, fake money.
+Jarvis can run an automatic day-trading experiment on an Alpaca **paper** account: it buys
+and sells within a single day, using real market prices and fake money. (An earlier, slower
+once-a-week trader was removed; this is the only trader now.)
 
 **Please read this first.** Day trading is the hardest version of this game. Most people who
 try it lose money after costs, and a practice account hides some of those costs. The point of
 this experiment is to find out, with no risk, whether this particular rule survives them.
 Expect "no" to be a perfectly normal answer.
 
-**This cannot touch real money.** It uses the same paper-only code as the weekly trader,
-which refuses any address except Alpaca's paper-trading one.
+**This cannot touch real money.** The code only accepts Alpaca's paper-trading address and
+refuses any other, and there is no setting that changes that.
 
-## It needs its own, second paper account
+## One-time setup
 
-The day trader sells everything it holds at the end of every day. If it shared an account
-with the weekly trader it would sell the weekly trader's holdings too. So:
+The day trader sells whatever SPY or QQQ it finds at the end of every day, so give it a paper
+account of its own with nothing else in it.
 
-1. In the Alpaca **Paper Trading** area, open a second paper account (click the paper account
-   number in the upper left of the dashboard and choose "Open New Paper Account"). **Give it
-   at least $25,000, ideally $100,000.** Alpaca's docs say only the first paper account gets
-   $100,000 by default; a new one can start with less (one came up with $10,000), and a
-   balance cannot be changed after the account is created. If it starts too small, delete it
-   and create it again with the right amount. The day trader will not trade below $25,000,
-   and `check` tells you if the balance is too low.
-2. In that second account, generate API keys. You get a key ID and a secret. The secret is
-   shown once.
+1. In the Alpaca **Paper Trading** area, pick (or create) a paper account with **at least
+   $25,000, ideally $100,000**. Alpaca's docs say the first paper account gets $100,000 by
+   default; a new one can start with less (one came up with $10,000), and a balance cannot
+   be changed after the account is created. If an account is too small, delete it and
+   create it again with the right amount. The day trader will not trade below $25,000, and
+   `check` tells you if the balance is too low. (To create one: click the paper account
+   number in the upper left of the dashboard and choose "Open New Paper Account".)
+2. In that account, generate API keys. You get a key ID and a secret. The secret is shown
+   once. Generating keys again on the same account cancels the earlier pair.
 3. Open Jarvis **Plugin Settings**, find **Alpaca paper day trading**, paste both, and save.
-   (Or set `ALPACA_PAPER_DAY_KEY_ID` and `ALPACA_PAPER_DAY_SECRET_KEY`.) Never paste keys
-   into chat or a screenshot.
-4. Run `python3 -m trading.day check`. Every line should say `ok`. Generate keys for each
-   new account separately: keys never carry over from another paper account.
+   (Or set `ALPACA_PAPER_KEY_ID` and `ALPACA_PAPER_SECRET_KEY`.) Never paste keys into chat
+   or a screenshot.
+4. Run `python3 -m trading.day check`. Every line should say `ok`.
 
-Four guards stop you mixing the accounts up: it refuses keys identical to the weekly
-trader's; `check` and `run` compare the two accounts themselves (different keys can still
-open the same account) and refuse to start if that cannot be confirmed; it remembers which
-account it started on and touches nothing if that ever changes; and if the account holds
-anything but SPY or QQQ it stops buying and sells only the shares it bought itself that day.
+Two guards keep it to its own account: `check` refuses an account that holds anything other
+than SPY or QQQ, and while running, if the account ever holds something else it stops
+buying and sells only the shares it bought itself that day. It also remembers which account
+it started on and touches nothing if that ever changes.
 
 ## Look before you leap
 
@@ -110,7 +108,7 @@ or ask Jarvis **"how is the day trader doing?"** (answered instantly from the lo
 The report shows the result as Alpaca recorded it, **and an estimate after costs**, next to
 just holding SPY. Alpaca's practice account does not charge the spread, fees or slippage a
 real account pays, and a day trader trades every day, so the after-cost line is the one to
-believe. Like the weekly trader it says "too early" until 60 trading days.
+believe. It says "too early" until 60 trading days (about three months).
 
 ## Real money
 
@@ -128,9 +126,10 @@ Git ignores the folder. Delete it to start the comparison over.
 
 ## If something goes wrong
 
-- `check` says "its own account" failed: the keys belong to the same Alpaca account as the
-  weekly trader. Make a second paper account and use its keys.
 - `check` says the account holds other funds: use a fresh paper account with nothing in it.
+- `check` says the keys were rejected (HTTP 401): the keys were cancelled (generating a new pair
+  on the same account does that) or came from a different account. Generate a fresh pair on the
+  account you mean to use and paste both again.
 - Nothing happens on a trading day: run `python3 -m trading.day plan`, then look at
   `config/trading_day/runner.log` (the background process writes there).
 - Jarvis says it is not running: the Mac may have slept or restarted. Say "start the practice

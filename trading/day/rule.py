@@ -29,8 +29,7 @@ from datetime import date
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from trading.runner import parse_ts
-from trading.strategy import _by_year, _metrics
+from trading.broker import parse_ts
 
 EASTERN = ZoneInfo("America/New_York")
 SESSION_OPEN = 9 * 60 + 30
@@ -102,6 +101,32 @@ def to_sessions(raw: list[tuple]) -> dict[str, list[tuple]]:
 def is_full_session(bars: list[tuple]) -> bool:
     """A normal 9:30-4:00 day. Early-close days and days with big data holes are not."""
     return bool(bars) and bars[0][0] <= SESSION_OPEN + 10 and bars[-1][0] >= SESSION_CLOSE - 30
+
+
+# ── turning a list of (day, account value) into the headline numbers ──────────
+def curve_metrics(curve: list[tuple[str, float]]) -> dict:
+    start_day, start_value = curve[0]
+    end_day, end_value = curve[-1]
+    years = max((date.fromisoformat(end_day) - date.fromisoformat(start_day)).days / 365.25, 1e-9)
+    peak, worst = start_value, 0.0
+    for _, value in curve:
+        peak = max(peak, value)
+        worst = min(worst, value / peak - 1.0)
+    total = end_value / start_value - 1.0
+    cagr = (end_value / start_value) ** (1.0 / years) - 1.0 if years >= 0.5 else total
+    return {"total_return": total, "cagr": cagr, "max_drawdown": worst, "end_value": end_value}
+
+
+def curve_by_year(curve: list[tuple[str, float]]) -> dict[int, float]:
+    last_of_year: dict[int, float] = {}
+    first = curve[0][1]
+    for day, value in curve:
+        last_of_year[int(day[:4])] = value
+    out, previous = {}, first
+    for year in sorted(last_of_year):
+        out[year] = last_of_year[year] / previous - 1.0
+        previous = last_of_year[year]
+    return out
 
 
 # ── the rule ──────────────────────────────────────────────────────────────────
@@ -270,8 +295,8 @@ def backtest(sessions: dict[str, dict[str, list]], cfg: DayConfig = DayConfig(),
         "time_exits": sum(1 for t in trades if t["reason"] == "time"),
         "avg_minutes_held": (sum(t["exited"] - t["entered"] for t in trades) / count) if count else None,
         "skipped": skipped, "benchmark_adjusted": adjusted,
-        "strategy": _metrics(curve), "benchmark": _metrics(bench),
-        "strategy_by_year": _by_year(curve), "benchmark_by_year": _by_year(bench),
+        "strategy": curve_metrics(curve), "benchmark": curve_metrics(bench),
+        "strategy_by_year": curve_by_year(curve), "benchmark_by_year": curve_by_year(bench),
     }
 
 
