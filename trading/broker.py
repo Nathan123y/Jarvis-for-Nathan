@@ -13,18 +13,27 @@ a short, scrubbed message from Alpaca.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 PAPER_URL = "https://paper-api.alpaca.markets"
 DATA_URL = "https://data.alpaca.markets"
 
 _SYMBOL = re.compile(r"^[A-Z]{1,6}(\.[A-Z])?$")
+_FRACTION = re.compile(r"(\.\d{1,6})\d*")
 _TIMEOUT = (4, 12)
 _MAX_PAGES = 40
 
 
 class BrokerError(Exception):
     """A failure that is safe to show to the user and to speak aloud."""
+
+
+def parse_ts(text: str) -> datetime:
+    """RFC 3339 with any number of fractional digits, as a timezone-aware datetime."""
+    cleaned = _FRACTION.sub(r"\1", str(text).strip().replace("Z", "+00:00"))
+    stamp = datetime.fromisoformat(cleaned)
+    return stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
 
 
 def _num(value: Any, default: float = 0.0) -> float:

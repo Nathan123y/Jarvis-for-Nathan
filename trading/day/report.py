@@ -1,17 +1,35 @@
 """Day-trader results, always next to simply holding SPY, with trading costs estimated.
 
 The practice account fills orders without charging the spread, fees or slippage that a real
-account pays. A day trader trades often, so that gap matters far more than for the weekly
-rule. This report therefore shows the result as Alpaca recorded it AND an estimate after
+account pays. A day trader trades often, so that gap matters a great deal. This report
+therefore shows the result as Alpaca recorded it AND an estimate after
 costs, and says plainly when the sample is too short to mean anything.
 """
 from __future__ import annotations
 
 from typing import Optional
 
-from trading.report import MIN_TRADING_DAYS, _pct, _usd
+MIN_TRADING_DAYS = 60            # about three months
+COST_BPS = 2.0                   # assumed cost per side, as in the backtest
 
-COST_BPS = 2.0                 # assumed cost per side, as in the backtest
+
+def _pct(value: Optional[float], signed: bool = True) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value * 100:+.2f}%" if signed else f"{value * 100:.1f}%"
+
+
+def _usd(value: Optional[float]) -> str:
+    return "n/a" if value is None else f"${value:,.0f}"
+
+
+def latest_per_day(events: list[dict]) -> list[dict]:
+    """Keep the last snapshot recorded on each date, oldest first."""
+    by_day: dict[str, dict] = {}
+    for event in events:
+        if event.get("date"):
+            by_day[str(event["date"])] = event
+    return [by_day[day] for day in sorted(by_day)]
 
 
 def _unique_trades(events: list[dict]) -> list[dict]:

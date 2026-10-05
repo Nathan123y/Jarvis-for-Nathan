@@ -1,10 +1,10 @@
 """The live day-trading loop: look every 15 seconds, buy a fresh breakout, sell before the close.
 
 What keeps it safe (practice money, but written as if it were not)
-  * It owns its Alpaca account. The command line refuses to start on the weekly trader's account,
-    the account's identity is pinned on the first pass, and if the account ever holds anything
-    but SPY or QQQ the trader stops buying, sells only the shares it bought itself that day,
-    and never touches the rest.
+  * It is meant to own its Alpaca account. The account's identity is pinned on the first pass
+    (a different account later means it touches nothing), `check` refuses an account that holds
+    other funds, and if the account ever holds anything but SPY or QQQ the trader stops buying,
+    sells only the shares it bought itself that day, and never touches the rest.
   * It sells fund by fund (cancel that fund's stop, then sell the position). It never uses a
     "sell everything" call.
   * Every buy carries a protective stop that lives at Alpaca, so a sleeping Mac or a closed
@@ -30,11 +30,10 @@ import time
 from datetime import datetime, timedelta
 from typing import Callable, Optional
 
-from trading.broker import BrokerError
+from trading.broker import BrokerError, parse_ts
 from trading.day.rule import (EASTERN, FINAL, SESSION_CLOSE, DayConfig, is_full_session,
                               live_signal, simulate_day, summarize_fills, to_sessions)
 from trading.journal import Journal
-from trading.runner import parse_ts
 
 IDLE_MIN, IDLE_MAX = 300.0, 600.0       # waits while the market is closed (the Mac may nap through them)
 POLL = 15.0

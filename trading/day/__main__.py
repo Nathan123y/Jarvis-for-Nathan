@@ -9,7 +9,7 @@
     resume      start buying again
     stop        stop a runner that is going in the background
 
-Practice money only. This trader needs its own second Alpaca paper account.
+Practice money only. Use a paper account of its own with at least $25,000 and nothing else in it.
 """
 from __future__ import annotations
 
@@ -19,10 +19,8 @@ import sys
 import threading
 from datetime import date, datetime, timedelta
 
-from trading import report as weekly_reports
 from trading.broker import BrokerError
-from trading.credentials import (SAME_ACCOUNT, UNVERIFIED, key_report, make_broker,
-                                 shares_weekly_account)
+from trading.credentials import key_report, make_broker
 from trading.day import report as reports
 from trading.day.rule import STATUS_TEXT, DayConfig, backtest, to_sessions
 from trading.day.runner import DAY_TRADING_MINIMUM, DayRunner, review_latest_session
@@ -42,15 +40,14 @@ def _pct(value: float) -> str:
 
 
 def cmd_check(args) -> int:
-    broker = make_broker("day")
-    for line in key_report("day"):
+    broker = make_broker()
+    for line in key_report():
         print(f"  keys  {line}")
     print()
     ok = True
     cfg = DayConfig()
     steps = (
         ("keys and account", lambda: broker.account()),
-        ("its own account", lambda: shares_weekly_account(broker)),
         ("market clock", lambda: broker.clock()),
         ("positions", lambda: broker.positions()),
         ("minute prices", lambda: broker.minute_bars(
@@ -74,12 +71,6 @@ def cmd_check(args) -> int:
                       "a new one with $100,000, and generate new keys for it.")
                 continue
             detail = f" (status {result['status'] or 'unknown'}, value {_usd(result['equity'])}, practice money only)"
-        elif label == "its own account":
-            if result is not False:
-                ok = False
-                print(f"  FAIL  {label}: {SAME_ACCOUNT if result else UNVERIFIED}")
-                continue
-            detail = " (not the weekly trader's account)"
         elif label == "market clock":
             detail = " (market is open)" if result["is_open"] else " (market is closed right now)"
         elif label == "positions":
@@ -106,7 +97,7 @@ def cmd_check(args) -> int:
 
 
 def cmd_plan(args) -> int:
-    review = review_latest_session(make_broker("day"))
+    review = review_latest_session(make_broker())
     if not review["day"]:
         print("No full trading session of minute prices came back from the last week.")
         return 1
@@ -130,11 +121,7 @@ def cmd_plan(args) -> int:
 
 def cmd_run(args) -> int:
     journal = day_journal()
-    broker = make_broker("day")
-    shared = shares_weekly_account(broker)
-    if shared is not False:                                  # True: the same account. None: cannot tell.
-        print(SAME_ACCOUNT if shared else UNVERIFIED)
-        return 1
+    broker = make_broker()
     if not journal.claim_runner():
         print(f"The day trader is already running (process {journal.runner_pid()}). "
               "Use `python3 -m trading.day stop` first if you want to restart it.")
@@ -168,10 +155,10 @@ def cmd_run(args) -> int:
 def cmd_report(args) -> int:
     journal = day_journal()
     state = {**journal.state(), "paused": journal.paused()}
-    snapshots = weekly_reports.latest_per_day(journal.events("snapshot"))
+    snapshots = reports.latest_per_day(journal.events("snapshot"))
     account = positions = spy = None
     try:
-        broker = make_broker("day")
+        broker = make_broker()
         account, positions = broker.account(), broker.positions()
         spy = broker.latest_prices(["SPY"]).get("SPY")
     except BrokerError as exc:
@@ -196,7 +183,7 @@ def cmd_backtest(args) -> int:
     kind = "IEX-exchange" if feed == "iex" else "full-market (SIP)"
     end = (today - timedelta(days=1)).isoformat() if feed == "sip" else None
     print(f"Fetching one-minute prices from {start} (free {kind} data). This takes a few minutes.")
-    broker = make_broker("day")
+    broker = make_broker()
     raw = broker.minute_bars(list(cfg.symbols), start, end, feed=feed,
                              progress=lambda n: print(f"  ...{n} pages", flush=True) if n % 10 == 0 else None)
     print("Sorting the candles into trading days...")

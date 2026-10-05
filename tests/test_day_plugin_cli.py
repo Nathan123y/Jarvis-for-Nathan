@@ -26,34 +26,32 @@ class PluginCase(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.journal = Journal(Path(self._tmp.name))
         for target, value in (("_journal", lambda: self.journal),
-                              ("load_keys", lambda profile="day": ("PKX", SECRET))):
+                              ("load_keys", lambda: ("PKX", SECRET))):
             patcher = patch.object(plugin, target, value)
             patcher.start()
             self.addCleanup(patcher.stop)
 
 
 class LoaderTests(unittest.TestCase):
-    def test_jarvis_accepts_the_plugin_and_both_traders_load_side_by_side(self):
-        records = {}
-        for name in ("day_trading", "paper_trading"):
-            path = Path(plugin.__file__).with_name(f"{name}.py")
-            spec = importlib.util.spec_from_file_location(f"{name}_probe", path)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            record = _validate(module, path.name)
-            self.assertTrue(record.valid, record.error)
-            records[name] = record
-        self.assertEqual(records["day_trading"].settings["namespace"], "alpaca_paper_day")
-        self.assertNotEqual(records["day_trading"].settings["namespace"], records["paper_trading"].settings["namespace"])
-        self.assertTrue(all(f["type"] == "password" for f in records["day_trading"].settings["fields"]))
+    def test_jarvis_accepts_the_plugin(self):
+        path = Path(plugin.__file__)
+        spec = importlib.util.spec_from_file_location("day_trading_probe", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        record = _validate(module, path.name)
+        self.assertTrue(record.valid, record.error)
+        self.assertEqual(record.name, "day_trading")
+        self.assertEqual(record.settings["namespace"], "alpaca_paper")
+        self.assertTrue(all(f["type"] == "password" for f in record.settings["fields"]))
 
-    def test_the_description_rules_out_real_money_and_separates_it_from_the_weekly_tool(self):
+    def test_the_description_rules_out_real_money(self):
         text = plugin.PLUGIN["description"].lower()
         self.assertIn("can not trade real money", text)
         self.assertIn("practice", text)
-        self.assertIn("paper_trading", text)
-        from plugins import paper_trading
-        self.assertIn("day_trading", paper_trading.PLUGIN["description"])
+        self.assertNotIn("weekly", text)
+
+    def test_the_weekly_voice_tool_is_gone(self):
+        self.assertFalse((Path(plugin.__file__).with_name("paper_trading.py")).exists())
 
 
 class StatusAndControlTests(PluginCase):
@@ -64,10 +62,11 @@ class StatusAndControlTests(PluginCase):
         with patch.object(Journal, "runner_pid", return_value=4242):
             self.assertIn("running and waiting for the market", plugin.run({}))
 
-    def test_without_keys_it_explains_the_second_account(self):
-        with patch.object(plugin, "load_keys", lambda profile="day": ("", "")):
+    def test_without_keys_it_points_to_settings_and_the_balance_needed(self):
+        with patch.object(plugin, "load_keys", lambda: ("", "")):
             text = plugin.run({"action": "status"})
-        self.assertIn("second free Alpaca paper account", text)
+        self.assertIn("Plugin Settings", text)
+        self.assertIn("twenty-five thousand", text)
         self.assertNotIn(SECRET, text)
 
     def test_status_reads_the_local_record_without_any_network(self):
@@ -107,7 +106,7 @@ class StatusAndControlTests(PluginCase):
         with patch.object(plugin.subprocess, "Popen", popen), patch.object(Journal, "runner_pid", return_value=4242):
             self.assertIn("already running", plugin.run({"action": "start"}))
         with patch.object(plugin.subprocess, "Popen", popen), \
-             patch.object(plugin, "load_keys", lambda profile="day": ("", "")):
+             patch.object(plugin, "load_keys", lambda: ("", "")):
             self.assertIn("Plugin Settings", plugin.run({"action": "start"}))
         popen.assert_not_called()
 
@@ -136,8 +135,7 @@ class CommandLineTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.journal = Journal(Path(self._tmp.name))
         for target, value in (("day_journal", lambda: self.journal),
-                              ("key_report", lambda profile="day": ["Keys read from: somewhere."]),
-                              ("shares_weekly_account", lambda broker: False)):
+                              ("key_report", lambda: ["Keys read from: somewhere."])):
             patcher = patch.object(cli, target, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -155,7 +153,7 @@ class CommandLineTests(unittest.TestCase):
     def test_check_passes_and_names_each_step(self):
         code, text = self.run_cli("check", broker=DayFakeBroker())
         self.assertEqual(code, 0)
-        for label in ("keys and account", "its own account", "market clock", "positions", "minute prices"):
+        for label in ("keys and account", "market clock", "positions", "minute prices"):
             self.assertIn(f"ok    {label}", text)
         self.assertIn("practice money only", text)
         self.assertLess(text.index("keys  Keys read from"), text.index("ok    keys and account"))
@@ -170,38 +168,11 @@ class CommandLineTests(unittest.TestCase):
         code, _ = self.run_cli("check", broker=DayFakeBroker(equity=25_000.0))
         self.assertEqual(code, 0, "exactly the minimum is allowed, the same line the runner uses")
 
-    def test_check_fails_on_the_weekly_traders_account(self):
-        with patch.object(cli, "shares_weekly_account", lambda broker: True):
-            code, text = self.run_cli("check", broker=DayFakeBroker())
-        self.assertEqual(code, 1)
-        self.assertIn("FAIL  its own account", text)
-
     def test_check_fails_when_the_account_holds_other_funds(self):
         code, text = self.run_cli("check", broker=DayFakeBroker(held={"GLD": 5}))
         self.assertEqual(code, 1)
         self.assertIn("GLD", text)
         self.assertIn("fresh paper account", text)
-
-    def test_check_and_run_refuse_when_the_accounts_cannot_be_compared(self):
-        with patch.object(cli, "shares_weekly_account", lambda broker: None):
-            code, text = self.run_cli("check", broker=DayFakeBroker())
-            self.assertEqual(code, 1)
-            self.assertIn("FAIL  its own account", text)
-            self.assertIn("Couldn't confirm", text)
-            broker = DayFakeBroker()
-            code, text = self.run_cli("run", "--once", broker=broker)
-        self.assertEqual(code, 1)
-        self.assertIn("won't start", text)
-        self.assertEqual(broker.entry_orders, [])
-
-    def test_run_refuses_the_weekly_traders_account_and_never_starts(self):
-        broker = DayFakeBroker()
-        with patch.object(cli, "shares_weekly_account", lambda b: True):
-            code, text = self.run_cli("run", "--once", broker=broker)
-        self.assertEqual(code, 1)
-        self.assertIn("second", text)
-        self.assertIsNone(self.journal.runner_pid())
-        self.assertEqual(broker.entry_orders, [])
 
     def test_run_once_does_one_pass_and_releases_the_lock(self):
         broker = DayFakeBroker()
@@ -320,6 +291,15 @@ class CommandLineTests(unittest.TestCase):
                 code = cli.main(["check"])
         self.assertEqual(code, 1)
         self.assertIn("not set up", out.getvalue())
+
+    def test_the_old_weekly_command_points_to_the_day_trader(self):
+        import subprocess
+        root = Path(__file__).resolve().parents[1]
+        result = subprocess.run([sys.executable, "-m", "trading", "check"], cwd=root, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("removed", result.stdout)
+        self.assertIn("python3 -m trading.day check", result.stdout)
+        self.assertNotIn("Traceback", result.stderr)
 
 
 if __name__ == "__main__":
