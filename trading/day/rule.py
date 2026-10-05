@@ -60,6 +60,32 @@ class DayConfig:
         return SESSION_OPEN + self.range_minutes
 
 
+STANDARD_RISK_PCT = 0.25        # the standard sizes, as percentages of the account
+STANDARD_MAX_FUND_PCT = 25.0
+LIMIT_RISK_PCT = 2.0            # the largest the settings accept
+LIMIT_MAX_FUND_PCT = 50.0       # two funds and no borrowing: half the account in each is the most
+
+
+def sized_config(risk_pct: float = STANDARD_RISK_PCT,
+                 max_fund_pct: float = STANDARD_MAX_FUND_PCT) -> DayConfig:
+    """The rule with the two position-size settings changed (given as percentages of the account).
+
+    Only the sizes change; the entry, the stop, the exits and the safety checks are the same.
+    Raises ValueError, in plain words, for a value this trader cannot use. It never borrows, so
+    more than half the account in one of its two funds is refused, and so is a NaN or infinity."""
+    for name, value, limit in (("Risk per trade", risk_pct, LIMIT_RISK_PCT),
+                               ("Most in one fund", max_fund_pct, LIMIT_MAX_FUND_PCT)):
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or not (0.0 < value <= limit):
+            raise ValueError(f"{name} must be more than 0% and at most {limit:g}% of the account "
+                             f"(got {value!r}).")
+    return DayConfig(risk_per_trade=risk_pct / 100.0, max_position_pct=max_fund_pct / 100.0)
+
+
+def size_text(cfg: DayConfig) -> str:
+    return (f"up to {cfg.risk_per_trade * 100:g}% of the account at risk per trade, "
+            f"at most {cfg.max_position_pct * 100:g}% of it in one fund")
+
+
 STATUS_TEXT = {
     "traded": "bought on a breakout",
     "enter": "breakout just happened: buy now",
