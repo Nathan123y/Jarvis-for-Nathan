@@ -3,8 +3,9 @@
 What keeps it safe (practice money, but written as if it were not)
   * It is meant to own its Alpaca account. The account's identity is pinned on the first pass
     (a different account later means it touches nothing), `check` refuses an account that holds
-    other funds, and if the account ever holds anything but SPY or QQQ the trader stops buying,
-    sells only the shares it bought itself that day, and never touches the rest.
+    other funds, and if the account ever holds anything outside the tickers it may trade (SPY and
+    QQQ, or the analyst's fixed list) the trader stops buying, sells only the shares it bought
+    itself that day, and never touches the rest.
   * It sells fund by fund (cancel that fund's stop, then sell the position). It never uses a
     "sell everything" call.
   * Every buy carries a protective stop that lives at Alpaca, so a sleeping Mac or a closed
@@ -31,8 +32,10 @@ from datetime import datetime, timedelta
 from typing import Callable, Optional
 
 from trading.broker import BrokerError, parse_ts
+from trading.day.analyst import MAX_PICKS, PlanError, clamp_conviction, pick_config, plan_lines
 from trading.day.rule import (EASTERN, FINAL, SESSION_CLOSE, DayConfig, is_full_session,
                               live_signal, simulate_day, summarize_fills, to_sessions)
+from trading.day.universe import UNIVERSE
 from trading.journal import Journal
 
 IDLE_MIN, IDLE_MAX = 300.0, 600.0       # waits while the market is closed (the Mac may nap through them)
@@ -42,6 +45,10 @@ FLATTEN_RETRY = 10.0
 FAILURE_CAP_IN_SESSION = 30.0           # keep retrying quickly while the market is open
 MAX_CHASE = 1.005                       # do not buy if the price is already 0.5% above the signal candle's close
 DAY_TRADING_MINIMUM = 25_000.0
+PLAN_LEAD = 90 * 60.0                   # start making the analyst's plan this long before the open
+PREMARKET_ATTEMPTS = 3                  # tries before the open (the rest are kept for after it)
+PLAN_ATTEMPTS = 6                       # tries per day; after that the trader sits the day out
+PLAN_RETRY = 300.0                      # wait between tries
 _UNSURE = ("could not reach", "could not be read", "having trouble")
 
 
@@ -51,9 +58,15 @@ def _midnight(day: str) -> str:
 
 class DayRunner:
     def __init__(self, broker, journal: Journal, *, cfg: DayConfig = DayConfig(),
-                 log: Callable[[str], None] = print, clock: Callable[[], float] = time.monotonic):
+                 log: Callable[[str], None] = print, clock: Callable[[], float] = time.monotonic,
+                 analyst: Optional[Callable[[str], dict]] = None):
+        """`analyst`, if given, is called with a trading day ("YYYY-MM-DD") and returns that day's
+        plan (see trading.day.analyst) or raises PlanError. Without it the trader watches
+        `cfg.symbols` exactly as before."""
         self.broker, self.journal, self.cfg = broker, journal, cfg
+        self.analyst = analyst
         self._log, self._clock = log, clock
+        self._last_plan_try = -1e9
         self.hint = IDLE_MIN
         self._last_flatten = -1e9
         self._last_remembered = -1e9
@@ -63,7 +76,7 @@ class DayRunner:
     # ── small helpers ─────────────────────────────────────────────────────────
     def _today(self, day: str) -> dict:
         fresh = {"day": day, "decided": {}, "entered": {}, "attempts": {}, "halted": False,
-                 "finished": False, "noted": []}
+                 "finished": False, "noted": [], "plan": None, "plan_attempts": 0}
         saved = self.journal.state().get("today")
         return {**fresh, **saved} if isinstance(saved, dict) and saved.get("day") == day else fresh
 
@@ -110,14 +123,120 @@ class DayRunner:
         self.journal.record("decision", day=day, symbol=symbol, status=status)
         self._log(f"{symbol}: {status}")
 
+    def _allowed(self) -> tuple:
+        """Every ticker this trader may hold: SPY and QQQ, or the analyst's whole fixed list."""
+        return tuple(dict.fromkeys(self.cfg.symbols + (UNIVERSE if self.analyst else ())))
+
     @staticmethod
-    def _sellable(positions: dict, today: dict, cfg: DayConfig) -> list[str]:
+    def _sellable(positions: dict, today: dict, allowed) -> list[str]:
         """Which holdings this trader may sell. In a dedicated account, all of them (they can only
-        be SPY or QQQ). If the account also holds anything else, only what it bought itself today."""
-        ours = set(positions) & set(cfg.symbols)
-        if set(positions) - set(cfg.symbols):
-            ours &= set(today["entered"])
-        return sorted(ours)
+        be tickers it may trade). If the account also holds anything else, only what it bought
+        itself today (which can include a stock bought under the analyst by a trader that was then
+        restarted without it, so that is never left to be held overnight)."""
+        held = set(positions)
+        if held - set(allowed):
+            return sorted(held & set(today["entered"]))
+        return sorted(held)
+
+    def _cfg_for(self, symbol: str, today: dict) -> DayConfig:
+        """The rule's settings for one ticker. With the analyst on, sizes follow its conviction in
+        that pick (the lowest if, impossibly, it is not in the plan)."""
+        if not self.analyst:
+            return self.cfg
+        for pick in (self._saved_plan(today) or {}).get("picks") or []:
+            if pick.get("symbol") == symbol:
+                return pick_config(self.cfg, symbol, pick.get("conviction"))
+        return pick_config(self.cfg, symbol, 1)
+
+    # ── the analyst's plan ────────────────────────────────────────────────────
+    def _accept_plan(self, plan: dict, day: str) -> dict:
+        """A plan cut down to what this trader will act on: tickers it may trade, once each, at most
+        MAX_PICKS, convictions forced into 1..5, and a stand-aside whenever nothing is left. Applied
+        to what the analyst hands back AND again to a plan read back from the saved record, so
+        neither a bad answer nor an edited file can widen what gets traded."""
+        allowed, seen, picks = set(self._allowed()), set(), []
+        raw_picks = plan.get("picks")
+        for pick in raw_picks if isinstance(raw_picks, list) else []:
+            symbol = pick.get("symbol") if isinstance(pick, dict) else None
+            if isinstance(symbol, str) and symbol in allowed and symbol not in seen and len(picks) < MAX_PICKS:
+                seen.add(symbol)
+                picks.append({**pick, "symbol": symbol, "conviction": clamp_conviction(pick.get("conviction"))})
+        stand = plan.get("stand_aside") is True or not picks
+        return {**plan, "day": day, "picks": [] if stand else picks, "stand_aside": stand}
+
+    def _saved_plan(self, today: dict) -> Optional[dict]:
+        """The plan in today's record, cleaned as above, or None if there is none or it is unusable."""
+        plan = today.get("plan")
+        if not isinstance(plan, dict):
+            return None
+        try:
+            return self._accept_plan(plan, today.get("day"))
+        except Exception:                                   # noqa: BLE001 - a damaged record means "no plan"
+            return None
+
+    @staticmethod
+    def _tries(today: dict) -> int:
+        try:
+            return max(0, int(today.get("plan_attempts") or 0))
+        except (TypeError, ValueError, OverflowError):
+            return PLAN_ATTEMPTS
+
+    def _ensure_plan(self, day: str, today: dict, limit: int = PLAN_ATTEMPTS) -> Optional[dict]:
+        """Today's plan, making it if there is none yet. None when there is no plan right now
+        (the tries up to `limit` are used, or the last one failed a moment ago)."""
+        plan = self._saved_plan(today)
+        if plan is not None:
+            return plan
+        tries = self._tries(today)
+        if tries >= limit or self._clock() - self._last_plan_try < PLAN_RETRY:
+            return None
+        self._last_plan_try = self._clock()
+        today["plan_attempts"] = tries + 1
+        self._save(today)                                   # count the try first: a crash cannot loop forever
+        try:
+            plan = self._accept_plan(self.analyst(day), day)
+        except PlanError as exc:
+            reason = str(exc)[:140]
+        except Exception as exc:                            # noqa: BLE001 - a broken analyst must not stop the trader
+            reason = f"unexpected {type(exc).__name__}"
+        else:
+            today["plan"] = plan
+            self._save(today)
+            self.journal.record("plan", **{k: v for k, v in plan.items()
+                                           if k in ("day", "stand_aside", "market_view", "events", "picks",
+                                                    "dropped", "headlines", "made_at")})
+            for line in plan_lines(plan, self.cfg):
+                self._log(line)
+            return plan
+        self.journal.record("error", label="plan_failed", day=day, attempt=tries + 1, reason=reason)
+        self._log(f"problem: no plan for {day} ({reason}); try {tries + 1} of {PLAN_ATTEMPTS}"
+                  + (". It will not trade today without one." if tries + 1 >= PLAN_ATTEMPTS else
+                     ("; it tries again after the open." if tries + 1 >= limit else "")))
+        return None
+
+    def _plan_for(self, day: str, seconds: float, today: dict) -> tuple[Optional[dict], bool]:
+        """(the plan to trade on, whether it was only just made) while the market is open. A plan can
+        still be made late in the morning, but not once the last possible buy time has passed."""
+        plan = self._saved_plan(today)
+        if plan is not None:
+            return plan, False
+        if seconds >= self.cfg.last_entry_minute * 60:
+            return None, False
+        plan = self._ensure_plan(day, today)
+        return plan, plan is not None
+
+    def _before_open(self, clock: dict) -> None:
+        """Pre-market: make the plan for the coming session once the open is close enough."""
+        if self.journal.paused():
+            return
+        try:
+            opens = parse_ts(clock["next_open"])
+            wait = (opens - parse_ts(clock["timestamp"])).total_seconds()
+        except (ValueError, KeyError):
+            return
+        if wait <= PLAN_LEAD:
+            day = opens.astimezone(EASTERN).date().isoformat()
+            self._ensure_plan(day, self._today(day), PREMARKET_ATTEMPTS)
 
     # ── selling ───────────────────────────────────────────────────────────────
     def _flatten(self, day: str, why: str, symbols: list[str]) -> bool:
@@ -211,12 +330,17 @@ class DayRunner:
             return "watching"
         raw = self.broker.minute_bars(symbols, _midnight(day))
         bought = False
+        budget = dict(account)                              # cash left in THIS pass: several buys must not borrow
         for symbol in symbols:
             bars = to_sessions(raw.get(symbol, [])).get(day, [])
-            signal = live_signal(bars, self.cfg, account["equity"], seconds)
+            signal = live_signal(bars, self._cfg_for(symbol, today), account["equity"], seconds)
             status = signal["status"]
             if status == "enter":
-                bought = self._enter(symbol, signal, account, day, today) or bought
+                before = symbol in today["entered"]
+                bought = self._enter(symbol, signal, budget, day, today) or bought
+                entry = today["entered"].get(symbol)
+                if entry and not before:                    # bought, or an order that may have gone through
+                    budget["cash"] -= entry["qty"] * entry["price"] * 1.002
             elif status in FINAL:
                 self._decide(today, day, symbol, status)
         self._save(today)
@@ -230,7 +354,7 @@ class DayRunner:
             orders = self.broker.closed_orders(_midnight(day))
         except BrokerError:
             return                                          # try again on the next pass
-        for result in summarize_fills(orders, self.cfg.symbols, day):
+        for result in summarize_fills(orders, self._allowed(), day):
             self.journal.record("trade_result", day=day, **{
                 k: (round(v, 4) if isinstance(v, float) else v) for k, v in result.items()})
         try:
@@ -248,6 +372,8 @@ class DayRunner:
         self._in_session = bool(clock["is_open"])
         if not clock["is_open"]:
             self._idle_hint(clock)
+            if self.analyst:
+                self._before_open(clock)
             return "market_closed"
         now = parse_ts(clock["timestamp"]).astimezone(EASTERN)
         try:
@@ -272,7 +398,7 @@ class DayRunner:
             self._note_once(today, "account_changed")
             self.hint = 300.0
             return "account_changed"                        # different account than before: touch nothing
-        foreign = sorted(set(positions) - set(self.cfg.symbols))
+        foreign = sorted(set(positions) - set(self._allowed()))
         if foreign:
             self._note_once(today, "foreign_positions", symbols=foreign)
         self._start_line(account, day)
@@ -292,7 +418,7 @@ class DayRunner:
             self.journal.record("halt", day=day, equity=account["equity"], start=start_value)
             self._log("down 1% on the day: selling everything and stopping for today")
 
-        mine = self._sellable(positions, today, self.cfg)
+        mine = self._sellable(positions, today, self._allowed())
         if today["halted"] or seconds >= flatten_at:
             if mine:
                 self._flatten(day, "daily loss limit" if today["halted"] else "end of the day", mine)
@@ -314,7 +440,19 @@ class DayRunner:
             self._note_once(today, "below_day_trading_minimum")
             self.hint = 60.0
             return "below_day_trading_minimum"
-        undecided = [s for s in self.cfg.symbols if s not in today["decided"]]
+        watch = list(self.cfg.symbols)
+        if self.analyst:
+            plan, just_made = self._plan_for(day, seconds, today)
+            if just_made:
+                return "plan_made"                          # planning took a while: look at the clock afresh
+            if plan is None:
+                gave_up = (self._tries(today) >= PLAN_ATTEMPTS
+                           or seconds >= self.cfg.last_entry_minute * 60)
+                return "no_plan_standing_aside" if gave_up else "waiting_for_plan"
+            watch = [p["symbol"] for p in plan.get("picks") or []]
+            if plan.get("stand_aside") or not watch:
+                return "plan_says_stand_aside"
+        undecided = [s for s in watch if s not in today["decided"]]
         if not undecided:
             return "done_for_entries"
         if seconds < self.cfg.range_end * 60:
@@ -329,7 +467,7 @@ class DayRunner:
         try:
             clock, positions = self.broker.clock(), self.broker.positions()
             day = parse_ts(clock["timestamp"]).astimezone(EASTERN).date().isoformat()
-            symbols = self._sellable(positions, self._today(day), self.cfg)
+            symbols = self._sellable(positions, self._today(day), self._allowed())
         except (BrokerError, ValueError):
             return "held"
         if not symbols:

@@ -104,11 +104,84 @@ are only for the command line: starting it by voice always uses the standard siz
 `backtest` with other sizes, remember that picking the best-looking size from several runs only
 fits the past.
 
+## Optional: the pre-market analyst
+
+By default the trader runs the same fixed rule on SPY and QQQ every day. With the analyst on, an AI
+model does what a human trader does before the open: it looks at recent price moves and the day's news
+and decides **what is worth watching today, and how strongly**. Which names it picks, and how big,
+change from day to day because they depend on that day's information.
+
+```
+python3 -m trading.day analyst                       # preview today's plan; sends and saves nothing
+python3 -m trading.day run --analyst                 # trade on the analyst's plan every day
+python3 -m trading.day run --analyst --risk-pct 0.5 --max-fund-pct 50
+python3 -m trading.day check --analyst               # also test what the analyst needs
+```
+
+How it works:
+
+1. About 90 minutes before the open, it reads the last month of daily prices for a **fixed list of 17
+   names** (SPY, QQQ, IWM, DIA, XLK, XLF, XLE, XLV and AAPL, MSFT, NVDA, AMZN, GOOGL, META, TSLA, AMD,
+   JPM) plus about two dozen recent headlines from Jarvis's news search, and asks Gemini (the key Jarvis
+   already has) for a plan: up to four picks, each with a **conviction from 1 to 5** and a reason, or
+   "stand aside today". Standing aside is a normal answer.
+2. A pick is **only bought if the opening-range breakout then fires on it**, with that rule's protective
+   stop at the low of the first 15 minutes. The analyst chooses *what* and *how big*; it never picks an
+   entry price or an exit. Everything is still sold before the close.
+3. Conviction scales the sizes you set (`--risk-pct`, `--max-fund-pct`): conviction 5 is the full size and
+   1 is a fifth of it. Those two settings stay the ceiling. It never borrows: every buy is checked against
+   the cash left after the buys before it, so several picks breaking out at once cannot add up to more than
+   the account. With up to four picks, `--risk-pct` applies to each, so a bad day where every stop is hit
+   can cost up to four times it (the start-up line and `analyst` print that number; the 1% daily-loss halt
+   sells everything sooner if the account is down that much).
+4. A single stock swings more than a fund, so a stock may have its stop up to 3% below the price (funds
+   keep 1.5%); a wider stop than that is skipped.
+5. The plan, its reasoning and the headlines count are written to the record (`report` is unchanged).
+   Asking Jarvis "what's the analyst's plan?" reads back the latest plan's day, tickers and convictions
+   only: the model's free text was written from web headlines, so it is never handed to the voice
+   assistant. The reasoning is in the terminal log and the record.
+
+What stays in code, whatever the model says: it can only choose from the fixed list, only long, at most
+four picks, conviction forced into 1 to 5, its text trimmed and cleaned, and nothing it writes can change a
+size, a stop or an order. Headlines come from the open web, so they are treated as untrusted text; the
+worst a hostile headline can do is nudge the model toward a different name from the same list at a size the
+code still caps. **If a plan cannot be made (no key, no answer, nonsense), the trader trades nothing that
+day.** It makes three tries before the open and keeps three more for after it (five minutes apart, until
+2:00 pm New York time), then sits the day out and says so. It never falls back to guessing.
+
+What it cannot do: predict the market. It is an AI's reading of the day, and it can be confidently wrong.
+Whether it adds anything over the plain rule is exactly what the practice account is for, and it can only
+be judged on live days: replaying it over past days would let the model "know" what happened next, so there
+is no honest backtest of it. Judge it over 60 or more trading days, against SPY, after costs.
+
+Things to know:
+
+- **Not yet confirmed against the real services:** the Gemini call, the news fetch and the quality of the
+  plans. `analyst` is the first test: run it once, read the plan, and add `--show-input` to see exactly what
+  the model was shown. `check --analyst` also reports, name by name, how many of the first 15 minutes have a
+  price on the free feed. The rule needs at least 10, so a thinly traded name on a given day is skipped.
+- The free price feed is one exchange (IEX), so individual stocks have thinner candles than the big funds.
+- Starting the trader by voice always uses the plain rule and the standard sizes. Use the command line for
+  `--analyst`.
+- The Mac has to be awake and online a little before the open for the plan to be made in time. If the
+  trader is started later, it makes the plan then, as long as it is before 2:00 pm New York time (a breakout
+  that already happened is not chased). Making a plan takes up to a couple of minutes, and `stop` waits for
+  that to finish (Ctrl+C does not). It cannot be holding anything while it plans.
+- On an early-close day the analyst still makes a plan before the open (it cannot know yet), and the
+  trader then sits the day out.
+- If you restart the trader without `--analyst` (or by voice) while it holds a stock it bought under the
+  analyst, it buys nothing new and still sells that stock at the 3:45 pm close, so nothing is held
+  overnight.
+- Keep this trader's account to itself. `check --analyst` allows the 17 names, and anything the trader
+  did not buy that day is sold when the market opens.
+- Options are not part of this. The analyst buys shares only.
+
 ## Safety limits
 
 | Limit | What happens |
 | --- | --- |
-| Only SPY and QQQ | Anything else in the account: it stops buying and sells only shares it bought itself today |
+| Only SPY and QQQ (the analyst's fixed list when it is on) | Anything else in the account: it stops buying and sells only shares it bought itself today |
+| Analyst plan | Only the fixed list, long only, at most four picks, conviction 1 to 5; no plan means no trades that day |
 | Under $25,000 in the account | Does not trade (every trade here is a day trade, which brokers restrict at that size) |
 | Account identity | Remembered on first run; if it changes, the trader touches nothing |
 | No short selling, no borrowing | Buys only; sizes capped by the rule and by cash |
@@ -147,8 +220,10 @@ This is a software experiment, not financial advice.
 ## What gets stored
 
 `config/trading_day/` holds numbers, ticker symbols and short labels: decisions, entries,
-results, daily account values and a log of the background process. No keys, no conversations.
-Git ignores the folder. Delete it to start the comparison over.
+results, daily account values and a log of the background process. With the analyst on it also keeps
+each day's plan in the model's own words (its outlook, the picks and its reasons; the headlines it read
+are counted, not saved). No keys, no conversations. Git ignores the folder. Delete it to start the
+comparison over.
 
 ## If something goes wrong
 
