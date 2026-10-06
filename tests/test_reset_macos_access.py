@@ -59,3 +59,10 @@ class ResetMacAccessTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RebuildScope(unittest.TestCase):
+    def test_rebuild_scope_covers_screen_and_microphone(self):
+        from tools import reset_macos_access as r
+        for service in ("ScreenCapture", "Microphone", "Accessibility", "AppleEvents"):
+            self.assertIn(service, r.SERVICES["rebuild"])

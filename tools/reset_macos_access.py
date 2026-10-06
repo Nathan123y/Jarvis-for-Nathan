@@ -2,6 +2,7 @@
 
 Run on the Mac from the Jarvis project folder, for example:
     python3 tools/reset_macos_access.py all
+    python3 tools/reset_macos_access.py rebuild   # after the app was rebuilt
 
 macOS will ask for permission again when Jarvis next uses each protected feature.
 This tool does not grant permissions or modify macOS's privacy database directly.
@@ -25,6 +26,14 @@ SERVICES = {
     "all": (
         "Accessibility", "AppleEvents", "SystemPolicyDesktopFolder",
         "SystemPolicyDocumentsFolder", "SystemPolicyDownloadsFolder",
+    ),
+    # After a rebuild with ad-hoc signing, macOS sees a different app and the
+    # old grants stop matching; clearing all of them lets each one be asked
+    # for again cleanly, Screen Recording and Microphone included.
+    "rebuild": (
+        "ScreenCapture", "Microphone", "Camera", "Accessibility", "AppleEvents",
+        "SystemPolicyDesktopFolder", "SystemPolicyDocumentsFolder",
+        "SystemPolicyDownloadsFolder",
     ),
 }
 
@@ -84,7 +93,8 @@ def main() -> None:
         parser.error(str(exc))
     for line in results:
         print(line)
-    print("Screen Recording and Microphone were not reset.")
+    if args.scope != "rebuild":
+        print("Screen Recording and Microphone were not reset.")
     print("Reopen Jarvis and retry the affected feature. Allow any macOS prompt it shows.")
     if args.scope in ("controls", "all"):
         print("For Accessibility, check System Settings → Privacy & Security → Accessibility.")
