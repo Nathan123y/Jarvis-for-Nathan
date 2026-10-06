@@ -78,17 +78,31 @@ def save_assistant_config(assistant_name: str, user_name: str) -> None:
 # ── Assistant voice ──────────────────────────────────────────────────────────
 # Gemini Live prebuilt voices. Names are proper nouns — identical in every
 # language, so this list is safe to show verbatim in any locale.
-AVAILABLE_VOICES = ["Charon", "Puck", "Kore", "Fenrir", "Aoede", "Gacrux", "Algieba"]
-# Gacrux is Gemini's mature-sounding voice: the closest fit for a calm, elderly
-# British-butler delivery. The accent and manner come from the persona prompt
+AVAILABLE_VOICES = ["Algenib", "Charon", "Algieba", "Iapetus", "Schedar",
+                    "Sadaltager", "Rasalgethi", "Orus", "Umbriel", "Puck",
+                    "Fenrir", "Kore", "Aoede", "Gacrux"]
+# Algenib is Gemini's low, gravelly male voice: the nearest fit for an older
+# English butler. The accent and manner come from the persona prompt
 # (core/prompt.txt); a prebuilt voice cannot be cloned from a film actor.
-DEFAULT_VOICE    = "Gacrux"
+# (Gacrux, the previous default, is a female voice.)
+DEFAULT_VOICE    = "Algenib"
 
 
 def get_voice() -> str:
     """Return the configured Live voice, falling back to the default if unset
     or if the stored value is not a voice we recognise."""
-    v = load_api_keys().get("voice_name", DEFAULT_VOICE) or DEFAULT_VOICE
+    data = load_api_keys()
+    v = data.get("voice_name", DEFAULT_VOICE) or DEFAULT_VOICE
+    # One-time move off Gacrux: it was briefly the default and is a female
+    # voice, so a saved Gacrux almost certainly came from that default rather
+    # than a real choice. After this runs once, picking Gacrux again sticks.
+    if v == "Gacrux" and not data.get("voice_default_v2"):
+        v = DEFAULT_VOICE
+        try:
+            _save_flag("voice_name", v)
+            _save_flag("voice_default_v2", True)
+        except Exception:
+            pass
     return v if v in AVAILABLE_VOICES else DEFAULT_VOICE
 
 
@@ -104,6 +118,7 @@ def save_voice(voice_name: str) -> None:
             data = {}
     v = (voice_name or "").strip()
     data["voice_name"] = v if v in AVAILABLE_VOICES else DEFAULT_VOICE
+    data["voice_default_v2"] = True
     CONFIG_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
 
 

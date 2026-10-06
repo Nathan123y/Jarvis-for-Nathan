@@ -76,6 +76,9 @@ class MacLauncherTests(unittest.TestCase):
             self.assertTrue(any(str(source).endswith("notification_announcer.swift")
                                 for source in run.call_args_list[1].args[0]))
             self.assertEqual(run.call_args_list[2].args[0][3], "-")
+            self.assertTrue((target / "Contents" / "Resources" / "AppIcon.icns").is_file())
+            with (target / "Contents" / "Info.plist").open("rb") as source:
+                self.assertEqual(plistlib.load(source)["CFBundleIconFile"], "AppIcon")
 
     def test_unchanged_signed_bundle_does_not_rebuild_or_change_permission_identity(self):
         with tempfile.TemporaryDirectory() as tmp:
