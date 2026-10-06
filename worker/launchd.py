@@ -19,6 +19,7 @@ import plistlib
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -64,25 +65,41 @@ def _domain(uid: Optional[int]) -> str:
     return f"gui/{os.getuid() if uid is None else uid}"
 
 
-def _load(path: Path, uid, launchctl: Launchctl) -> None:
+def _load(path: Path, uid, launchctl: Launchctl, sleep=time.sleep) -> None:
     domain = _domain(uid)
     launchctl(["bootout", f"{domain}/{LABEL}"])            # replace an older copy; fine if there was none
-    result = launchctl(["bootstrap", domain, str(path)])
-    if result.returncode != 0:
-        raise RuntimeError("macOS refused to load the worker job: "
-                           + ((result.stderr or result.stdout or "").strip()[:200] or f"exit {result.returncode}"))
+    result = None
+    for attempt in range(4):                                # bootout is asynchronous: bootstrap may need a retry
+        result = launchctl(["bootstrap", domain, str(path)])
+        if result.returncode == 0:
+            return
+        sleep(1.0 + attempt)
+    raise RuntimeError("macOS refused to load the worker job: "
+                       + ((result.stderr or result.stdout or "").strip()[:200] or f"exit {result.returncode}"))
 
 
 def install(*, python: Optional[str] = None, repo: Path, log: Path, home: Optional[Path] = None,
-            uid: Optional[int] = None, launchctl: Launchctl = _launchctl) -> list[str]:
+            uid: Optional[int] = None, launchctl: Launchctl = _launchctl, sleep=time.sleep) -> list[str]:
     path = plist_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
     log.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        shutil.copy2(path, backup_path(home))                # so `rollback` can restore it
-    with open(path, "wb") as fh:
-        plistlib.dump(build_plist(python=python or sys.executable, repo=repo, log=log), fh)
-    _load(path, uid, launchctl)
+    new = plistlib.dumps(build_plist(python=python or sys.executable, repo=repo, log=log))
+    previous = path.read_bytes() if path.exists() else None
+    if previous is not None and previous != new:
+        shutil.copy2(path, backup_path(home))                # so `rollback` can restore it (never clobbered by a re-install)
+    path.write_bytes(new)
+    try:
+        _load(path, uid, launchctl, sleep)
+    except RuntimeError:
+        if previous is not None:                             # put things back the way they were
+            path.write_bytes(previous)
+            try:
+                _load(path, uid, launchctl, sleep)
+            except RuntimeError:
+                pass
+        else:
+            path.unlink(missing_ok=True)
+        raise
     return ["Installed. The Jarvis background worker now starts when you log in and restarts if it crashes.",
             f"It runs: {python or sys.executable} -m worker run   (in {repo})",
             f"Its log is {log}.", *SESSION_NOTES,
@@ -107,13 +124,13 @@ def restart(*, uid: Optional[int] = None, launchctl: Launchctl = _launchctl) -> 
 
 
 def rollback(*, home: Optional[Path] = None, uid: Optional[int] = None,
-             launchctl: Launchctl = _launchctl) -> list[str]:
+             launchctl: Launchctl = _launchctl, sleep=time.sleep) -> list[str]:
     """Put the previous job file back (or remove the job if there was none before install)."""
     path, prev = plist_path(home), backup_path(home)
     if not prev.exists():
         return uninstall(home=home, uid=uid, launchctl=launchctl) + ["(There was no earlier version to restore.)"]
     shutil.move(str(prev), str(path))
-    _load(path, uid, launchctl)
+    _load(path, uid, launchctl, sleep)
     return ["Restored the previous worker job and reloaded it."]
 
 

@@ -42,6 +42,10 @@ class NeedsSetup(Exception):
     """A connection or setting is missing. The job is paused and you are told, not retried."""
 
 
+class Abandoned(Exception):
+    """Raised inside a handler thread that has been timed out: stop touching anything."""
+
+
 class Deferred(Exception):
     """Not now (quota reached, outside the allowed hours). Requeued without using an attempt."""
 
@@ -102,7 +106,8 @@ class KeepAwake:
         elif not want and self._proc is not None:
             try:
                 self._proc.terminate()
-            except OSError:
+                self._proc.wait(timeout=2)
+            except Exception:
                 pass
             self._proc = None
         return self.active
@@ -113,22 +118,35 @@ class KeepAwake:
 
 # ── job context ──────────────────────────────────────────────────────────────
 class JobContext:
-    def __init__(self, worker: "Worker", job: dict, deadline: float):
-        self.worker, self.job, self.deadline = worker, job, deadline
+    def __init__(self, worker: "Worker", job: dict, timeout_s: float):
+        self.worker, self.job = worker, job
+        self.attempt = job["attempts"]
+        self.deadline = time.monotonic() + float(timeout_s)       # monotonic: a sleep must not trip it
         self.db, self.events = worker.db, worker.events
         self.abandoned = False
 
-    def should_stop(self) -> bool:
-        """True when the job should wind down: kill switch, cancel request, timeout or shutdown."""
+    def stopping(self) -> bool:
+        """The worker is shutting down, the kill switch is on, or the job ran out of time."""
         return (self.abandoned or self.worker.killed() or self.worker.stop_event.is_set()
-                or time.time() > self.deadline or self.db.cancel_requested(self.job["id"]))
+                or time.monotonic() > self.deadline)
+
+    def should_stop(self) -> bool:
+        """True when the job should wind down: stopping, or a cancel was requested."""
+        return self.stopping() or self.db.cancel_requested(self.job["id"])
+
+    def partial(self, data: Optional[dict] = None) -> dict:
+        """What a handler returns when it stopped early. The job is put back, not marked done."""
+        return {**(data or {}), "partial": True}
 
     def checkpoint(self, data: dict) -> None:
-        self.db.checkpoint(self.job["id"], data)
+        if self.abandoned:
+            raise Abandoned()
+        if not self.db.checkpoint(self.job["id"], data, attempt=self.attempt):
+            raise Abandoned()                                      # a newer attempt owns the job now
 
     def external_allowed(self) -> bool:
-        """Call before any action that leaves this Mac (send, publish). False if killed."""
-        return not self.worker.killed()
+        """Call before any action that leaves this Mac (send, publish). False if killed or abandoned."""
+        return not self.abandoned and not self.worker.killed()
 
 
 class Worker:
@@ -147,6 +165,7 @@ class Worker:
         self._last_tick = clock()
         self._started = clock()
         self._lock_fd = None
+        self._zombies: list[threading.Thread] = []                 # timed-out handler threads still alive
         self.kill_path = self.dir / "KILL"
         self.status_path = self.dir / "status.json"
 
@@ -157,16 +176,34 @@ class Worker:
     def acquire_process_lock(self) -> bool:
         """Only one worker per Mac (and so one executor per local campaign)."""
         self.dir.mkdir(parents=True, exist_ok=True)
-        fd = open(self.dir / "worker.lock", "w")
+        fd = open(self.dir / "worker.lock", "a+")                  # not truncated until we hold the lock
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             fd.close()
             return False
+        fd.seek(0)
+        fd.truncate()
         fd.write(str(os.getpid()))
         fd.flush()
         self._lock_fd = fd
         return True
+
+    def outbox_claim(self, campaign_id: Optional[str] = None) -> Optional[dict]:
+        """The only way handlers take a message to send: nothing is claimed while the kill switch is on."""
+        return self.db.outbox_claim(campaign_id=campaign_id, now=self.clock(), allow=lambda: not self.killed())
+
+    def startup_recovery(self) -> None:
+        """Call once, right after taking the process lock: the previous worker is certainly gone, so
+        its jobs are re-queued at once and any send it was making becomes 'uncertain' (never resent)."""
+        now = self.clock()
+        for r in self.db.recover(now, force=True):
+            log.warning("startup: recovered job %s (%s) -> %s", r["id"], r["kind"], r["state"])
+            if r["state"] == "failed":
+                self._failed_event(r["id"], r["kind"], "worker stopped; attempts used up", r["campaign_id"], now)
+        stuck = self.db.outbox_recover(now)
+        if stuck:
+            log.warning("%d send(s) were interrupted and are now 'uncertain' (never auto-resent)", stuck)
 
     # ── one pass ─────────────────────────────────────────────────────────────
     def heartbeat(self, mac: Optional[dict] = None) -> None:
@@ -213,13 +250,12 @@ class Worker:
             log.warning("recovered job %s (%s) -> %s", r["id"], r["kind"], r["state"])
             if r["state"] == "failed":
                 self._failed_event(r["id"], r["kind"], "worker stopped or timed out; attempts used up", r["campaign_id"], now)
-        stuck = self.db.outbox_recover(now)
-        if stuck:
-            log.warning("%d send(s) were interrupted and are now 'uncertain' (never auto-resent)", stuck)
         if self.killed():
             return None
         self.db.tick_schedules(now)
-        job = self.db.claim(self.owner, now=now, exclusive_kinds=EXCLUSIVE_KINDS, only_kinds=tuple(self.handlers))
+        self._zombies = [z for z in self._zombies if z.is_alive()]
+        kinds = tuple(k for k in self.handlers if not (self._zombies and k in EXCLUSIVE_KINDS))
+        job = self.db.claim(self.owner, now=now, exclusive_kinds=EXCLUSIVE_KINDS, only_kinds=kinds)
         if job is None:
             return None
         self._execute(job)
@@ -230,9 +266,15 @@ class Worker:
                            campaign_id=campaign, status="open", title=f"Background job {kind} failed",
                            detail={"error": error[:200], "job_id": job_id}, evidence={"job_id": job_id})
 
+    STOP_GRACE = 15.0           # seconds a running job gets to wind down after shutdown / kill switch
+
     def _execute(self, job: dict) -> None:
         handler = self.handlers.get(job["kind"])
-        ctx = JobContext(self, job, self.clock() + float(job["timeout_s"]))
+        jid, attempt = job["id"], job["attempts"]
+        if self.killed():                                         # flipped between claim and start
+            self.db.defer(jid, self.clock() + 30, "kill switch on", self.clock(), attempt=attempt)
+            return
+        ctx = JobContext(self, job, float(job["timeout_s"]))
         box: dict = {}
 
         def target():
@@ -241,47 +283,68 @@ class Worker:
             except BaseException as exc:                     # reported below, never lost
                 box["error"] = exc
 
-        t = threading.Thread(target=target, daemon=True, name=f"job-{job['id']}")
+        t = threading.Thread(target=target, daemon=True, name=f"job-{jid}")
         t.start()
-        t.join(float(job["timeout_s"]))
+        started = last_beat = time.monotonic()
+        stop_seen = None
+        while t.is_alive():
+            t.join(1.0)
+            mono = time.monotonic()
+            if mono - last_beat >= 10:                           # stay visibly alive during a long job
+                last_beat = mono
+                self.heartbeat()
+            if stop_seen is None and (self.stop_event.is_set() or self.killed()):
+                stop_seen = mono
+            if mono - started > float(job["timeout_s"]) or (stop_seen is not None and mono - stop_seen > self.STOP_GRACE):
+                break
         now = self.clock()
         if t.is_alive():
-            ctx.abandoned = True                              # its late result is ignored
-            state = self.db.fail(job["id"], f"timed out after {job['timeout_s']:g}s", now=now)
-            log.error("job %s timed out", job["id"])
+            ctx.abandoned = True                              # fenced out: it can no longer write or send
+            self._zombies.append(t)
+            if stop_seen is not None and mono - started <= float(job["timeout_s"]):
+                self.db.defer(jid, now + 30, "worker shutting down", now, attempt=attempt)
+                return
+            state = self.db.fail(jid, f"timed out after {job['timeout_s']:g}s", now=now, attempt=attempt)
+            log.error("job %s timed out", jid)
             if state == "failed":
-                self._failed_event(job["id"], job["kind"], "timed out", job["campaign_id"], now)
+                self._failed_event(jid, job["kind"], "timed out", job["campaign_id"], now)
             return
         err = box.get("error")
         if err is None:
-            if self.db.cancel_requested(job["id"]) and not box.get("result"):
-                self.db.mark_cancelled(job["id"], now)
+            result = box.get("result") if isinstance(box.get("result"), dict) else {}
+            if result.get("partial") and ctx.stopping():
+                self.db.defer(jid, now + 30, "stopped early; will continue", now, attempt=attempt)
+            elif self.db.cancel_requested(jid) and result.get("partial"):
+                self.db.mark_cancelled(jid, now)
             else:
-                self.db.complete(job["id"], box.get("result") if isinstance(box.get("result"), dict) else {}, now)
+                self.db.complete(jid, result, now, attempt=attempt)
+            return
+        if isinstance(err, Abandoned):
             return
         if isinstance(err, Deferred):
-            self.db.defer(job["id"], err.until, err.reason, now)
+            self.db.defer(jid, err.until, err.reason, now, attempt=attempt)
         elif isinstance(err, NeedsSetup):
-            self.db.pause(job["id"], str(err), now)
-            self.events.record("connection_missing", source="worker", source_id=f"job:{job['id']}:setup", ts=now,
-                               task_id=str(job["id"]), campaign_id=job["campaign_id"], status="open",
-                               title=str(err)[:200], detail={"job_id": job["id"], "kind": job["kind"]})
+            if self.db.pause(jid, str(err), now, attempt=attempt) == "paused":
+                self.events.record("connection_missing", source="worker", source_id=f"job:{jid}:setup", ts=now,
+                                   task_id=str(jid), campaign_id=job["campaign_id"], status="open",
+                                   title=str(err)[:200], detail={"job_id": jid, "kind": job["kind"]})
         elif isinstance(err, Fatal):
-            self.db.fail(job["id"], str(err), retry=False, now=now)
-            self._failed_event(job["id"], job["kind"], str(err), job["campaign_id"], now)
+            self.db.fail(jid, str(err), retry=False, now=now, attempt=attempt)
+            self._failed_event(jid, job["kind"], str(err), job["campaign_id"], now)
         elif isinstance(err, (KeyboardInterrupt, SystemExit)):
             raise err
         else:
-            log.exception("job %s failed", job["id"], exc_info=err)
-            state = self.db.fail(job["id"], f"{type(err).__name__}: {err}", now=now)
+            log.error("job %s failed: %r", jid, err)
+            state = self.db.fail(jid, f"{type(err).__name__}: {err}", now=now, attempt=attempt)
             if state == "failed":
-                self._failed_event(job["id"], job["kind"], f"{type(err).__name__}: {err}", job["campaign_id"], now)
+                self._failed_event(jid, job["kind"], f"{type(err).__name__}: {err}", job["campaign_id"], now)
 
     # ── forever ──────────────────────────────────────────────────────────────
     def run_forever(self) -> None:
         self.events.record("worker_started", source="worker", source_id=f"start:{int(self._started)}",
                            ts=self._started, title="Worker started", detail={"pid": os.getpid()})
         self.stop_event.clear()
+        self.startup_recovery()
         while not self.stop_event.is_set():
             try:
                 ran = self.run_once()

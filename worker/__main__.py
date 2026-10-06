@@ -18,6 +18,7 @@ import logging
 import logging.handlers
 import os
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -46,12 +47,21 @@ def _setup_logging(directory: Path) -> None:
 
 def _handlers() -> dict:
     handlers = default_handlers()
-    try:                                              # the website campaign, when present
-        from worker import campaign
+    campaign = _campaign()
+    if campaign:
         handlers.update(campaign.handlers())
-    except ImportError:
-        pass
     return handlers
+
+
+def _campaign():
+    """The website campaign module, if this checkout has it. A real error inside it is not hidden."""
+    import importlib
+    try:
+        return importlib.import_module("worker.campaign")
+    except ModuleNotFoundError as exc:
+        if exc.name == "worker.campaign":
+            return None
+        raise
 
 
 def cmd_run(args) -> int:
@@ -60,13 +70,11 @@ def cmd_run(args) -> int:
     w = Worker(d, handlers=_handlers())
     if not w.acquire_process_lock():
         print("Another worker is already running on this Mac (only one runs at a time).")
-        return 1
+        return 0                                        # exit 0: launchd must not respawn a duplicate in a loop
     seed_default_schedules(w.db)
-    try:
-        from worker import campaign
+    campaign = _campaign()
+    if campaign:
         campaign.seed_schedules(w.db)
-    except ImportError:
-        pass
     w.install_signal_handlers()
     logging.getLogger("jarvis.worker").info("worker started pid=%s", os.getpid())
     w.run_forever()
@@ -80,12 +88,27 @@ def _read_status(d: Path):
         return None
 
 
-def _alive(pid) -> bool:
+def _lock_holder(d: Path):
+    """pid of the live worker, or None. Liveness is the process lock itself (the OS drops it when the
+    process dies), so a stale pid file or a reused pid can never be mistaken for the worker."""
+    import fcntl
     try:
-        os.kill(int(pid), 0)
-        return True
-    except (OSError, TypeError, ValueError):
-        return False
+        fd = open(d / "worker.lock", "a+")
+    except OSError:
+        return None
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            fd.seek(0)
+            try:
+                return int(fd.read().strip())
+            except ValueError:
+                return None
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return None
+    finally:
+        fd.close()
 
 
 def cmd_status(args) -> int:
@@ -93,7 +116,7 @@ def cmd_status(args) -> int:
     d = default_dir()
     s = _read_status(d)
     now = time.time()
-    if s and _alive(s.get("pid")):
+    if s and _lock_holder(d) is not None:
         age = now - float(s["heartbeat"])
         print(f"Worker: RUNNING (pid {s['pid']}), last heartbeat {age:.0f}s ago" + ("  [STALE]" if age > 120 else ""))
         print(f"Mac: screen {s.get('mac', {}).get('screen', '?')}, power {s.get('mac', {}).get('power', {})}, "
@@ -115,11 +138,11 @@ def cmd_status(args) -> int:
 
 
 def cmd_stop(args) -> int:
-    s = _read_status(default_dir())
-    if not s or not _alive(s.get("pid")):
+    pid = _lock_holder(default_dir())
+    if pid is None:
         print("The worker isn't running.")
         return 0
-    os.kill(int(s["pid"]), signal.SIGTERM)
+    os.kill(pid, signal.SIGTERM)
     print("Asked the worker to finish its current job and exit.")
     return 0
 
@@ -182,14 +205,14 @@ def _launchd(action):
         d = default_dir()
         try:
             if action == "install":
-                lines = launchd.install(repo=REPO, log=d / "worker.log")
+                lines = launchd.install(repo=REPO, log=d / "launchd.log")
             elif action == "uninstall":
                 lines = launchd.uninstall()
             elif action == "restart":
                 lines = launchd.restart()
             else:
                 lines = launchd.rollback()
-        except RuntimeError as exc:
+        except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
             print(exc)
             return 1
         print("\n".join(lines))
