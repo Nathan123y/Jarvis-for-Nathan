@@ -65,10 +65,24 @@ _hide_cb: Optional[Callable[[], None]] = None
 _log_cb:  Optional[Callable[[str], None]] = None
 
 
-def bind(show, hide, log=None) -> None:
-    """Wire this module to the HUD. Called once from main.py at startup."""
-    global _show_cb, _hide_cb, _log_cb
-    _show_cb, _hide_cb, _log_cb = show, hide, log
+_notify_cb: Optional[Callable[[str], None]] = None
+
+
+def bind(show, hide, log=None, notify=None) -> None:
+    """Wire this module to the HUD. Called once from main.py at startup.
+    `notify(text)` tells the voice model how a confirmed action actually ended,
+    so it never has to guess whether an email went out."""
+    global _show_cb, _hide_cb, _log_cb, _notify_cb
+    _show_cb, _hide_cb, _log_cb, _notify_cb = show, hide, log, notify
+
+
+def _notify(outcome: str) -> None:
+    if _notify_cb:
+        try:
+            _notify_cb(f"[ACTION_RESULT] {outcome} Tell the user in one short, natural "
+                       f"sentence, exactly as it happened; do not call any tools.")
+        except Exception:
+            pass
 
 
 def _log(msg: str) -> None:
@@ -136,18 +150,22 @@ def resolve(accepted: bool) -> None:
 
     if time.monotonic() - p.at > TIMEOUT_SECONDS:
         _log(f"SYS: Confirmation expired — {p.title}")
+        _notify(f"The request timed out before it was confirmed, so it was NOT done: {p.title}.")
         return
 
     if not accepted:
         _log(f"SYS: Cancelled — {p.title}")
+        _notify(f"Cancelled; nothing was done: {p.title}.")
         return
 
     def _worker():
         try:
             result = p.run() or "Done."
             _log(f"SYS: Confirmed — {p.title}. {result}")
+            _notify(f"Confirmed; the action ran. Its result (report this, not your assumption): {result}")
         except Exception as e:
             _log(f"ERR: {p.title} failed — {e}")
+            _notify(f"It FAILED and was NOT done ({p.title}): {str(e)[:160]}")
 
     threading.Thread(target=_worker, daemon=True,
                      name=f"confirm-{p.key}").start()
@@ -163,6 +181,11 @@ _YES_FILLER = {"it", "ahead", "please", "thats", "that's", "right", "sir", "jarv
                "message", "email", "text", "call", "for", "me", "on", "of", "course",
                "just", "go", "do"}
 _MAX_WORDS = 7
+# Words that mean "yes, but with a change" — never treated as a plain yes.
+_QUALIFY = {"but", "change", "instead", "actually", "edit", "fix", "except", "first",
+            "before", "add", "remove", "different", "rewrite", "make", "subject",
+            "say", "saying", "tell", "wrong", "should", "could", "would", "what", "why",
+            "how", "who", "when", "where", "which", "if", "or", "maybe", "later"}
 
 
 def classify(text: str):
@@ -181,6 +204,10 @@ def classify(text: str):
         return None
     if any(w in _YES_STRONG for w in words) and all(w in _YES_STRONG or w in _YES_FILLER
                                                    for w in words):
+        return True
+    # "yes send it to her", "yeah go ahead and send that": a clear yes up front,
+    # nothing that changes or questions it after.
+    if words[0] in _YES_STRONG and not any(w in _QUALIFY for w in words) and len(words) <= _MAX_WORDS:
         return True
     return None
 

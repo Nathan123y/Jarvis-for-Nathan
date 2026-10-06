@@ -37,7 +37,7 @@ class GmailPluginTests(unittest.TestCase):
         self.assertIn("Project update", result)
         self.assertIn("mail_1234", result)
         service.users().messages().list.assert_called_once_with(
-            userId="me", labelIds=["INBOX"], maxResults=5, q="is:unread"
+            userId="me", labelIds=["INBOX"], maxResults=5, q="category:primary is:unread"
         )
         service.users().messages().get.assert_called_once_with(
             userId="me", id="mail_1234", format="metadata",
@@ -127,7 +127,7 @@ class GmailPluginTests(unittest.TestCase):
         with patch.object(gmail, "_connected_accounts", return_value=["school"]), \
                 patch.object(gmail, "_service", return_value=service) as open_service:
             result = gmail.run({"action": "recent", "count": 1})
-        self.assertIn("Recent school Gmail", result)
+        self.assertIn("school Gmail", result)
         open_service.assert_called_once_with("school", allow_login=False)
 
     def test_three_connected_accounts_require_an_explicit_choice(self):
@@ -257,3 +257,33 @@ class GmailPluginTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RecentOrderTests(unittest.TestCase):
+    def test_newest_first_primary_only_and_shown_on_screen(self):
+        service = MagicMock()
+        messages = service.users.return_value.messages.return_value
+        messages.list.return_value.execute.return_value = {
+            "messages": [{"id": "old_1"}, {"id": "new_2"}, {"id": "mid_3"}]}
+        stamps = {"old_1": "1700000000000", "new_2": "1800000000000", "mid_3": "1750000000000"}
+
+        def get(userId, id, **kw):
+            m = MagicMock()
+            m.execute.return_value = {"internalDate": stamps[id], "snippet": id,
+                                      "payload": {"headers": [{"name": "Subject", "value": f"S-{id}"}]}}
+            return m
+        messages.get.side_effect = get
+        player = MagicMock()
+        with patch.object(gmail, "_service", return_value=service):
+            result = gmail.run({"action": "recent", "account": "personal", "count": 3}, player=player)
+        self.assertLess(result.index("S-new_2"), result.index("S-mid_3"))
+        self.assertLess(result.index("S-mid_3"), result.index("S-old_1"))
+        self.assertIn("1. ID: new_2", result)
+        self.assertEqual(messages.list.call_args.kwargs["q"], "category:primary")
+        self.assertIn("S-new_2", player.show_content.call_args.args[1])
+
+    def test_all_tabs_drops_the_primary_filter(self):
+        service = _service_with_inbox()
+        with patch.object(gmail, "_service", return_value=service):
+            gmail.run({"action": "recent", "account": "personal", "all_tabs": True})
+        self.assertNotIn("q", service.users().messages().list.call_args.kwargs)
