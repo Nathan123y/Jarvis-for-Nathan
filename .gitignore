@@ -68,3 +68,9 @@ desktop.ini
 logs/
 downloads/
 screenshots/
+
+# While-you-were-away event store and background worker data (private)
+config/events.db
+config/events.db-wal
+config/events.db-shm
+config/worker/
