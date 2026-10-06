@@ -10,6 +10,8 @@
     python3 -m worker selftest       queue a harmless test job
     python3 -m worker logs [N]       the last N log lines
     python3 -m worker install | uninstall | restart | rollback    the per-user launchd job (macOS)
+    python3 -m worker sales import FILE.csv   count verified payments from a payment export
+    python3 -m worker campaign dryrun|status|review|enable|pause|resume|stop|mode   the website campaign
 """
 from __future__ import annotations
 
@@ -199,6 +201,54 @@ def cmd_logs(args) -> int:
     return 0
 
 
+def cmd_campaign(args) -> int:
+    campaign = _campaign()
+    if campaign is None:
+        print("This checkout has no website campaign.")
+        return 1
+    from worker.campaign import control, dryrun, pipeline
+    d = default_dir()
+    if args.action == "dryrun":
+        base = d.parent / "dryrun"
+        import shutil
+        shutil.rmtree(base, ignore_errors=True)
+        print(dryrun.report(dryrun.run(base, visual=args.visual)))
+        return 0
+    env = pipeline.default_env()
+    db = jobs_mod.JobDB(d / "jobs.db")
+    me = "cli"
+    if args.action == "status":
+        print(control.status(env, db=db))
+    elif args.action == "review":
+        print(control.review(env))
+    elif args.action == "enable":
+        print(control.review(env))
+        if not sys.stdin.isatty():
+            print("\nRun this in a terminal: it asks you to type AUTHORIZE.")
+            return 1
+        if input("\nType AUTHORIZE to let this campaign find, build and email businesses on its own: ").strip() != "AUTHORIZE":
+            print("Not enabled.")
+            return 1
+        print(control.enable(env, db, by=me))
+    elif args.action == "pause":
+        print(control.pause(env, by=me))
+    elif args.action == "resume":
+        print(control.resume(env, by=me))
+    elif args.action == "stop":
+        print(control.stop(env, by=me))
+    elif args.action == "mode":
+        print(control.set_mode(env, args.value or "", by=me))
+    return 0
+
+
+def cmd_sales(args) -> int:
+    from core.events import Store
+    from worker.campaign import sales
+    res = sales.import_csv(Path(args.file).expanduser(), Store(default_dir().parent / "events.db"))
+    print(res["error"] or f"Imported {res['imported']} new payments ({res['skipped']} rows skipped: not paid, or already counted).")
+    return 1 if res["error"] else 0
+
+
 def _launchd(action):
     def run(args) -> int:
         from worker import launchd
@@ -233,6 +283,12 @@ def main(argv=None) -> int:
     r = sub.add_parser("resume"); r.add_argument("id", type=int); r.set_defaults(fn=cmd_resume)
     sub.add_parser("selftest").set_defaults(fn=cmd_selftest)
     lg = sub.add_parser("logs"); lg.add_argument("n", type=int, nargs="?", default=40); lg.set_defaults(fn=cmd_logs)
+    cp = sub.add_parser("campaign")
+    cp.add_argument("action", choices=["dryrun", "status", "review", "enable", "pause", "resume", "stop", "mode"])
+    cp.add_argument("value", nargs="?")
+    cp.add_argument("--visual", action="store_true", help="dryrun: also run the browser check (needs Playwright)")
+    cp.set_defaults(fn=cmd_campaign)
+    sl = sub.add_parser("sales"); sl.add_argument("action", choices=["import"]); sl.add_argument("file"); sl.set_defaults(fn=cmd_sales)
     for name in ("install", "uninstall", "restart", "rollback"):
         sub.add_parser(name).set_defaults(fn=_launchd(name))
     args = p.parse_args(argv)

@@ -417,6 +417,10 @@ class JobDB:
         """The provider definitely rejected it (nothing was sent): sending -> failed."""
         return self._outbox_move(oid, (O_SENDING,), O_FAILED, error, now)
 
+    def outbox_requeue(self, oid: int, reason: str, now: Optional[float] = None) -> bool:
+        """The provider refused before sending anything (limit, block): sending -> queued, try later."""
+        return self._outbox_move(oid, (O_SENDING,), O_QUEUED, reason, now)
+
     def outbox_hold(self, oid: int, reason: str, now: Optional[float] = None) -> bool:
         """Park a message for a person to look at: sending/uncertain -> held. Never resent by itself."""
         return self._outbox_move(oid, (O_SENDING, O_UNCERTAIN), O_HELD, reason, now)
@@ -491,6 +495,15 @@ class JobDB:
             return O_QUEUED if ok else self._state_of(oid)
         self.outbox_hold(oid, "provider could not confirm; held for review", now)
         return O_HELD
+
+    def outbox_get(self, oid: int) -> Optional[dict]:
+        with self._conn() as con:
+            r = con.execute("SELECT * FROM outbox WHERE id=?", (oid,)).fetchone()
+        if r is None:
+            return None
+        d = dict(r)
+        d["payload"] = _unj(d["payload"])
+        return d
 
     def _state_of(self, oid: int) -> str:
         with self._conn() as con:

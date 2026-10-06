@@ -41,8 +41,8 @@ SOURCE_LABELS = {WORKER: "the background worker", GMAIL: "reply checking", TRADI
 REPLY_WORDS = (("interested", "interested"), ("call_request", "asked for a call"),
                ("question", "asked a question"), ("declined", "declined"),
                ("opted_out", "opted out"), ("bounced", "bounced"),
-               ("automated", "automatic reply"), ("unclear", "need a look"))
-NEEDS_YOU_REPLIES = ("call_request", "interested", "question", "unclear")
+               ("automated", "automatic reply"), ("complaint", "complained"), ("unclear", "need a look"))
+NEEDS_YOU_REPLIES = ("call_request", "interested", "question", "complaint", "unclear")
 ATTENTION_KINDS = ("reply_received", "decision_needed", "job_failed", "job_paused",
                    "connection_missing", "campaign_stopped")
 

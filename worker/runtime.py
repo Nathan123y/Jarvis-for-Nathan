@@ -31,7 +31,7 @@ log = logging.getLogger("jarvis.worker")
 
 TICK_SECONDS = 5.0
 HEARTBEAT_STALE_AFTER = 120.0
-EXCLUSIVE_KINDS = ("generate_site", "build_site")      # one generation job at a time
+EXCLUSIVE_KINDS = ("generate_site", "build_site", "campaign_send", "campaign_replies")      # one generation job at a time
 
 
 class Fatal(Exception):

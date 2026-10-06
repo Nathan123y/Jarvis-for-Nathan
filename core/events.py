@@ -41,7 +41,7 @@ KINDS = (
 )
 
 REPLY_STATUSES = ("interested", "call_request", "question", "declined",
-                  "opted_out", "bounced", "automated", "unclear")
+                  "opted_out", "bounced", "automated", "complaint", "unclear")
 
 OPEN = "open"
 HANDLED = "handled"
