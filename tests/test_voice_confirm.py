@@ -74,3 +74,44 @@ class VoiceAnswer(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Outcomes(unittest.TestCase):
+    def setUp(self):
+        self.notes = []
+        confirm.bind(lambda t, d: None, lambda: None, notify=self.notes.append)
+        self.addCleanup(confirm.bind, None, None)
+        self.addCleanup(setattr, confirm, "_pending", None)
+
+    def wait(self):
+        for _ in range(100):
+            if self.notes:
+                return
+            time.sleep(0.01)
+
+    def test_success_is_reported_back(self):
+        confirm.request("m", "Email Bob", "", lambda: "Email sent to bob@x.com.")
+        confirm.resolve(True)
+        self.wait()
+        self.assertIn("[ACTION_RESULT]", self.notes[0])
+        self.assertIn("Email sent to bob@x.com.", self.notes[0])
+
+    def test_failure_is_reported_back(self):
+        def boom():
+            raise RuntimeError("Gmail said no")
+        confirm.request("m", "Email Bob", "", boom)
+        confirm.resolve(True)
+        self.wait()
+        self.assertIn("FAILED", self.notes[0])
+        self.assertIn("Gmail said no", self.notes[0])
+
+    def test_cancel_is_reported_back(self):
+        confirm.request("m", "Email Bob", "", lambda: "x")
+        confirm.resolve(False)
+        self.assertIn("Cancelled", self.notes[0])
+
+    def test_yes_with_a_few_plain_words(self):
+        for s in ("yes send it to her", "yeah go ahead and send that"):
+            self.assertIs(confirm.classify(s), True, s)
+        for s in ("yes but make it shorter", "yes change the subject", "yes what did it say"):
+            self.assertIsNone(confirm.classify(s), s)
