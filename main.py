@@ -2069,8 +2069,8 @@ class JarvisLive:
         except asyncio.TimeoutError:
             print("[JARVIS] Startup briefing skipped: microphone not ready.")
             return
-        finally:
-            self._startup_brief_pending = False
+        # (_startup_brief_pending stays True through the waits below, so speech in
+        # them still counts as "the user spoke first"; it is cleared just before sending.)
         memory   = load_memory()
         identity = memory.get("identity", {})
 
@@ -2171,6 +2171,7 @@ class JarvisLive:
             turns={"role": "user", "parts": [{"text": p1}]},
             turn_complete=True,
         )
+        self._startup_brief_pending = False
         if away_result and away_result.get("id"):
             _away_plugin.delivered(away_result, "voice" if away_facts else "screen")
         print("[JARVIS] Startup greeting sent.")

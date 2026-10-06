@@ -271,6 +271,54 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(self.store.sync_state("trading")["state"], "unavailable")
 
 
+class ReviewFixTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = Store(Path(self.tmp.name) / "events.db")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_uncertain_send_becomes_sent_when_resolved(self):
+        state = {"drafts": {"d": {"email": "a@x.com", "status": "uncertain"}}, "leads": {"a@x.com": {"name": "A"}}}
+        away.ingest_promotion(self.store, state)
+        self.assertEqual(self.store.events()[0]["status"], "uncertain")
+        state["drafts"]["d"].update(status="sent", sent_at="2026-10-05T10:00:00+00:00")
+        away.ingest_promotion(self.store, state)
+        rows = self.store.events()
+        self.assertEqual((len(rows), rows[0]["status"]), (1, "sent"))
+
+    def test_sent_without_timestamp_is_not_dropped(self):
+        state = {"drafts": {"d": {"email": "a@x.com", "status": "sent"}}, "leads": {"a@x.com": {"name": "A"}}}
+        away.ingest_promotion(self.store, state)
+        self.assertEqual(len(self.store.events(kinds=("offer_sent",))), 1)
+
+    def test_addresses_and_urls_are_redacted(self):
+        self.assertNotIn("@", away._q("write to bob@evil.com or see https://evil.example/x"))
+        state = {"drafts": {"d": {"email": "a@x.com", "status": "sent", "sent_at": "2026-10-05T10:00:00+00:00"}},
+                 "leads": {"a@x.com": {"name": "Ann a@x.com"}}}
+        away.ingest_promotion(self.store, state)
+        self.assertNotIn("a@x.com", json.dumps(self.store.events()))
+
+    def test_unprompted_briefing_needs_new_evidence(self):
+        self.store.set("last_active", T0 - 60)
+        self.store.sync_ok("trading", stale_after=10, at=T0)            # now stale
+        ev(self.store, "reply_received", "r", task_id="b", status="call_request", ts=T0 + 5, title="Joe")
+        first = away.prepare(self.store, T0 + 10**5, refresh=False, explicit=False)
+        self.store.mark_delivered(first["id"], "voice")
+        again = away.prepare(self.store, T0 + 2 * 10**5, refresh=False, explicit=False)
+        self.assertTrue(again["empty"])
+        self.assertEqual(again["spoken"], "")
+        asked = away.prepare(self.store, T0 + 2 * 10**5, refresh=False, explicit=True)
+        self.assertFalse(asked["empty"])                                  # "what did I miss" still shows it
+
+    def test_future_dated_event_is_not_skipped_forever(self):
+        self.store.set("last_active", T0)
+        ev(self.store, "biz_found", "a", task_id="a", ts=T0 + 10**6)      # clock skew: dated ahead
+        r = away.prepare(self.store, T0 + 100, refresh=False)
+        self.assertEqual(r["through_id"], 1)
+
+
 class PresenceTests(unittest.TestCase):
     def plist(self, **root):
         return plistlib.dumps([root], fmt=plistlib.FMT_XML)
@@ -374,6 +422,27 @@ class PluginTests(unittest.TestCase):
         with mock.patch.object(away, "screen_state", return_value="unlocked"):
             again = self.wa.startup(now)
         self.assertIsNone(again if again is None or again["empty"] else None)   # not announced as new twice
+
+    def test_actions_refuse_when_locked(self):
+        self.seed()
+        with mock.patch.object(away, "screen_state", return_value="locked"):
+            self.assertIn("locked", self.wa.run({"action": "calls"}, self.player))
+            self.assertEqual(self.panel, [])
+
+    def test_return_delivery_only_marks_delivered_when_it_reached_the_user(self):
+        self.seed()
+        self.wa._boot_last_active = None
+        said = []
+        with mock.patch.object(away, "screen_state", return_value="unlocked"):
+            out = self.wa._deliver_return(lambda t: said.append(t) or True, None, lambda: False)
+            self.assertEqual(out, "undelivered")                       # no screen, can't speak: stays pending
+            self.assertEqual(self.store.delivered_through()[0], 0)
+            out = self.wa._deliver_return(lambda t: said.append(t) or True, None, lambda: True)
+        self.assertEqual(out, "done")
+        self.assertIn("AWAY_BRIEFING", said[0])
+        self.assertGreater(self.store.delivered_through()[0], 0)
+        with mock.patch.object(away, "screen_state", return_value="locked"):
+            self.assertEqual(self.wa._deliver_return(None, None, lambda: True), "locked")
 
     def test_status_reports_unavailable_sources_and_missing_worker(self):
         text = self.wa.run({"action": "status"}, self.player)

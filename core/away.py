@@ -78,9 +78,12 @@ def duration(seconds: float) -> str:
     return f"{days} day{'s' if days != 1 else ''}" + (f" {hrs} hr" if hrs else "")
 
 
+_REDACT = re.compile(r"\S+@\S+|https?://\S+|www\.\S+")
+
+
 def _q(value, limit=120) -> str:
     """Outside text as inert data: no lookalike [TAGS], no stray quotes, bounded."""
-    s = str(value or "").replace("[", "(").replace("]", ")").replace('"', "'")
+    s = _REDACT.sub("(address removed)", str(value or "")).replace("[", "(").replace("]", ")").replace('"', "'")
     return " ".join(s.split())[:limit]
 
 
@@ -177,8 +180,17 @@ def _iso_ts(text) -> Optional[float]:
         return None
 
 
-def _hash(value: str) -> str:
-    return hashlib.sha1(value.encode()).hexdigest()[:12]
+def _hash(value: str, salt: str = "") -> str:
+    return hashlib.sha256((salt + value).encode()).hexdigest()[:12]
+
+
+def _salt(store: Store) -> str:
+    salt = store.get("hash_salt")
+    if not salt:
+        import secrets
+        salt = secrets.token_hex(8)
+        store.set("hash_salt", salt)
+    return salt
 
 
 def ingest_promotion(store: Store, state: Optional[dict] = None) -> int:
@@ -193,13 +205,14 @@ def ingest_promotion(store: Store, state: Optional[dict] = None) -> int:
             store.sync_failed(PROMOTION, f"promotion history unreadable: {exc!r}")
             return 0
     new = 0
+    salt = _salt(store)
     for draft_id, draft in (state.get("drafts") or {}).items():
         email = str(draft.get("email") or "")
         lead = (state.get("leads") or {}).get(email, {})
-        key = _hash(email.lower())
-        ts = _iso_ts(draft.get("sent_at"))
-        if draft.get("status") == "sent" and ts:
-            new += store.record("offer_sent", source=PROMOTION, source_id=f"draft:{draft_id}", ts=ts,
+        key = _hash(email.lower(), salt)
+        ts = _iso_ts(draft.get("sent_at")) or _iso_ts(lead.get("sent_at")) or _iso_ts(lead.get("updated_at"))
+        if draft.get("status") == "sent":
+            new += store.record("offer_sent", source=PROMOTION, source_id=f"draft:{draft_id}", ts=ts, update=True,
                                 task_id=key, campaign_id="product-promotion", status="sent",
                                 title=_q(lead.get("name") or "a contact", 60), private=True,
                                 detail={"product": draft.get("product")},
@@ -207,10 +220,10 @@ def ingest_promotion(store: Store, state: Optional[dict] = None) -> int:
         elif draft.get("status") == "uncertain":
             new += store.record("offer_sent", source=PROMOTION, source_id=f"draft:{draft_id}", ts=ts or time.time(),
                                 task_id=key, campaign_id="product-promotion", status="uncertain",
-                                title=_q(lead.get("name") or "a contact", 60), private=True, update=True,
+                                title=_q(lead.get("name") or "a contact", 60), private=True,
                                 evidence={"draft": str(draft_id)})
     for email, lead in (state.get("leads") or {}).items():
-        key, ts = _hash(str(email).lower()), _iso_ts(lead.get("updated_at"))
+        key, ts = _hash(str(email).lower(), salt), _iso_ts(lead.get("updated_at"))
         if lead.get("status") == "replied" and ts:
             new += store.record("reply_received", source=PROMOTION, source_id=f"reply:{key}", ts=ts, task_id=key,
                                 campaign_id="product-promotion", status="unclear", private=True,
@@ -329,7 +342,8 @@ def _outreach_lines(name: str, f: dict, awaiting: Optional[int], replies_state: 
 
 
 def compose(events: list[dict], open_items: list[dict], syncs: dict, upcoming: Optional[list],
-            window: tuple[float, float], awaiting: dict, *, speak_details: bool = True) -> dict:
+            window: tuple[float, float], awaiting: dict, *, speak_details: bool = True,
+            explicit: bool = True) -> dict:
     """Facts for the voice, the on-screen panel, and the counts they came from."""
     start, end = window
     span = f"{clock(start, end)} to {clock(end, end)} Pacific ({duration(end - start)})"
@@ -422,7 +436,9 @@ def compose(events: list[dict], open_items: list[dict], syncs: dict, upcoming: O
         panel += ["SOURCES"] + [f"  {c}" for c in caveats] + [""]
         spoken.append("Heads up, " + "; ".join(caveats))
 
-    has_news = bool(spoken)
+    # Unprompted briefings (launch, return) need NEW evidence. Carried-over open items, stale-source
+    # notes and deadlines are only added to one that has it; "What did I miss?" shows everything.
+    has_news = bool(spoken) and (explicit or bool(events))
     if not panel_body and not sales and not trade and not need and not upcoming and not caveats:
         panel += ["Nothing new while you were away."]
     text_panel = "\n".join(panel).strip()[:3800]
@@ -491,7 +507,7 @@ def sync_snapshot(store: Store, now: float) -> dict:
 
 def prepare(store: Store, now: Optional[float] = None, *, upcoming: Optional[list] = None,
             speak_details: bool = True, since: Optional[float] = None, refresh: bool = True,
-            save: bool = True) -> dict:
+            save: bool = True, explicit: bool = True) -> dict:
     """Build the briefing for everything not yet delivered. Saves it (so it can be
     replayed) but does not mark it delivered: only the caller knows whether it was
     actually heard or seen."""
@@ -503,7 +519,7 @@ def prepare(store: Store, now: Optional[float] = None, *, upcoming: Optional[lis
     start = since if since is not None else (
         delivered_ts if isinstance(delivered_ts, (int, float)) else
         (float(last_active) if isinstance(last_active, (int, float)) else now))
-    events = store.events(after_id=after_id, until=now)
+    events = store.events(after_id=after_id)
     if events:
         start = min(start, events[0]["ts"]) if since is None else start
     open_items = store.open_items(ATTENTION_KINDS, now=now)
@@ -515,7 +531,8 @@ def prepare(store: Store, now: Optional[float] = None, *, upcoming: Optional[lis
         sent = _ids(allx, "offer_sent", lambda e: e["status"] == "sent")
         awaiting[cid] = len(sent - set(_reply_status_by_business(allx)))
     # Past events the user saw before are not replayed as "new": only open actions carry over.
-    result = compose(events, open_items, syncs, upcoming, (start, now), awaiting, speak_details=speak_details)
+    result = compose(events, open_items, syncs, upcoming, (start, now), awaiting, speak_details=speak_details,
+                     explicit=explicit)
     result["through_id"] = max([after_id] + [e["id"] for e in events])
     result["window"] = (start, now)
     result["id"] = (store.save_briefing(window_start=start, window_end=now, through_id=result["through_id"],

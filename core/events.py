@@ -187,9 +187,9 @@ class Store:
             if cur.rowcount:
                 return True
             if update:
-                con.execute("UPDATE events SET status=?, title=?, detail=?, evidence=? "
-                            "WHERE source=? AND source_id=?",
-                            (row[6], row[7], row[8], row[9], source, str(source_id)))
+                con.execute("UPDATE events SET status=?, title=?, detail=?, evidence=?, "
+                            "ts=COALESCE(?, ts) WHERE source=? AND source_id=?",
+                            (row[6], row[7], row[8], row[9], ts, source, str(source_id)))
             return False
 
     def events(self, *, after_id: int = 0, since: Optional[float] = None, until: Optional[float] = None,
