@@ -1697,12 +1697,25 @@ class JarvisLive:
                         if sc.input_transcription and sc.input_transcription.text:
                             txt = _clean_transcript(sc.input_transcription.text)
                             if txt:
+                                if not in_buf:
+                                    self._utterance_started = time.monotonic()
                                 in_buf.append(txt)
                                 self._last_user_speech = time.monotonic()
 
                         if sc.turn_complete:
                             if self._turn_done_event:
                                 self._turn_done_event.set()
+
+                            # A spoken "yes" / "no" answers a waiting confirmation
+                            # (send, call, shutdown...). It is read from the user's
+                            # own speech transcript, which the model cannot write.
+                            if in_buf:
+                                try:
+                                    confirm_gate.voice_answer(
+                                        " ".join(in_buf),
+                                        getattr(self, "_utterance_started", 0.0))
+                                except Exception as e:
+                                    print(f"[Confirm] voice answer failed: {e!r}")
 
                             # If this turn_complete ends an interrupted response, clear the
                             # flag and skip all further processing for that turn.

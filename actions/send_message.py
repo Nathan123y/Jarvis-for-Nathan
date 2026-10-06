@@ -298,7 +298,7 @@ TOOL = {
     "description": (
         "Sends a text message via Apple Messages/iMessage/SMS, WhatsApp, Telegram, "
         "or another messaging platform. On macOS, Apple Messages resolves the "
-        "contact natively and requires the user to confirm on the HUD before sending."
+        "contact natively and waits for the user to say yes (or tap CONFIRM) before sending."
     ),
     "parameters": {
         "type": "OBJECT",
