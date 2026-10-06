@@ -3575,7 +3575,10 @@ class MainWindow(QMainWindow):
         # on the right. A splitter, so the divide can be dragged; hiding the
         # graph gives Jarvis the whole width back.
         self._notes_panel = NoteGraphPanel()
-        self._notes_panel.setVisible(_read_full_config().get("notes_panel", True) is not False)
+        # Shown by default. "notes_view" is a new key on purpose: the old
+        # "notes_panel" flag was saved when the small sidebar version was
+        # switched off, and must not hide this one.
+        _show_notes = _read_full_config().get("notes_view", True) is not False
         self._main_split = QSplitter(Qt.Orientation.Horizontal)
         self._main_split.setStyleSheet(f"""
             QSplitter::handle {{ background: {C.BORDER}; width: 2px; }}
@@ -3583,6 +3586,9 @@ class MainWindow(QMainWindow):
         """)
         self._main_split.addWidget(self._notes_panel)
         self._main_split.addWidget(self._center_split)
+        # Set visibility only once it has a parent: showing a parentless
+        # widget makes it a separate window, and reparenting then hides it.
+        self._notes_panel.setHidden(not _show_notes)
         self._main_split.setStretchFactor(0, 1)
         self._main_split.setStretchFactor(1, 0)
         self._main_split.setCollapsible(0, False)   # hide it with the NOTES button
@@ -5401,7 +5407,7 @@ class MainWindow(QMainWindow):
             self._notes_panel.refresh()
         try:
             from memory.config_manager import _save_flag
-            _save_flag("notes_panel", show)
+            _save_flag("notes_view", show)
         except Exception:
             pass
         self._refresh_notes_btn()
