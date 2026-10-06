@@ -449,3 +449,57 @@ class ReviewTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StopRecordsDayTests(RunnerCase):
+    def test_stopping_mid_day_records_the_result_so_far(self):
+        broker = DayFakeBroker()
+        runner = self.runner(broker, sleep=lambda s: self.advance(s))
+        runner.step()                                              # bought SPY and QQQ
+        self.assertEqual(runner.close_out(), "sold")
+        symbols = {r["symbol"] for r in self.journal.events("trade_result")}
+        self.assertEqual(symbols, {"SPY", "QQQ"})
+        self.assertEqual(len(self.journal.events("snapshot")), 1)
+        self.assertFalse(self.journal.state()["today"]["finished"],
+                         "a restart later today still records the final numbers at the close")
+
+    def test_stopping_after_being_stopped_out_records_too(self):
+        broker = DayFakeBroker()
+        runner = self.runner(broker, sleep=lambda s: self.advance(s))
+        runner.step()
+        for symbol in list(broker.held):
+            broker.hit_stop(symbol, 99.0)
+        self.assertEqual(runner.close_out(), "flat")
+        self.assertEqual({r["exit"] for r in self.journal.events("trade_result")}, {"stop"})
+
+    def test_stopping_on_a_day_with_no_trades_records_nothing(self):
+        runner = self.runner(DayFakeBroker().at(9, 35), sleep=lambda s: self.advance(s))
+        runner.step()
+        self.assertEqual(runner.close_out(), "flat")
+        self.assertEqual(self.journal.events("trade_result"), [])
+        self.assertEqual(self.journal.events("snapshot"), [])
+
+    def test_unfilled_sale_is_waited_for_then_left_out(self):
+        broker = DayFakeBroker()
+        runner = self.runner(broker, sleep=lambda s: self.advance(s))
+        runner.step()
+        broker.close_position = lambda symbol: None                # accepted, never fills
+        start = self.now
+        self.assertEqual(runner.close_out(), "sold")
+        self.assertGreaterEqual(self.now - start, 10.0, "waited for the sales to settle")
+        self.assertEqual(self.journal.events("trade_result"), [])  # not flat yet: not counted
+        self.assertEqual(len(self.journal.events("snapshot")), 1)
+
+    def test_stopping_after_the_day_was_finished_adds_nothing(self):
+        broker = DayFakeBroker()
+        runner = self.runner(broker, sleep=lambda s: self.advance(s))
+        runner.step()
+        broker.at(15, 46)
+        self.advance(1000)
+        runner.step()                                              # flattening
+        self.advance(60)
+        broker.at(15, 50)
+        self.assertEqual(runner.step(), "flat_for_the_day")
+        before = len(self.journal.events("trade_result"))
+        self.assertEqual(runner.close_out(), "flat")
+        self.assertEqual(len(self.journal.events("trade_result")), before)
