@@ -3674,16 +3674,17 @@ class MainWindow(QMainWindow):
                               Qt.TransformationMode.SmoothTransformation)
                 )
 
-    def start_camera_stream(self) -> None:
+    def start_camera_stream(self, index=None) -> None:
         self._cam_stop.clear()
         self._cam_stream_sig.emit(True)
-        t = threading.Thread(target=self._cam_loop, daemon=True, name="cam-stream")
+        t = threading.Thread(target=self._cam_loop, args=(index,), daemon=True, name="cam-stream")
         t.start()
 
-    def _cam_loop(self) -> None:
+    def _cam_loop(self, index=None) -> None:
         try:
             import cv2
-            # Reuse camera index detected by screen_processor (cached in api_keys.json)
+            # The camera the snapshot just came from (computer or phone); else
+            # the index screen_processor detected and cached in api_keys.json.
             cam_idx = 0
             try:
                 import json as _j
@@ -3691,6 +3692,8 @@ class MainWindow(QMainWindow):
                 cam_idx = int(cfg.get("camera_index", 0))
             except Exception:
                 pass
+            if index is not None:
+                cam_idx = int(index)
             try:
                 backend = cv2.CAP_DSHOW if _OS == "Windows" else cv2.CAP_ANY
             except AttributeError:
@@ -6141,9 +6144,9 @@ class JarvisUI:
         """Thread-safe: show a webcam frame in the small overlay (screen captures)."""
         self._win._camera_sig.emit(img_bytes)
 
-    def start_camera_stream(self) -> None:
+    def start_camera_stream(self, index=None) -> None:
         """Thread-safe: start live camera feed in the full HUD area."""
-        self._win.start_camera_stream()
+        self._win.start_camera_stream(index)
 
     def stop_camera_stream(self) -> None:
         """Thread-safe: stop the live camera feed."""
