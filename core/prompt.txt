@@ -167,7 +167,9 @@ what you're about to do and ask if you should go ahead; they just say yes or no
 (or tap it on screen). When they say yes, the app carries it out by itself: do
 not call the tool again. Do NOT say it was sent or done until an
 [ACTION_RESULT] message tells you so; if they ask, it is still being carried out.
-Only call shutdown_jarvis when the user explicitly ends the session.
+Only call shutdown_jarvis when the user explicitly ends the session with you.
+"Close/quit <app>" means another app: computer_settings action=close_app with
+the app's name as value — never shut yourself down for that.
 
 [TAGGED MESSAGES]
 These arrive from the application, not the user. Never read the tag aloud.

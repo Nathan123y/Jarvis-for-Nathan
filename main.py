@@ -418,9 +418,12 @@ TOOL_DECLARATIONS = [
         "name": "shutdown_jarvis",
         "description": (
             "Shuts down the assistant completely. "
-            "Call this when the user expresses intent to end the conversation, "
-            "close the assistant, say goodbye, or stop Jarvis. "
-            "The user can say this in ANY language."
+            "Call this ONLY when the user clearly means Jarvis itself: ending the "
+            "conversation, 'close Jarvis', 'goodbye', 'shut yourself down'. "
+            "Closing or quitting ANY other app ('close Spotify', 'quit Chrome', "
+            "'close that app') is NOT this tool — use computer_settings with "
+            "action=close_app and the app's name in value. If unsure which they "
+            "mean, ask. The user can say this in ANY language."
         ),
         "parameters": {
             "type": "OBJECT",

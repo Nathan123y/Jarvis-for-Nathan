@@ -303,6 +303,106 @@ def close_app():
     if _OS == "Darwin": pyautogui.hotkey("command", "q")
     else:               pyautogui.hotkey("alt", "f4")
 
+
+# ── Never quit Jarvis by accident ─────────────────────────────────────────────
+# "Close Spotify" used to press Cmd+Q / Alt+F4 on whatever was in front — and
+# while you're talking to Jarvis, Jarvis is usually what's in front. Apps are
+# now quit by name, and a keystroke is only sent when the front app is
+# confirmed not to be Jarvis.
+_SELF_NAMES = {"jarvis", "j.a.r.v.i.s", "python", "python3", "python launcher"}
+
+
+def _is_self_name(name: str) -> bool:
+    n = (name or "").strip().lower()
+    return n in _SELF_NAMES or n.startswith("python")
+
+
+def _frontmost_mac() -> tuple[str, int]:
+    """(name, pid) of the app in front on macOS; ("", 0) if it can't be read."""
+    out = subprocess.run(
+        ["osascript", "-e",
+         'tell application "System Events" to set p to first application process whose frontmost is true',
+         "-e", 'tell application "System Events" to return (name of p) & "|" & (unix id of p)'],
+        capture_output=True, text=True, timeout=5)
+    name, _, pid = (out.stdout or "").strip().rpartition("|")
+    try:
+        return name, int(pid)
+    except ValueError:
+        return "", 0
+
+
+def _frontmost_is_jarvis() -> bool:
+    import os
+    try:
+        if _OS == "Darwin":
+            name, pid = _frontmost_mac()
+            return pid in (os.getpid(), os.getppid()) or _is_self_name(name)
+        import pygetwindow
+        win = pygetwindow.getActiveWindow()
+        title = (getattr(win, "title", "") or "").lower()
+        return "jarvis" in title or "j.a.r.v.i.s" in title
+    except Exception:
+        return True          # unsure: never risk closing Jarvis itself
+
+
+def _running_apps_mac() -> list[str]:
+    out = subprocess.run(
+        ["osascript", "-e", 'tell application "System Events" to get name of '
+         '(every application process whose background only is false)'],
+        capture_output=True, text=True, timeout=6)
+    return [a.strip() for a in (out.stdout or "").split(",") if a.strip()]
+
+
+def _match_app(wanted: str, running: list[str]) -> str:
+    """The running app the user means: exact, then prefix, then contained, then fuzzy."""
+    import difflib
+    w = (wanted or "").strip().lower().removesuffix(".app")
+    for test in (lambda a: a.lower() == w, lambda a: a.lower().startswith(w),
+                 lambda a: w in a.lower()):
+        hits = [a for a in running if test(a)]
+        if hits:
+            return hits[0]
+    close = difflib.get_close_matches(w, [a.lower() for a in running], n=1, cutoff=0.75)
+    return next((a for a in running if a.lower() == close[0]), "") if close else ""
+
+
+def close_named_app(name: str) -> str:
+    """Quit one app by name, never Jarvis. Returns a sentence for the model."""
+    name = (name or "").strip()
+    if not name:
+        if _frontmost_is_jarvis():
+            return "Jarvis is the app in front right now. Ask the user which app to close."
+        close_app()
+        return "Closed the app in front."
+    if _is_self_name(name):
+        return ("That's Jarvis itself, so I left it open. If they want Jarvis to "
+                "shut down, they can say so explicitly.")
+    if _OS == "Darwin":
+        app = _match_app(name, [a for a in _running_apps_mac() if not _is_self_name(a)])
+        if not app:
+            return f"{name} isn't open."
+        safe = app.replace("\\", "").replace('"', "")
+        out = subprocess.run(["osascript", "-e", f'tell application "{safe}" to quit'],
+                             capture_output=True, text=True, timeout=10)
+        if out.returncode:
+            return f"{app} didn't quit: {(out.stderr or '').strip()[:120]}"
+        return f"Closed {app}."
+    try:
+        import pygetwindow
+        wins = [w for w in pygetwindow.getAllWindows()
+                if name.lower() in (w.title or "").lower()
+                and "jarvis" not in (w.title or "").lower()]
+    except Exception:
+        wins = []
+    if not wins:
+        return f"I couldn't find an open {name} window."
+    for w in wins:
+        try:
+            w.close()
+        except Exception:
+            pass
+    return f"Closed {name}."
+
 def close_window():
     if _OS == "Darwin": pyautogui.hotkey("command", "w")
     else:               pyautogui.hotkey("ctrl", "w")
@@ -830,7 +930,13 @@ def _detect_action(description: str) -> dict:
     if num and any(w in low for w in ("volume", "ses", "sound", "lautstark", "громкость")):
         return {"action": "volume_set", "value": max(0, min(100, int(num.group(1))))}
 
-    # 3. Alias phrases.
+    # 3. "close Spotify" / "quit Safari": quit that app by name.
+    app_m = re.match(r"^(?:please\s+)?(?:close|quit|kill)\s+(?:the\s+|my\s+)?(.+?)(?:\s+app)?$", low)
+    if app_m and not re.search(r"\b(window|tab|tabs|it|this|that|full\s*screen|computer|mac|laptop)\b",
+                               app_m.group(1)):
+        return {"action": "close_app", "value": app_m.group(1).strip()}
+
+    # 4. Alias phrases.
     for action, phrases in _ALIASES.items():
         if any(_normalise(p) == norm or p in low for p in phrases):
             return {"action": action, "value": None}
@@ -968,6 +1074,15 @@ def computer_settings(
         except Exception as e:
             return f"Reload failed: {e}"
 
+    if action in ("close_app", "quit_app"):
+        try:
+            return close_named_app(str(value or params.get("app") or "").strip())
+        except Exception as e:
+            return f"Could not close the app: {e}"
+
+    if action == "close_window" and _frontmost_is_jarvis():
+        return "Jarvis is the window in front, so I didn't close it. Ask which window to close."
+
     if action == "scroll_up":
         scroll_up(int(value or 500))
         return "Scrolled up."
@@ -1038,7 +1153,8 @@ TOOL = {
                     "volume_up | volume_down | volume_set | mute | "
                     "brightness_up | brightness_down | microphone_status | "
                     "microphone_set | microphone_mute | microphone_unmute | sleep_display | "
-                    "pause_video | close_app | close_window | full_screen | "
+                    "pause_video | close_app (put the app's name in `value`, e.g. Spotify; "
+                    "never use it to close Jarvis) | close_window | full_screen | "
                     "minimize | maximize | snap_left | snap_right | "
                     "switch_window | show_desktop | task_manager | focus_search | "
                     "refresh_page | close_tab | new_tab | next_tab | prev_tab | "
