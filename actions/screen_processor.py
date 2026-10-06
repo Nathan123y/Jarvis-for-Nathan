@@ -190,16 +190,32 @@ def _get_camera_index() -> int:
     return _detect_camera_index()
 
 
-def _capture_camera() -> tuple[bytes, str]:
+# The camera used last ("computer" or "phone") and its OpenCV index. A request
+# that doesn't name a camera uses the last one; the live view reuses the index.
+last_camera_source = "computer"
+last_camera_index: int | None = None
+
+
+def _capture_camera(source: str | None = None) -> tuple[bytes, str]:
+    """One frame from the Mac's camera or the iPhone (Continuity Camera).
+    `source` is "computer", "phone", or None for whichever was used last."""
+    global last_camera_source, last_camera_index
     if not _CV2:
         raise RuntimeError("OpenCV (cv2) is not installed. Run: pip install opencv-python")
 
-    index   = _get_camera_index()
+    from core.cameras import resolve
+    saved = _load_config().get("camera_index")
+    index, used = resolve(source or last_camera_source, _get_camera_index, saved)
     backend = _cv2_backend()
     cap     = cv2.VideoCapture(index, backend)
 
     if not cap.isOpened():
+        cap.release()
+        if used == "phone":
+            from core.cameras import PHONE_MISSING
+            raise RuntimeError(PHONE_MISSING)
         raise RuntimeError(f"Camera index {index} could not be opened.")
+    last_camera_source, last_camera_index = used, index
 
     for _ in range(10):
         cap.read()
