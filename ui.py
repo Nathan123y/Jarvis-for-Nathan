@@ -103,6 +103,8 @@ _HUE_LINKED = (
 _PALETTE_DEFAULTS: dict[str, str] = {k: getattr(C, k) for k in _HUE_LINKED}
 
 DEFAULT_UI_COLOR = _PALETTE_DEFAULTS["PRI"]
+# Used until the person picks their own colour, so the HUD matches the orb.
+DEFAULT_ORB_ACCENT = "#ff9a1f"
 
 
 def apply_ui_accent(accent_hex: str) -> bool:
@@ -816,6 +818,97 @@ class HudCanvas(QWidget):
             p.drawText(QRectF(cx - r, cy - fsz, r * 2, fsz * 2),
                        Qt.AlignmentFlag.AlignCenter, name)
 
+    def _orb_pixmap(self):
+        """The orb artwork, loaded once. None if the file is missing or unreadable."""
+        if not hasattr(self, "_orb_pm"):
+            try:
+                from core.orb import ORB_IMAGE
+                pm = QPixmap(str(ORB_IMAGE))
+                self._orb_pm = None if pm.isNull() else pm
+            except Exception:
+                self._orb_pm = None
+        return self._orb_pm
+
+    def _orb_scaled(self, px: int) -> QPixmap:
+        """The artwork resized to ~px, cached, so each frame only rotates it."""
+        px = max(32, (px + 4) // 8 * 8)
+        cache = getattr(self, "_orb_cache", None)
+        if cache is None:
+            cache = self._orb_cache = {}
+        sc = cache.get(px)
+        if sc is None:
+            if len(cache) > 12:
+                cache.clear()
+            pm = self._orb_pixmap()
+            sc = cache[px] = pm.scaled(
+                px, px, Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)
+        return sc
+
+    def _paint_orb(self, p, cx, cy, r):
+        from core.orb import orb_spin, orb_brightness, orb_scale
+        pm = self._orb_pixmap()
+        amp = self._amp_disp
+        live = self.speaking or amp > 0.05
+        if self.muted:
+            main = acc = qcol(C.MUTED_C)
+        else:
+            main = qcol(C.PRI)
+            acc = qcol(C.ACC) if self.speaking else (
+                qcol(C.ACC2) if self.state in ("THINKING", "PROCESSING") else
+                qcol(C.GREEN) if self.state == "LISTENING" else main)
+        bg = qcol(C.BG)
+        def blend(col, a):
+            k = max(0.0, min(1.0, a))
+            return QColor(int(bg.red() + (col.red() - bg.red()) * k),
+                          int(bg.green() + (col.green() - bg.green()) * k),
+                          int(bg.blue() + (col.blue() - bg.blue()) * k))
+        t = self._core_phase
+        spin = orb_spin(self.state, self.speaking, self.muted)
+        size = r * 2 * orb_scale(self._scale, amp)
+        half = size / 2.0
+        bright = orb_brightness(amp, self.speaking, self.muted)
+
+        # Soft glow behind the artwork; swells with the voice.
+        g = QRadialGradient(cx, cy, half * 1.05)
+        glow = QColor(main); glow.setAlpha(int(20 + 70 * amp + (25 if self.speaking else 0)))
+        g.setColorAt(0.0, glow)
+        g.setColorAt(0.7, qcol(C.PRI_GHO, 60))
+        g.setColorAt(1.0, qcol(C.BG, 0))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(g))
+        p.drawEllipse(QRectF(cx - half * 1.05, cy - half * 1.05, half * 2.1, half * 2.1))
+
+        # The artwork itself, twice: one layer turning forward, a fainter one
+        # turning back, added together so the black of the image stays clear.
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
+        for ang, op, k in ((t * spin, bright, 1.0),
+                           (-t * spin * 0.6 + 40.0, bright * 0.45, 0.92)):
+            p.save()
+            p.translate(cx, cy)
+            p.rotate(ang)
+            p.setOpacity(max(0.0, min(1.0, op)))
+            sc = self._orb_scaled(int(half * 2 * k))
+            p.drawPixmap(-(sc.width() // 2), -(sc.height() // 2), sc)
+            p.restore()
+        p.restore()
+
+        # A thin ring of graduations that grows with the voice, outside the art.
+        ring = half * 0.97
+        n = 72
+        spikes = []
+        for i in range(n):
+            a = math.radians(i * (360.0 / n))
+            ca, sa = math.cos(a), math.sin(a)
+            wob = 0.5 + 0.5 * math.sin(t * 2.3 + i * 0.42)
+            h = r * (0.012 + (amp * 0.10 * wob if live else 0.0))
+            spikes.append(QLineF(cx + ca * ring, cy + sa * ring,
+                                 cx + ca * (ring + h), cy + sa * (ring + h)))
+        p.setPen(QPen(blend(acc if live else main, 0.22 + 0.5 * amp), 1.4))
+        p.drawLines(spikes)
+
     def paintEvent(self, _):
         p = QPainter(self)
         if not p.isActive():      # device not ready (e.g. 0-size during layout) — skip cleanly
@@ -859,6 +952,14 @@ class HudCanvas(QWidget):
                 else:
                     _acc = qcol(C.PRI)
             self._avatar.paint(p, cx, _head_cy, _r_head, _main, _acc, qcol(C.BG))
+
+        # orb — the user's own artwork, turned and brightened by the state. Falls
+        # through to the reactor core if the image is missing.
+        elif self.hud_style == "orb" and self._orb_pixmap() is not None:
+            _band_t = 12.0
+            _band_h = max(60.0, _sy_status - 12.0 - _band_t)
+            _r = min(W * 0.46, _band_h / 2.0)
+            self._paint_orb(p, cx, _band_t + _band_h / 2.0, _r)
 
         # reactor core — the other centrepiece, and the fallback if the head
         # could not be built. There is no third path: the old face.png branch
@@ -916,6 +1017,146 @@ class HudCanvas(QWidget):
             p.fillRect(QRectF(wx0 + i * bw, wy + 20 - hgt, bw - 1, hgt), cl)
 
         p.end()   # end deterministically so the backing store never flushes an active painter
+
+class NoteGraphPanel(QWidget):
+    """Your Obsidian notes as a graph: one dot per note, a line per [[link]].
+
+    Read-only and local. The vault is scanned on a background thread, so
+    opening the window never waits on it. Hover a dot to see the note's name.
+    """
+    _loaded = pyqtSignal(object)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumWidth(240)
+        self.setMouseTracking(True)
+        self._nodes: list[str] = []
+        self._edges: list[tuple[int, int]] = []
+        self._pos: list[tuple[float, float]] = []
+        self._deg: list[int] = []
+        self._hover = -1
+        self._status = "Loading notes…"
+        self._busy = False
+        self._phase = 0.0
+        self._loaded.connect(self._apply)
+        self._tmr = QTimer(self)
+        self._tmr.timeout.connect(self._drift)
+        self._tmr.start(100)
+        QTimer.singleShot(400, self.refresh)
+        # Pick up notes added later (by Jarvis or by hand) without a restart.
+        self._reload_tmr = QTimer(self)
+        self._reload_tmr.timeout.connect(lambda: self.isVisible() and self.refresh())
+        self._reload_tmr.start(90_000)
+
+    def refresh(self) -> None:
+        if self._busy:
+            return
+        self._busy = True
+        threading.Thread(target=self._scan, daemon=True).start()
+
+    def _scan(self) -> None:
+        try:
+            from actions import obsidian_notes as on
+            from core import notegraph
+            vault = on._load_vault()
+            if vault is None:
+                self._loaded.emit(("Not connected. Ask Jarvis to connect your Obsidian vault.", None))
+                return
+            g = notegraph.build_graph(vault, on._notes(vault))
+            pos = notegraph.layout(len(g["nodes"]), g["edges"])
+            self._loaded.emit(("", (g, pos)))
+        except Exception:
+            self._loaded.emit(("Could not read the vault.", None))
+
+    def _apply(self, payload) -> None:
+        self._busy = False
+        msg, data = payload
+        if data is None:
+            self._nodes, self._edges, self._pos, self._deg = [], [], [], []
+            self._status = msg
+        else:
+            g, pos = data
+            self._nodes, self._edges, self._pos = g["nodes"], g["edges"], pos
+            self._deg = [0] * len(self._nodes)
+            for a, b in self._edges:
+                self._deg[a] += 1
+                self._deg[b] += 1
+            self._status = "" if self._nodes else "No notes found in the vault."
+        self.update()
+
+    def _drift(self) -> None:
+        if self._nodes and self.isVisible():
+            self._phase += 0.1
+            self.update()
+
+    def _screen(self, i: int) -> tuple[float, float]:
+        w, h = self.width(), self.height()
+        m = 26.0
+        x, y = self._pos[i]
+        sway = 2.0 * math.sin(self._phase * 0.6 + i)
+        return (w / 2 + x * (w / 2 - m) + sway, h / 2 + 8 + y * (h / 2 - m - 8) + sway * 0.6)
+
+    def mouseMoveEvent(self, e):
+        best, bd = -1, 144.0
+        for i in range(len(self._nodes)):
+            sx, sy = self._screen(i)
+            d = (sx - e.position().x()) ** 2 + (sy - e.position().y()) ** 2
+            if d < bd:
+                best, bd = i, d
+        if best != self._hover:
+            self._hover = best
+            self.update()
+
+    def leaveEvent(self, _):
+        self._hover = -1
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        if not p.isActive():
+            return
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.fillRect(self.rect(), qcol(C.PANEL))
+        p.setPen(QPen(qcol(C.BORDER), 1))
+        p.drawLine(0, 0, 0, self.height())
+        p.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
+        p.setPen(QPen(qcol(C.PRI), 1))
+        p.drawText(QRectF(12, 6, self.width() - 24, 18), Qt.AlignmentFlag.AlignLeft,
+                   f"◈  NOTES  ·  {len(self._nodes)}")
+        if self._status:
+            p.setFont(QFont("Courier New", 10))
+            p.setPen(QPen(qcol(C.TEXT_DIM), 1))
+            p.drawText(QRectF(14, 30, self.width() - 28, self.height() - 40),
+                       Qt.AlignmentFlag.AlignTop.value | Qt.TextFlag.TextWordWrap.value, self._status)
+            p.end()
+            return
+        pts = [self._screen(i) for i in range(len(self._nodes))]
+        near = set()
+        if self._hover >= 0:
+            near = {self._hover}
+            for a, b in self._edges:
+                if a == self._hover:
+                    near.add(b)
+                elif b == self._hover:
+                    near.add(a)
+        for a, b in self._edges:
+            hot = self._hover in (a, b)
+            p.setPen(QPen(qcol(C.PRI, 170 if hot else 60), 1.4 if hot else 0.8))
+            p.drawLine(QPointF(*pts[a]), QPointF(*pts[b]))
+        for i, (x, y) in enumerate(pts):
+            r = 2.2 + min(5.0, self._deg[i] * 0.6)
+            lit = i == self._hover
+            col = qcol(C.ACC2 if lit else C.PRI, 255 if (lit or i in near or not near) else 90)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(col)
+            p.drawEllipse(QPointF(x, y), r, r)
+        if self._hover >= 0:
+            p.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
+            p.setPen(QPen(qcol(C.WHITE), 1))
+            p.drawText(QRectF(10, self.height() - 24, self.width() - 20, 20),
+                       Qt.AlignmentFlag.AlignLeft, self._nodes[self._hover])
+        p.end()
+
 
 class MetricBar(QWidget):
 
@@ -2945,6 +3186,9 @@ class MainWindow(QMainWindow):
         _ui_color = (_cfg.get("ui_color") or "").strip()
         if _ui_color and _ui_color.lower() != DEFAULT_UI_COLOR:
             apply_ui_accent(_ui_color)
+        elif not _ui_color:
+            # No colour chosen yet: start in the amber of the orb artwork.
+            apply_ui_accent(DEFAULT_ORB_ACCENT)
 
         self.setWindowTitle("JARVIS")
         screen = QApplication.primaryScreen().availableGeometry()
@@ -3054,6 +3298,12 @@ class MainWindow(QMainWindow):
         self._center_split.setStretchFactor(1, 1)
         self._center_split.setCollapsible(0, False)
         body.addWidget(self._center_split, stretch=5)
+
+        # Obsidian note graph, beside the orb so notes and Jarvis share a window.
+        self._notes_panel = NoteGraphPanel()
+        self._notes_panel.setFixedWidth(300)
+        self._notes_panel.setVisible(_read_full_config().get("notes_panel", True) is not False)
+        body.addWidget(self._notes_panel)
 
         root.addLayout(body, stretch=1)
         root.addWidget(self._build_command_dock())
@@ -4021,6 +4271,14 @@ class MainWindow(QMainWindow):
         lay.addWidget(self._hud_btn)
         self._refresh_hud_btn()
 
+        self._notes_btn = QPushButton()
+        self._notes_btn.setFixedHeight(26)
+        self._notes_btn.setFont(QFont("Courier New", 11))
+        self._notes_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._notes_btn.clicked.connect(self._toggle_notes_panel)
+        lay.addWidget(self._notes_btn)
+        self._refresh_notes_btn()
+
         audio_btn = QPushButton("🎧  AUDIO DEVICES")
         audio_btn.setFixedHeight(26)
         audio_btn.setFont(QFont("Courier New", 11))
@@ -4837,31 +5095,59 @@ class MainWindow(QMainWindow):
             else "Hold a key to talk instead of streaming the mic continuously.")
 
 
+    def _refresh_notes_btn(self):
+        on = not self._notes_panel.isHidden()
+        self._notes_btn.setText("◈  NOTES GRAPH: ON" if on else "◇  NOTES GRAPH: OFF")
+        self._notes_btn.setStyleSheet(f"""
+            QPushButton {{ background: {C.PANEL2}; color: {C.PRI if on else C.TEXT_DIM};
+                border: 1px solid {C.BORDER_A}; border-radius: 3px;
+                text-align: left; padding: 0 8px; }}
+            QPushButton:hover {{ color: {C.WHITE}; border: 1px solid {C.BORDER_B}; }}""")
+        self._notes_btn.setToolTip("Show your Obsidian notes as a graph beside Jarvis.")
+
+    def _toggle_notes_panel(self):
+        show = self._notes_panel.isHidden()
+        self._notes_panel.setVisible(show)
+        if show:
+            self._notes_panel.refresh()
+        try:
+            from memory.config_manager import _save_flag
+            _save_flag("notes_panel", show)
+        except Exception:
+            pass
+        self._refresh_notes_btn()
+
     def _refresh_hud_btn(self):
         from memory.config_manager import get_hud_style
-        face = get_hud_style() == "face"
-        # Neither state is "off", so both read as active — this is a choice
-        # between two things, not a switch with a disabled side.
+        cur = get_hud_style()
+        face = cur == "face"
+        # No state is "off", so all read as active — this is a choice between
+        # centrepieces, not a switch with a disabled side.
         style = f"""
             QPushButton {{ background: {C.PANEL2}; color: {C.PRI};
                 border: 1px solid {C.BORDER_A}; border-radius: 3px;
                 text-align: left; padding: 0 8px; }}
             QPushButton:hover {{ color: {C.WHITE}; border: 1px solid {C.BORDER_B}; }}"""
-        self._hud_btn.setText("🧑  HUD: ANIMATED FACE" if face
+        self._hud_btn.setText("◎  HUD: ORB" if cur == "orb" else
+                              "🧑  HUD: ANIMATED FACE" if face
                               else "◉  HUD: REACTOR CORE")
         self._hud_btn.setStyleSheet(style)
         self._hud_btn.setToolTip(
+            "A glowing orb that turns with the state and swells with your "
+            "voice. Tap to switch to the animated head."
+            if cur == "orb" else
             "An animated head that speaks your words and shows what JARVIS is "
             "doing. Tap to switch to the reactor core."
             if face else
             "A reactor core that turns with the state and moves with your voice. "
-            "Tap to switch to the animated head.")
+            "Tap to switch to the orb.")
 
     def _toggle_hud_style(self):
         """Swap the centrepiece. Both objects stay in memory, so the change is
         instant and switching back costs nothing."""
         from memory.config_manager import get_hud_style, save_hud_style
-        want = "core" if get_hud_style() == "face" else "face"
+        from memory.config_manager import next_hud_style
+        want = next_hud_style(get_hud_style())
         save_hud_style(want)
         try:
             self.hud.hud_style = want
@@ -4870,6 +5156,7 @@ class MainWindow(QMainWindow):
             pass
         self._refresh_hud_btn()
         self._log.append_log(
+            "SYS: HUD switched to the orb." if want == "orb" else
             "SYS: HUD switched to the animated face." if want == "face"
             else "SYS: HUD switched to the reactor core.")
 

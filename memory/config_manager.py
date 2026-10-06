@@ -79,7 +79,10 @@ def save_assistant_config(assistant_name: str, user_name: str) -> None:
 # Gemini Live prebuilt voices. Names are proper nouns — identical in every
 # language, so this list is safe to show verbatim in any locale.
 AVAILABLE_VOICES = ["Charon", "Puck", "Kore", "Fenrir", "Aoede", "Gacrux", "Algieba"]
-DEFAULT_VOICE    = "Charon"
+# Gacrux is Gemini's mature-sounding voice: the closest fit for a calm, elderly
+# British-butler delivery. The accent and manner come from the persona prompt
+# (core/prompt.txt); a prebuilt voice cannot be cloned from a film actor.
+DEFAULT_VOICE    = "Gacrux"
 
 
 def get_voice() -> str:
@@ -142,22 +145,30 @@ def get_output_latency():
     return environ.get("JARVIS_OUTPUT_LATENCY") or load_api_keys().get("output_latency")
 
 
-HUD_STYLES = ("face", "core")
+HUD_STYLES = ("orb", "face", "core")
+
+
+def next_hud_style(current: str) -> str:
+    """The style the HUD button switches to: orb -> face -> core -> orb."""
+    c = str(current or "").strip().lower()
+    if c not in HUD_STYLES:
+        return HUD_STYLES[0]
+    return HUD_STYLES[(HUD_STYLES.index(c) + 1) % len(HUD_STYLES)]
 
 
 def get_hud_style() -> str:
-    """Which centrepiece the HUD draws: the animated head, or the reactor core.
+    """Which centrepiece the HUD draws: the orb, the animated head, or the reactor core.
 
-    Both render in the same software painter. New setups default to the
-    reactor circle; an existing saved face/core choice is preserved.
+    All render in the same software painter. New setups default to the orb;
+    an existing saved face/core choice is preserved.
     """
-    v = str(load_api_keys().get("hud_style", "core")).strip().lower()
-    return v if v in HUD_STYLES else "core"
+    v = str(load_api_keys().get("hud_style", "orb")).strip().lower()
+    return v if v in HUD_STYLES else "orb"
 
 
 def save_hud_style(style: str) -> None:
     s = str(style or "").strip().lower()
-    _save_flag("hud_style", s if s in HUD_STYLES else "face")
+    _save_flag("hud_style", s if s in HUD_STYLES else "orb")
 
 
 # ── Live-session tuning ──────────────────────────────────────────────────────
