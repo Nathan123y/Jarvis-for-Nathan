@@ -27,6 +27,26 @@ MARKER = "# Jarvis Git checkout launcher"
 NATIVE_SOURCE = Path(__file__).with_name("jarvis_launcher.swift")
 ANNOUNCER_SOURCE = Path(__file__).with_name("notification_announcer.swift")
 BUILD_MARKER = "native-build.sha256"
+ICON_SOURCE = Path(__file__).resolve().parent.parent / "assets" / "icon.png"
+
+
+def write_icon(resources: Path) -> bool:
+    """Put the Jarvis icon in the bundle as AppIcon.icns. False if it can't be made."""
+    try:
+        from PIL import Image
+        with Image.open(ICON_SOURCE) as im:
+            im.convert("RGBA").save(resources / "AppIcon.icns", format="ICNS")
+        return True
+    except Exception:
+        return False
+
+
+def _icon_available() -> bool:
+    try:
+        import PIL  # noqa: F401
+        return ICON_SOURCE.is_file()
+    except Exception:
+        return False
 
 
 def signing_identity() -> str:
@@ -47,6 +67,8 @@ def native_build_id(settings: dict, info: dict, identity: str) -> str:
     digest.update(plistlib.dumps(settings, sort_keys=True))
     digest.update(plistlib.dumps(info, sort_keys=True))
     digest.update(identity.encode("utf-8"))
+    if ICON_SOURCE.is_file():          # a new icon means a rebuild
+        digest.update(ICON_SOURCE.read_bytes())
     return digest.hexdigest()
 
 
@@ -126,6 +148,8 @@ def install(repo: Path, interpreter: Path, destination: Path, architecture: str 
         "NSCameraUsageDescription": "Jarvis accesses the camera when you request a camera feature.",
         "NSAppleEventsUsageDescription": "Jarvis controls approved Mac apps when you request an action.",
     }
+    if _icon_available():
+        info["CFBundleIconFile"] = "AppIcon"
 
     if platform.system() == "Darwin":
         # macOS screen access follows the app's signing identity. Rebuilding an
@@ -151,6 +175,8 @@ def install(repo: Path, interpreter: Path, destination: Path, architecture: str 
             with (config / "launch.plist").open("wb") as target:
                 plistlib.dump(settings, target)
             (config / BUILD_MARKER).write_text(build_id, encoding="ascii")
+            if "CFBundleIconFile" in info:
+                write_icon(config)       # before signing: the signature covers it
             launcher = macos / "Jarvis"
             result = subprocess.run(["/usr/bin/xcrun", "swiftc", str(NATIVE_SOURCE),
                                      str(ANNOUNCER_SOURCE), "-framework", "AVFoundation",
@@ -188,6 +214,10 @@ def install(repo: Path, interpreter: Path, destination: Path, architecture: str 
     macos.mkdir(parents=True, exist_ok=True)
     with (destination / "Contents" / "Info.plist").open("wb") as target:
         plistlib.dump(info, target)
+    if "CFBundleIconFile" in info:
+        resources = destination / "Contents" / "Resources"
+        resources.mkdir(exist_ok=True)
+        write_icon(resources)
 
     script = f"""#!/bin/sh
 {MARKER}

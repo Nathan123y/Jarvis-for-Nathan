@@ -28,7 +28,7 @@ from PyQt6.QtGui import (
     QPen, QPixmap, QRadialGradient, QShortcut,
 )
 from PyQt6.QtWidgets import (
-    QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QPushButton, QScrollArea, QSizePolicy, QSplitter,
     QStackedWidget, QTextEdit, QVBoxLayout, QWidget, QProgressBar,
 )
@@ -62,36 +62,41 @@ def _read_full_config() -> dict:
 APP_VERSION  = "ܢܵܬܵܢ"
 APP_PROTOCOL = "LIV"
 
-_DEFAULT_W, _DEFAULT_H = 1320, 820
+_DEFAULT_W, _DEFAULT_H = 1480, 880
 _MIN_W,     _MIN_H     = 960, 650
 _LEFT_W  = 188
+_JARVIS_W = 440   # Jarvis's column on the right when the notes graph is showing
 _RIGHT_W = 384
 
 _OS = platform.system()  # "Windows" | "Darwin" | "Linux"
 
 
 class C:
-    BG        = "#06121d"
-    PANEL     = "#0a1c29"
-    PANEL2    = "#102738"
-    BORDER    = "#22485b"
-    BORDER_B  = "#2e6c83"
-    BORDER_A  = "#2b5769"
-    PRI       = "#00d4ff"
-    PRI_DIM   = "#007a99"
-    PRI_GHO   = "#001f2e"
-    ACC       = "#ff6b00"
-    ACC2      = "#ffcc00"
+    # Dark blue throughout: navy panels, a deep royal blue for the lines and
+    # glow, and pale blue text. Speaking/thinking accents are lighter blues
+    # rather than orange/yellow, so nothing breaks the colour scheme; only
+    # green (listening/OK) and red (muted/error) stay, as signals.
+    BG        = "#030a17"
+    PANEL     = "#06122a"
+    PANEL2    = "#0b1c3d"
+    BORDER    = "#17306a"
+    BORDER_B  = "#2550a8"
+    BORDER_A  = "#1d3f86"
+    PRI       = "#3b82ff"
+    PRI_DIM   = "#1f4fae"
+    PRI_GHO   = "#06163d"
+    ACC       = "#7fb0ff"
+    ACC2      = "#5d9bff"
     GREEN     = "#00ff88"
     GREEN_D   = "#00aa55"
     RED       = "#ff3355"
     MUTED_C   = "#ff3366"
-    TEXT      = "#d5f2f8"
-    TEXT_DIM  = "#85aeba"
-    TEXT_MED  = "#acd1da"
-    WHITE     = "#f3fcff"
-    DARK      = "#081723"
-    BAR_BG    = "#163244"
+    TEXT      = "#d3e2ff"
+    TEXT_DIM  = "#7f96c4"
+    TEXT_MED  = "#a8bde6"
+    WHITE     = "#f2f6ff"
+    DARK      = "#040d20"
+    BAR_BG    = "#0f2350"
 
 
 # Keys tied to the accent colour — status colours (ACC, GREEN, RED…) stay fixed
@@ -103,8 +108,6 @@ _HUE_LINKED = (
 _PALETTE_DEFAULTS: dict[str, str] = {k: getattr(C, k) for k in _HUE_LINKED}
 
 DEFAULT_UI_COLOR = _PALETTE_DEFAULTS["PRI"]
-# Used until the person picks their own colour, so the HUD matches the orb.
-DEFAULT_ORB_ACCENT = "#ff9a1f"
 
 
 def apply_ui_accent(accent_hex: str) -> bool:
@@ -431,6 +434,7 @@ class HudCanvas(QWidget):
         self._grid_key = None
         # Repaint throttle counter (idle frames drop to ~20 Hz — see _step()).
         self._paint_tick = 0
+        self._last_paint = 0.0
 
         # Live audio reactivity: _live_amp is written from the audio threads
         # (0.0–1.0), _amp_disp is the smoothed value the paint code reads.
@@ -445,7 +449,20 @@ class HudCanvas(QWidget):
 
         self._tmr = QTimer(self)
         self._tmr.timeout.connect(self._step)
-        self._tmr.start(16)
+        self._tmr.start(self._tick_ms())
+
+    def _tick_ms(self) -> int:
+        """The face lip-syncs to 20 ms audio frames and needs a 60 Hz step;
+        the orb and the core look the same stepped at 30 Hz for half the work."""
+        return 16 if (self.hud_style == "face" and self._avatar is not None) else 33
+
+    def set_hud_style(self, style: str) -> None:
+        self.hud_style = style
+        try:
+            self._tmr.setInterval(self._tick_ms())
+        except Exception:
+            pass
+        self.update()
 
     def glance(self, dx: float, dy: float, hold: float = 1.1) -> None:
         """Ask the avatar to look somewhere for a moment (see HoloAvatar.glance)."""
@@ -538,7 +555,10 @@ class HudCanvas(QWidget):
         return pm
 
     def _step(self):
-        self._tick += 1
+        # Animation constants below were tuned for a 60 Hz step; _k rescales
+        # them so the orb/core (stepped at 30 Hz) move at the same speed.
+        _k = self._tmr.interval() / 16.67 if self._tmr.interval() > 0 else 1.0
+        self._tick += _k
         now = time.time()
 
         # ── Live audio reactivity ────────────────────────────────────────────
@@ -572,8 +592,8 @@ class HudCanvas(QWidget):
 
         # Audio threads push peaks into _live_amp; decay it toward silence so
         # gaps between chunks fade out instead of freezing, then smooth it.
-        self._live_amp *= 0.86
-        self._amp_disp += (self._live_amp - self._amp_disp) * 0.45
+        self._live_amp *= 0.86 ** _k
+        self._amp_disp += (self._live_amp - self._amp_disp) * (1.0 - 0.55 ** _k)
         amp = self._amp_disp
 
         # The avatar animates off the very same smoothed level the waveform
@@ -615,10 +635,11 @@ class HudCanvas(QWidget):
                 self._tgt_halo  = self._base_halo  + amp * 75.0
 
             sp = 0.38 if self.speaking else (0.30 if amp > 0.02 else 0.15)
+            sp = 1.0 - (1.0 - sp) ** _k
             self._scale += (self._tgt_scale - self._scale) * sp
             self._halo  += (self._tgt_halo  - self._halo)  * sp
 
-        self._blink_tick += 1
+        self._blink_tick += _k
         if self._blink_tick >= 38:
             self._blink = not self._blink
             self._blink_tick = 0
@@ -632,11 +653,22 @@ class HudCanvas(QWidget):
         # characters forever and is indistinguishable here; idle drops to ~20 Hz
         # so a sleeping HUD stops pinning a CPU core. The visuals stay smooth
         # either way because the animation state keeps stepping at 60 Hz.
-        self._paint_tick = (self._paint_tick + 1) % 6
+        #
+        # Frame budget by wall clock (the tick rate differs per style): 30 fps
+        # while something is happening, 12 fps idle, and 4 fps idle while the
+        # window is in the background — the orb barely moves then anyway.
         active = (self.speaking or amp > 0.02
                   or self.state in ("THINKING", "PROCESSING"))
-        if _blinked or (self._paint_tick % 2 == 0 if active
-                        else self._paint_tick % 3 == 0):
+        if active:
+            fps = 30.0
+        else:
+            try:
+                fps = 12.0 if self.window().isActiveWindow() else 4.0
+            except Exception:
+                fps = 12.0
+        due = now - self._last_paint >= (1.0 / fps) - 0.004
+        if _blinked or due:
+            self._last_paint = now
             # Nothing is on screen when the window is hidden or minimised, so
             # rendering the avatar into it is pure waste — and this app is meant
             # to sit running all day. The animation state above keeps stepping,
@@ -884,8 +916,10 @@ class HudCanvas(QWidget):
         p.save()
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
-        for ang, op, k in ((t * spin, bright, 1.0),
-                           (-t * spin * 0.6 + 40.0, bright * 0.45, 0.92)):
+        layers = [(t * spin, bright, 1.0)]
+        if self.speaking:     # a second, counter-turning layer only while talking
+            layers.append((-t * spin * 0.6 + 40.0, bright * 0.45, 0.92))
+        for ang, op, k in layers:
             p.save()
             p.translate(cx, cy)
             p.rotate(ang)
@@ -1019,142 +1053,380 @@ class HudCanvas(QWidget):
         p.end()   # end deterministically so the backing store never flushes an active painter
 
 class NoteGraphPanel(QWidget):
-    """Your Obsidian notes as a graph: one dot per note, a line per [[link]].
+    """Your Obsidian vault as a rotating 3D graph, like Obsidian's graph view.
 
-    Read-only and local. The vault is scanned on a background thread, so
-    opening the window never waits on it. Hover a dot to see the note's name.
+    One glowing bubble per note (bigger = more links), a line per [[link]].
+    It turns slowly on its own; drag to spin it, scroll to zoom, hover to light
+    up a note and its neighbours, click to open the note in Obsidian,
+    double-click to reset the view.
+
+    Read-only and local: the vault is scanned and laid out on a background
+    thread, and nothing about the notes leaves the computer.
+
+    Kept light on purpose: bubbles are pre-rendered sprites, edges go out in a
+    handful of batched calls, labels are cached, and the animation drops to a
+    few frames a second when the window is in the background and stops
+    entirely when it is hidden or minimised.
     """
     _loaded = pyqtSignal(object)
 
+    _FPS_ACTIVE   = 24
+    _FPS_INACTIVE = 6
+    _SPIN         = 0.09     # radians per second of automatic turn
+    _LABELS       = 28       # how many of the best-linked notes always show a name
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumWidth(240)
+        self.setMinimumWidth(320)
         self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
         self._nodes: list[str] = []
+        self._paths: list[str] = []
         self._edges: list[tuple[int, int]] = []
-        self._pos: list[tuple[float, float]] = []
+        self._adj: list[set] = []
         self._deg: list[int] = []
-        self._hover = -1
+        self._pos: list[tuple[float, float, float]] = []
+        self._proj: list[tuple[float, float, float, float]] = []
+        self._label_set: set[int] = set()
+        self._layout_key = None
         self._status = "Loading notes…"
         self._busy = False
-        self._phase = 0.0
+
+        self._yaw, self._pitch, self._zoom = 0.6, 0.28, 1.0
+        self._drag_from = None
+        self._dragged = False
+        self._suppress_release = False
+        self._last_touch = 0.0
+        self._hover = -1
+        self._t_last = time.time()
+        self._frame = 0
+
+        self._sprites: dict = {}
+        self._labels: dict = {}
+        self._bg_cache = None
+        self._bg_key = None
+
         self._loaded.connect(self._apply)
         self._tmr = QTimer(self)
-        self._tmr.timeout.connect(self._drift)
-        self._tmr.start(100)
-        QTimer.singleShot(400, self.refresh)
+        self._tmr.timeout.connect(self._tick)
+        self._tmr.start(int(1000 / self._FPS_ACTIVE))
+        QTimer.singleShot(500, self.refresh)
         # Pick up notes added later (by Jarvis or by hand) without a restart.
         self._reload_tmr = QTimer(self)
         self._reload_tmr.timeout.connect(lambda: self.isVisible() and self.refresh())
-        self._reload_tmr.start(90_000)
+        self._reload_tmr.start(120_000)
 
+    # ── data ──────────────────────────────────────────────────────────────
     def refresh(self) -> None:
         if self._busy:
             return
         self._busy = True
-        threading.Thread(target=self._scan, daemon=True).start()
+        key = self._layout_key
+        old = list(self._pos)
+        threading.Thread(target=self._scan, args=(key, old), daemon=True).start()
 
-    def _scan(self) -> None:
+    def _scan(self, old_key, old_pos) -> None:
         try:
             from actions import obsidian_notes as on
             from core import notegraph
             vault = on._load_vault()
             if vault is None:
-                self._loaded.emit(("Not connected. Ask Jarvis to connect your Obsidian vault.", None))
+                self._loaded.emit(("Obsidian isn't connected yet.\n\nSay \"Jarvis, "
+                                   "connect my Obsidian vault\" and pick the vault "
+                                   "folder; your notes will appear here.", None))
                 return
             g = notegraph.build_graph(vault, on._notes(vault))
-            pos = notegraph.layout(len(g["nodes"]), g["edges"])
-            self._loaded.emit(("", (g, pos)))
+            key = (tuple(g["nodes"]), tuple(g["edges"]))
+            # Same notes and links as last time: keep the layout, skip the work.
+            pos = old_pos if key == old_key and old_pos else \
+                notegraph.layout3d(len(g["nodes"]), g["edges"])
+            self._loaded.emit(("", (g, pos, key)))
         except Exception:
-            self._loaded.emit(("Could not read the vault.", None))
+            self._loaded.emit(("Could not read the Obsidian vault.", None))
 
     def _apply(self, payload) -> None:
         self._busy = False
         msg, data = payload
         if data is None:
-            self._nodes, self._edges, self._pos, self._deg = [], [], [], []
+            self._nodes, self._paths, self._edges, self._pos = [], [], [], []
+            self._deg, self._adj, self._proj = [], [], []
             self._status = msg
         else:
-            g, pos = data
+            g, pos, key = data
             self._nodes, self._edges, self._pos = g["nodes"], g["edges"], pos
-            self._deg = [0] * len(self._nodes)
+            self._paths = g.get("paths", [])
+            self._layout_key = key
+            self._proj = []              # old screen positions no longer match
+            n = len(self._nodes)
+            self._deg = [0] * n
+            self._adj = [set() for _ in range(n)]
             for a, b in self._edges:
                 self._deg[a] += 1
                 self._deg[b] += 1
-            self._status = "" if self._nodes else "No notes found in the vault."
+                self._adj[a].add(b)
+                self._adj[b].add(a)
+            top = sorted(range(n), key=lambda i: (-self._deg[i], i))[:self._LABELS]
+            self._label_set = {i for i in top if self._deg[i] > 0}
+            self._labels.clear()
+            self._hover = -1
+            self._status = "" if n else "No notes found in the vault yet."
         self.update()
 
-    def _drift(self) -> None:
-        if self._nodes and self.isVisible():
-            self._phase += 0.1
-            self.update()
+    # ── animation ─────────────────────────────────────────────────────────
+    def _window_state(self) -> str:
+        """'hidden', 'inactive' or 'active' — how much animation is worth it."""
+        try:
+            win = self.window()
+            if not self.isVisible() or self.width() < 8 or win.isMinimized() \
+                    or not win.isVisible():
+                return "hidden"
+            return "active" if win.isActiveWindow() else "inactive"
+        except Exception:
+            return "active"
 
-    def _screen(self, i: int) -> tuple[float, float]:
-        w, h = self.width(), self.height()
-        m = 26.0
-        x, y = self._pos[i]
-        sway = 2.0 * math.sin(self._phase * 0.6 + i)
-        return (w / 2 + x * (w / 2 - m) + sway, h / 2 + 8 + y * (h / 2 - m - 8) + sway * 0.6)
+    def _tick(self) -> None:
+        now = time.time()
+        dt = min(0.1, now - self._t_last)
+        self._t_last = now
+        state = self._window_state()
+        if state == "hidden" or not self._nodes:
+            return
+        self._frame += 1
+        if state == "inactive" and self._frame % max(1, self._FPS_ACTIVE // self._FPS_INACTIVE):
+            return
+        if state == "inactive":
+            dt *= self._FPS_ACTIVE / self._FPS_INACTIVE
+        if self._drag_from is None and now - self._last_touch > 3.0:
+            self._yaw = (self._yaw + self._SPIN * dt) % (2 * math.pi)
+        self.update()
+
+    # ── input ─────────────────────────────────────────────────────────────
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._drag_from = (e.position().x(), e.position().y())
+            self._dragged = False
+            self._last_touch = time.time()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
     def mouseMoveEvent(self, e):
-        best, bd = -1, 144.0
-        for i in range(len(self._nodes)):
-            sx, sy = self._screen(i)
-            d = (sx - e.position().x()) ** 2 + (sy - e.position().y()) ** 2
-            if d < bd:
-                best, bd = i, d
+        x, y = e.position().x(), e.position().y()
+        if self._drag_from is not None:
+            dx, dy = x - self._drag_from[0], y - self._drag_from[1]
+            if abs(dx) + abs(dy) > 2:
+                self._dragged = True
+            self._yaw = (self._yaw + dx * 0.008) % (2 * math.pi)
+            self._pitch = max(-1.3, min(1.3, self._pitch + dy * 0.008))
+            self._drag_from = (x, y)
+            self._last_touch = time.time()
+            self.update()
+            return
+        best = self._node_at(x, y)
         if best != self._hover:
             self._hover = best
+            self.setCursor(Qt.CursorShape.PointingHandCursor if best >= 0
+                           else Qt.CursorShape.OpenHandCursor)
             self.update()
 
-    def leaveEvent(self, _):
-        self._hover = -1
+    def mouseReleaseEvent(self, e):
+        if e.button() != Qt.MouseButton.LeftButton:
+            return
+        was_drag = self._dragged or self._suppress_release
+        self._suppress_release = False
+        self._drag_from = None
+        self._last_touch = time.time()
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        if not was_drag:
+            i = self._node_at(e.position().x(), e.position().y())
+            if 0 <= i < len(self._paths):
+                try:
+                    from PyQt6.QtGui import QDesktopServices
+                    from core.notegraph import obsidian_uri
+                    QDesktopServices.openUrl(QUrl(obsidian_uri(self._paths[i])))
+                except Exception:
+                    pass
+
+    def mouseDoubleClickEvent(self, e):
+        # The release that follows a double-click must not open the note again.
+        self._suppress_release = True
+        if self._node_at(e.position().x(), e.position().y()) >= 0:
+            return                       # double-click on a note: just the one open
+        self._yaw, self._pitch, self._zoom = 0.6, 0.28, 1.0
+        self._last_touch = time.time()
         self.update()
+
+    def wheelEvent(self, e):
+        step = e.angleDelta().y() / 120.0
+        self._zoom = max(0.45, min(3.5, self._zoom * (1.12 ** step)))
+        self._last_touch = time.time()
+        self.update()
+
+    def leaveEvent(self, _):
+        if self._hover != -1:
+            self._hover = -1
+            self.update()
+
+    def _node_at(self, x: float, y: float) -> int:
+        best, bd = -1, None
+        for i, (sx, sy, s, z) in enumerate(self._proj):
+            r = self._radius(i, s) + 3
+            d = (sx - x) ** 2 + (sy - y) ** 2
+            if d <= r * r and (bd is None or z > bd):
+                best, bd = i, z          # nearest-to-viewer bubble wins
+        return best
+
+    # ── drawing ───────────────────────────────────────────────────────────
+    def _radius(self, i: int, s: float) -> float:
+        return (3.5 + 2.6 * math.sqrt(self._deg[i] if i < len(self._deg) else 0)) * s \
+            * (0.75 + 0.25 * self._zoom)
+
+    def _sprite(self, r: int, tone: str, level: int) -> QPixmap:
+        """A glowing bubble, pre-rendered once per size/tone/brightness."""
+        key = (r, tone, level, C.PRI)
+        pm = self._sprites.get(key)
+        if pm is not None:
+            return pm
+        if len(self._sprites) > 1500:
+            self._sprites.clear()
+        core = {"hot": qcol(C.WHITE), "near": qcol(C.TEXT), "dim": qcol(C.PRI_DIM)}.get(
+            tone, qcol(C.TEXT_MED))
+        glow = qcol(C.PRI)
+        a = (0.30, 0.50, 0.75, 1.0)[level]
+        size = r * 4 + 2
+        pm = QPixmap(size, size)
+        pm.fill(Qt.GlobalColor.transparent)
+        q = QPainter(pm)
+        q.setRenderHint(QPainter.RenderHint.Antialiasing)
+        c = size / 2.0
+        halo = QRadialGradient(c, c, r * 2.0)
+        g0 = QColor(glow); g0.setAlpha(int(150 * a))
+        g1 = QColor(glow); g1.setAlpha(0)
+        halo.setColorAt(0.35, g0)
+        halo.setColorAt(1.0, g1)
+        q.setPen(Qt.PenStyle.NoPen)
+        q.setBrush(QBrush(halo))
+        q.drawEllipse(QRectF(c - r * 2, c - r * 2, r * 4, r * 4))
+        body = QRadialGradient(c - r * 0.35, c - r * 0.35, r * 1.3)
+        b0 = QColor(core); b0.setAlpha(int(255 * a))
+        b1 = QColor(glow); b1.setAlpha(int(235 * a))
+        body.setColorAt(0.0, b0)
+        body.setColorAt(1.0, b1)
+        q.setBrush(QBrush(body))
+        q.drawEllipse(QRectF(c - r, c - r, r * 2, r * 2))
+        q.end()
+        self._sprites[key] = pm
+        return pm
+
+    def _label(self, i: int, fm):
+        """(QStaticText, width) for a note name, laid out once and reused."""
+        hit = self._labels.get(i)
+        if hit is None:
+            from PyQt6.QtGui import QStaticText
+            hit = (QStaticText(self._nodes[i]), fm.horizontalAdvance(self._nodes[i]))
+            self._labels[i] = hit
+        return hit
+
+    def _background(self, w: int, h: int) -> QPixmap:
+        key = (w, h, C.BG, C.PRI_GHO)
+        if self._bg_cache is not None and self._bg_key == key:
+            return self._bg_cache
+        pm = QPixmap(max(1, w), max(1, h))
+        pm.fill(qcol(C.BG))
+        q = QPainter(pm)
+        g = QRadialGradient(w / 2, h / 2, max(w, h) * 0.6)
+        g.setColorAt(0.0, qcol(C.PANEL2))
+        g.setColorAt(1.0, qcol(C.BG))
+        q.fillRect(0, 0, w, h, QBrush(g))
+        q.end()
+        self._bg_cache, self._bg_key = pm, key
+        return pm
 
     def paintEvent(self, _):
         p = QPainter(self)
         if not p.isActive():
             return
+        W, H = self.width(), self.height()
+        p.drawPixmap(0, 0, self._background(W, H))
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.fillRect(self.rect(), qcol(C.PANEL))
-        p.setPen(QPen(qcol(C.BORDER), 1))
-        p.drawLine(0, 0, 0, self.height())
+
         p.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
         p.setPen(QPen(qcol(C.PRI), 1))
-        p.drawText(QRectF(12, 6, self.width() - 24, 18), Qt.AlignmentFlag.AlignLeft,
-                   f"◈  NOTES  ·  {len(self._nodes)}")
+        p.drawText(QRectF(14, 8, W - 28, 18), Qt.AlignmentFlag.AlignLeft,
+                   f"◈  OBSIDIAN  ·  {len(self._nodes)} NOTES" if self._nodes
+                   else "◈  OBSIDIAN")
         if self._status:
-            p.setFont(QFont("Courier New", 10))
+            p.setFont(QFont("Courier New", 11))
             p.setPen(QPen(qcol(C.TEXT_DIM), 1))
-            p.drawText(QRectF(14, 30, self.width() - 28, self.height() - 40),
-                       Qt.AlignmentFlag.AlignTop.value | Qt.TextFlag.TextWordWrap.value, self._status)
+            p.drawText(QRectF(W * 0.2, H * 0.4, W * 0.6, H * 0.4),
+                       Qt.AlignmentFlag.AlignHCenter.value | Qt.TextFlag.TextWordWrap.value,
+                       self._status)
             p.end()
             return
-        pts = [self._screen(i) for i in range(len(self._nodes))]
-        near = set()
-        if self._hover >= 0:
-            near = {self._hover}
-            for a, b in self._edges:
-                if a == self._hover:
-                    near.add(b)
-                elif b == self._hover:
-                    near.add(a)
+
+        from core.notegraph import project
+        self._proj = proj = project(self._pos, self._yaw, self._pitch, self._zoom,
+                                    W, H + 20)
+        hov = self._hover if 0 <= self._hover < len(proj) else -1
+        near = (self._adj[hov] | {hov}) if hov >= 0 else None
+
+        # Edges: three depth bands, one drawLines call each (plus the hovered set).
+        bands = ([], [], [])
+        hot = []
         for a, b in self._edges:
-            hot = self._hover in (a, b)
-            p.setPen(QPen(qcol(C.PRI, 170 if hot else 60), 1.4 if hot else 0.8))
-            p.drawLine(QPointF(*pts[a]), QPointF(*pts[b]))
-        for i, (x, y) in enumerate(pts):
-            r = 2.2 + min(5.0, self._deg[i] * 0.6)
-            lit = i == self._hover
-            col = qcol(C.ACC2 if lit else C.PRI, 255 if (lit or i in near or not near) else 90)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(col)
-            p.drawEllipse(QPointF(x, y), r, r)
-        if self._hover >= 0:
-            p.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
-            p.setPen(QPen(qcol(C.WHITE), 1))
-            p.drawText(QRectF(10, self.height() - 24, self.width() - 20, 20),
-                       Qt.AlignmentFlag.AlignLeft, self._nodes[self._hover])
+            pa, pb = proj[a], proj[b]
+            line = QLineF(pa[0], pa[1], pb[0], pb[1])
+            if near is not None and (a == hov or b == hov):
+                hot.append(line)
+                continue
+            z = (pa[3] + pb[3]) * 0.5
+            bands[0 if z < -0.33 else (1 if z < 0.33 else 2)].append(line)
+        fade = 0.35 if near is not None else 1.0
+        for k, lines in enumerate(bands):
+            if lines:
+                p.setPen(QPen(qcol(C.PRI, int((45 + 40 * k) * fade)), 1.0))
+                p.drawLines(lines)
+        if hot:
+            p.setPen(QPen(qcol(C.WHITE, 200), 1.6))
+            p.drawLines(hot)
+
+        # Bubbles, far to near so nearer ones sit on top.
+        order = sorted(range(len(proj)), key=lambda i: proj[i][3])
+        for i in order:
+            x, y, s, z = proj[i]
+            r = max(2, int(self._radius(i, s) + 0.5))
+            level = 0 if z < -0.5 else (1 if z < 0.0 else (2 if z < 0.5 else 3))
+            if near is None:
+                tone = "normal"
+            elif i == hov:
+                tone, level = "hot", 3
+            elif i in near:
+                tone, level = "near", max(level, 2)
+            else:
+                tone, level = "dim", min(level, 1)
+            sp = self._sprite(r, tone, level)
+            p.drawPixmap(int(x - sp.width() / 2), int(y - sp.height() / 2), sp)
+
+        # Names: the best-linked notes, anything close to the viewer when
+        # zoomed in, and the hovered note with its neighbours.
+        p.setFont(QFont("Helvetica Neue", 10))
+        fm = p.fontMetrics()
+        fm_h = 14
+        for i in order:
+            x, y, s, z = proj[i]
+            show = (i in self._label_set and z > -0.4) or (self._zoom > 1.6 and z > 0.2) \
+                or (near is not None and i in near)
+            if not show:
+                continue
+            if near is not None and i not in near:
+                continue
+            st, tw = self._label(i, fm)
+            a = 255 if (near is not None and i in near) else int(110 + 120 * (z + 1) / 2)
+            p.setPen(QPen(qcol(C.WHITE if i == hov else C.TEXT, a), 1))
+            p.drawStaticText(QPointF(x - tw / 2, y + self._radius(i, s) + 3), st)
+
+        p.setFont(QFont("Courier New", 9))
+        p.setPen(QPen(qcol(C.TEXT_DIM, 170), 1))
+        p.drawText(QRectF(14, H - 22, W - 28, fm_h + 4), Qt.AlignmentFlag.AlignLeft,
+                   "drag to turn  ·  scroll to zoom  ·  click a note to open it")
         p.end()
 
 
@@ -1317,7 +1589,7 @@ class LogWidget(QTextEdit):
             QTimer.singleShot(20, self._next)
 
 _FILE_ICONS = {
-    "image":   ("🖼", "#00d4ff"), "video":   ("🎬", "#ff6b00"),
+    "image":   ("🖼", "#3b82ff"), "video":   ("🎬", "#ff6b00"),
     "audio":   ("🎵", "#cc44ff"), "pdf":     ("📄", "#ff4444"),
     "word":    ("📝", "#4488ff"), "excel":   ("📊", "#44bb44"),
     "code":    ("💻", "#ffcc00"), "archive": ("📦", "#ff8844"),
@@ -1449,7 +1721,7 @@ class _DropCanvas(QWidget):
         pad  = 6
         rect = QRectF(pad, pad, W - pad * 2, H - pad * 2)
 
-        bg_col = qcol("#001a24" if z._drag_over else ("#001218" if z._hovering else C.PANEL))
+        bg_col = qcol("#0a1f4a" if z._drag_over else ("#071635" if z._hovering else C.PANEL))
         p.setBrush(QBrush(bg_col)); p.setPen(Qt.PenStyle.NoPen)
         p.drawRoundedRect(rect, 6, 6)
 
@@ -1482,7 +1754,7 @@ class _DropCanvas(QWidget):
         p.drawText(QRectF(0, cy + 8, W, 16), Qt.AlignmentFlag.AlignCenter,
                    "Drop a file  ·  or click to browse")
         p.setFont(QFont("Courier New", 9))
-        p.setPen(QPen(qcol("#1a4a5a"), 1))
+        p.setPen(QPen(qcol("#1a3a7a"), 1))
         p.drawText(QRectF(0, cy + 24, W, 14), Qt.AlignmentFlag.AlignCenter,
                    "Images · PDF · Docs · Code · More")
 
@@ -1523,7 +1795,7 @@ class _DropCanvas(QWidget):
                    f"{ext_str}  ·  {size_str}")
 
         p.setFont(QFont("Courier New", 8))
-        p.setPen(QPen(qcol("#1e5c6a"), 1))
+        p.setPen(QPen(qcol("#22448c"), 1))
         par = str(path.parent)
         if len(par) > 42: par = "…" + par[-41:]
         p.drawText(QRectF(tx, H * 0.18 + 34, tw, 12),
@@ -1657,7 +1929,7 @@ class SetupOverlay(QWidget):
         self._key_input.setFixedHeight(32)
         self._key_input.setStyleSheet(f"""
             QLineEdit {{
-                background: #000d12; color: {C.TEXT};
+                background: #020920; color: {C.TEXT};
                 border: 1px solid {C.BORDER}; border-radius: 3px; padding: 4px 8px;
             }}
             QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
@@ -1707,7 +1979,7 @@ class SetupOverlay(QWidget):
 
     def _sel(self, key: str):
         self._sel_os = key
-        pal = {"windows":(C.PRI,"#001a22"),"mac":(C.ACC2,"#1a1400"),"linux":(C.GREEN,"#001a0d")}
+        pal = {"windows":(C.PRI,"#061a40"),"mac":(C.ACC2,"#1a1400"),"linux":(C.GREEN,"#001a0d")}
         for k, btn in self._os_btns.items():
             if k == key:
                 fg, bg = pal[k]
@@ -1720,7 +1992,7 @@ class SetupOverlay(QWidget):
             else:
                 btn.setStyleSheet(f"""
                     QPushButton {{
-                        background: #000d12; color: {C.TEXT_DIM};
+                        background: #020920; color: {C.TEXT_DIM};
                         border: 1px solid {C.BORDER}; border-radius: 3px;
                     }}
                     QPushButton:hover {{ color: {C.TEXT}; border: 1px solid {C.BORDER_B}; }}
@@ -1859,7 +2131,7 @@ class CustomizeOverlay(QWidget):
             w.setStyleSheet(f"color: {color}; background: transparent;")
             return w
 
-        _fs = (f"QLineEdit {{ background: #000d12; color: {C.TEXT}; "
+        _fs = (f"QLineEdit {{ background: #020920; color: {C.TEXT}; "
                f"border: 1px solid {C.BORDER}; border-radius: 3px; padding: 4px 8px; }}"
                f"QLineEdit:focus {{ border: 1px solid {C.PRI}; }}")
 
@@ -1897,8 +2169,9 @@ class CustomizeOverlay(QWidget):
         if self._sel_voice not in AVAILABLE_VOICES:
             self._sel_voice = DEFAULT_VOICE
         self._voice_btns: dict[str, QPushButton] = {}
-        voice_row = QHBoxLayout(); voice_row.setSpacing(4)
-        for _v in AVAILABLE_VOICES:
+        # A grid, not a single row: there are more voices than fit across.
+        voice_row = QGridLayout(); voice_row.setSpacing(4)
+        for _i, _v in enumerate(AVAILABLE_VOICES):
             b = QPushButton(_v)
             b.setCheckable(True)
             b.setFixedHeight(28)
@@ -1906,7 +2179,7 @@ class CustomizeOverlay(QWidget):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.clicked.connect(lambda _=False, name=_v: self._on_voice_pick(name))
             self._voice_btns[_v] = b
-            voice_row.addWidget(b)
+            voice_row.addWidget(b, _i // 5, _i % 5)
         lay.addLayout(voice_row)
         self._refresh_voice_btns()
 
@@ -1943,7 +2216,7 @@ class CustomizeOverlay(QWidget):
         self._wheel.hue_committed.connect(self._on_wheel_commit)
 
         self._hex_input = QLineEdit(self._sel_color)
-        self._hex_input.setPlaceholderText("#00d4ff   (custom hex colour)")
+        self._hex_input.setPlaceholderText("#3b82ff   (custom hex colour)")
         self._hex_input.setFont(QFont("Courier New", 10))
         self._hex_input.setFixedHeight(28)
         self._hex_input.setStyleSheet(_fs)
@@ -2302,10 +2575,10 @@ class AudioDeviceOverlay(_HudOverlay):
         lay.addWidget(sep)
 
         _combo_css = (
-            f"QComboBox {{ background: #000d12; color: {C.TEXT}; "
+            f"QComboBox {{ background: #020920; color: {C.TEXT}; "
             f"border: 1px solid {C.BORDER}; border-radius: 3px; padding: 4px 8px; }}"
             f"QComboBox:hover {{ border-color: {C.BORDER_B}; }}"
-            f"QComboBox QAbstractItemView {{ background: #000d12; color: {C.TEXT}; "
+            f"QComboBox QAbstractItemView {{ background: #020920; color: {C.TEXT}; "
             f"selection-background-color: {C.PRI_GHO}; border: 1px solid {C.BORDER}; }}"
         )
 
@@ -2703,7 +2976,7 @@ class PluginSettingsOverlay(QWidget):
         self._status_labels: dict[str, QLabel] = {} # namespace -> status QLabel
         self._test_done.connect(self._on_test_done)
 
-        self._fs = (f"QLineEdit {{ background: #000d12; color: {C.TEXT}; "
+        self._fs = (f"QLineEdit {{ background: #020920; color: {C.TEXT}; "
                     f"border: 1px solid {C.BORDER}; border-radius: 3px; padding: 4px 8px; }}"
                     f"QLineEdit:focus {{ border: 1px solid {C.PRI}; }}")
 
@@ -2800,9 +3073,9 @@ class PluginSettingsOverlay(QWidget):
                 w.setFont(QFont("Courier New", 11))
                 w.setFixedHeight(30)
                 w.setStyleSheet(
-                    f"QComboBox {{ background: #000d12; color: {C.TEXT}; "
+                    f"QComboBox {{ background: #020920; color: {C.TEXT}; "
                     f"border: 1px solid {C.BORDER}; border-radius: 3px; padding: 2px 8px; }}"
-                    f"QComboBox QAbstractItemView {{ background: #000d12; color: {C.TEXT}; "
+                    f"QComboBox QAbstractItemView {{ background: #020920; color: {C.TEXT}; "
                     f"selection-background-color: {C.PRI_GHO}; }}")
                 if stored is not None:
                     w.setCurrentText(str(stored))
@@ -3184,11 +3457,10 @@ class MainWindow(QMainWindow):
 
         # Apply the saved UI colour BEFORE panels/stylesheets are built
         _ui_color = (_cfg.get("ui_color") or "").strip()
-        if _ui_color and _ui_color.lower() != DEFAULT_UI_COLOR:
+        # "#00d4ff" was the old cyan default; a config that saved it was never
+        # a real choice, so it gets the new dark-blue default too.
+        if _ui_color and _ui_color.lower() not in (DEFAULT_UI_COLOR, "#00d4ff"):
             apply_ui_accent(_ui_color)
-        elif not _ui_color:
-            # No colour chosen yet: start in the amber of the orb artwork.
-            apply_ui_accent(DEFAULT_ORB_ACCENT)
 
         self.setWindowTitle("JARVIS")
         screen = QApplication.primaryScreen().availableGeometry()
@@ -3244,7 +3516,7 @@ class MainWindow(QMainWindow):
 
         # Live camera container — replaces HUD when camera stream is active
         _cam_cont = QWidget()
-        _cam_cont.setStyleSheet("background: #000308;")
+        _cam_cont.setStyleSheet("background: #01040d;")
         _cam_v = QVBoxLayout(_cam_cont)
         _cam_v.setContentsMargins(0, 0, 0, 0)
         _cam_v.setSpacing(0)
@@ -3297,13 +3569,26 @@ class MainWindow(QMainWindow):
         self._center_split.setStretchFactor(0, 3)
         self._center_split.setStretchFactor(1, 1)
         self._center_split.setCollapsible(0, False)
-        body.addWidget(self._center_split, stretch=5)
+        self._center_split.setMinimumWidth(340)
 
-        # Obsidian note graph, beside the orb so notes and Jarvis share a window.
+        # Obsidian graph takes the centre; Jarvis (orb, status, results) sits
+        # on the right. A splitter, so the divide can be dragged; hiding the
+        # graph gives Jarvis the whole width back.
         self._notes_panel = NoteGraphPanel()
-        self._notes_panel.setFixedWidth(300)
         self._notes_panel.setVisible(_read_full_config().get("notes_panel", True) is not False)
-        body.addWidget(self._notes_panel)
+        self._main_split = QSplitter(Qt.Orientation.Horizontal)
+        self._main_split.setStyleSheet(f"""
+            QSplitter::handle {{ background: {C.BORDER}; width: 2px; }}
+            QSplitter::handle:hover {{ background: {C.PRI_DIM}; }}
+        """)
+        self._main_split.addWidget(self._notes_panel)
+        self._main_split.addWidget(self._center_split)
+        self._main_split.setStretchFactor(0, 1)
+        self._main_split.setStretchFactor(1, 0)
+        self._main_split.setCollapsible(0, False)   # hide it with the NOTES button
+        self._main_split.setCollapsible(1, False)
+        self._main_split.setSizes([max(400, _DEFAULT_W - _JARVIS_W), _JARVIS_W])
+        body.addWidget(self._main_split, stretch=1)
 
         root.addLayout(body, stretch=1)
         root.addWidget(self._build_command_dock())
@@ -3732,7 +4017,8 @@ class MainWindow(QMainWindow):
                 try:
                     import PIL.Image
                     icns = res_dir / "AppIcon.icns"
-                    PIL.Image.open(ico_path).save(icns, format="ICNS")
+                    _png = Path(__file__).resolve().parent / "assets" / "icon.png"
+                    PIL.Image.open(_png if _png.is_file() else ico_path).save(icns, format="ICNS")
                     # Inject icon reference into plist
                     plist = app / "Contents" / "Info.plist"
                     txt = plist.read_text()
@@ -5103,12 +5389,15 @@ class MainWindow(QMainWindow):
                 border: 1px solid {C.BORDER_A}; border-radius: 3px;
                 text-align: left; padding: 0 8px; }}
             QPushButton:hover {{ color: {C.WHITE}; border: 1px solid {C.BORDER_B}; }}""")
-        self._notes_btn.setToolTip("Show your Obsidian notes as a graph beside Jarvis.")
+        self._notes_btn.setToolTip("Show your Obsidian notes as a rotating graph in the "
+                                   "middle of the window, with Jarvis on the right.")
 
     def _toggle_notes_panel(self):
         show = self._notes_panel.isHidden()
         self._notes_panel.setVisible(show)
         if show:
+            total = self._main_split.width()
+            self._main_split.setSizes([max(300, total - _JARVIS_W), _JARVIS_W])
             self._notes_panel.refresh()
         try:
             from memory.config_manager import _save_flag
@@ -5150,8 +5439,7 @@ class MainWindow(QMainWindow):
         want = next_hud_style(get_hud_style())
         save_hud_style(want)
         try:
-            self.hud.hud_style = want
-            self.hud.update()
+            self.hud.set_hud_style(want)
         except Exception:
             pass
         self._refresh_hud_btn()
@@ -5265,7 +5553,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, '_brief_btn'):
             return
         if enabled:
-            self._brief_btn.setText("☀  MORNING BRIEF: ON")
+            self._brief_btn.setText("☀  STARTUP GREETING: ON")
             self._brief_btn.setStyleSheet(f"""
                 QPushButton {{
                     background: #001a08; color: {C.GREEN};
@@ -5275,7 +5563,7 @@ class MainWindow(QMainWindow):
                 QPushButton:hover {{ background: #002010; }}
             """)
         else:
-            self._brief_btn.setText("☀  MORNING BRIEF: OFF")
+            self._brief_btn.setText("☀  STARTUP GREETING: OFF")
             self._brief_btn.setStyleSheet(f"""
                 QPushButton {{
                     background: transparent; color: {C.TEXT_DIM};
@@ -5580,6 +5868,13 @@ class JarvisUI:
     def __init__(self, face_path: str, size=None):
         self._app = QApplication.instance() or QApplication(sys.argv)
         self._app.setStyle("Fusion")
+        try:   # Dock / taskbar icon when Jarvis runs straight from Python
+            from PyQt6.QtGui import QIcon
+            _icon = Path(__file__).resolve().parent / "assets" / "icon.png"
+            if _icon.is_file():
+                self._app.setWindowIcon(QIcon(str(_icon)))
+        except Exception:
+            pass
         self._win = MainWindow(face_path)
         self.root = _RootShim(self._app)
         self._win.show()
