@@ -34,6 +34,13 @@ for _stream in ("stdout", "stderr"):
 
 # ─────────────────────────────────────────────────────────────────────────────
 
+# If Python itself crashes, write every thread's stack to the Jarvis log folder.
+try:
+    from core.crashlog import enable as _enable_crash_log
+    _enable_crash_log()
+except Exception:
+    pass
+
 import asyncio
 import re
 import threading
