@@ -67,7 +67,7 @@ TOOL = {
     "description": (
         "Starts a phone or FaceTime Audio call on macOS. Resolve the person from "
         "Contacts and call this tool once. The call never starts until the user "
-        "presses CONFIRM on the HUD. Never claim the call started while confirmation "
+        "says yes (or taps CONFIRM). Never claim the call started while confirmation "
         "is pending. Emergency calls are refused."
     ),
     "parameters": {

@@ -43,6 +43,7 @@ POLL = 15.0
 MAX_ATTEMPTS = 3
 FLATTEN_RETRY = 10.0
 FAILURE_CAP_IN_SESSION = 30.0           # keep retrying quickly while the market is open
+STOP_SETTLE = 10.0                      # seconds to wait for the closing sales to fill when stopped
 MAX_CHASE = 1.005                       # do not buy if the price is already 0.5% above the signal candle's close
 DAY_TRADING_MINIMUM = 25_000.0
 PLAN_LEAD = 90 * 60.0                   # start making the analyst's plan this long before the open
@@ -59,13 +60,14 @@ def _midnight(day: str) -> str:
 class DayRunner:
     def __init__(self, broker, journal: Journal, *, cfg: DayConfig = DayConfig(),
                  log: Callable[[str], None] = print, clock: Callable[[], float] = time.monotonic,
-                 analyst: Optional[Callable[[str], dict]] = None):
+                 analyst: Optional[Callable[[str], dict]] = None,
+                 sleep: Callable[[float], None] = time.sleep):
         """`analyst`, if given, is called with a trading day ("YYYY-MM-DD") and returns that day's
         plan (see trading.day.analyst) or raises PlanError. Without it the trader watches
         `cfg.symbols` exactly as before."""
         self.broker, self.journal, self.cfg = broker, journal, cfg
         self.analyst = analyst
-        self._log, self._clock = log, clock
+        self._log, self._clock, self._sleep = log, clock, sleep
         self._last_plan_try = -1e9
         self.hint = IDLE_MIN
         self._last_flatten = -1e9
@@ -350,10 +352,20 @@ class DayRunner:
     def _finish_day(self, day: str, account: dict, today: dict) -> None:
         if today["finished"]:
             return
+        if not self._record_day(day, account):
+            return                                          # try again on the next pass
+        today["finished"] = True
+        self._save(today)
+        self._log("flat for the day; result recorded")
+
+    def _record_day(self, day: str, account: dict) -> bool:
+        """Write the day's per-symbol results and an equity snapshot. False if Alpaca's order
+        history could not be read. Safe to repeat: reports keep the last result per day and symbol
+        and the last snapshot per day, so an early record is simply replaced by a later one."""
         try:
             orders = self.broker.closed_orders(_midnight(day))
         except BrokerError:
-            return                                          # try again on the next pass
+            return False
         for result in summarize_fills(orders, self._allowed(), day):
             self.journal.record("trade_result", day=day, **{
                 k: (round(v, 4) if isinstance(v, float) else v) for k, v in result.items()})
@@ -362,9 +374,31 @@ class DayRunner:
         except BrokerError:
             spy = None
         self.journal.record("snapshot", date=day, equity=account["equity"], spy=spy)
-        today["finished"] = True
-        self._save(today)
-        self._log("flat for the day; result recorded")
+        return True
+
+    def _record_on_stop(self, day: str, today: dict, sold: list[str]) -> None:
+        """Record today's results when the trader is stopped part-way through a trading day, so a
+        manual stop does not lose the day. Waits briefly for the closing sales to fill; whatever
+        is still open is left out (summaries only count trades that are flat again). The day is
+        not marked finished: if the trader is started again later today, the close records the
+        final numbers over these."""
+        if today["finished"] or not (today["entered"] or sold):
+            return
+        deadline = self._clock() + STOP_SETTLE
+        while sold:
+            try:
+                still = set(self.broker.positions()) & set(sold)
+            except BrokerError:
+                break
+            if not still or self._clock() >= deadline:
+                break
+            self._sleep(0.5)
+        try:
+            account = self.broker.account()
+        except BrokerError:
+            return
+        if self._record_day(day, account):
+            self._log("stopped part-way through the day; today's result so far is recorded")
 
     # ── one pass ──────────────────────────────────────────────────────────────
     def step(self) -> str:
@@ -467,15 +501,20 @@ class DayRunner:
         try:
             clock, positions = self.broker.clock(), self.broker.positions()
             day = parse_ts(clock["timestamp"]).astimezone(EASTERN).date().isoformat()
-            symbols = self._sellable(positions, self._today(day), self._allowed())
+            today = self._today(day)
+            symbols = self._sellable(positions, today, self._allowed())
         except (BrokerError, ValueError):
             return "held"
         if not symbols:
+            self._record_on_stop(day, today, [])
             return "flat"
         if not clock["is_open"]:
             return "held"
         self._last_flatten = -1e9
-        return "sold" if self._flatten(day, "trader stopped", symbols) else "held"
+        if not self._flatten(day, "trader stopped", symbols):
+            return "held"
+        self._record_on_stop(day, today, symbols)
+        return "sold"
 
     # ── the loop ──────────────────────────────────────────────────────────────
     def run_forever(self, stop: Optional[threading.Event] = None) -> None:

@@ -448,6 +448,7 @@ class HudCanvas(QWidget):
         self._base_halo  = 55.0
 
         self._tmr = QTimer(self)
+        self._tmr.setTimerType(Qt.TimerType.PreciseTimer)   # even frame spacing
         self._tmr.timeout.connect(self._step)
         self._tmr.start(self._tick_ms())
 
@@ -647,25 +648,15 @@ class HudCanvas(QWidget):
         else:
             _blinked = False
 
-        # Repaint throttling — advancing the animation state above is cheap at
-        # 60 Hz, but the paint is heavy. Active (speaking, audio, thinking) runs
-        # at ~30 Hz, which is the frame rate animation has used for talking
-        # characters forever and is indistinguishable here; idle drops to ~20 Hz
-        # so a sleeping HUD stops pinning a CPU core. The visuals stay smooth
-        # either way because the animation state keeps stepping at 60 Hz.
+        # Repaint throttling — the paint is the heavy part, so it is capped at
+        # 30 fps (the frame rate animation has used for talking characters
+        # forever); the animation state above keeps stepping in between.
         #
-        # Frame budget by wall clock (the tick rate differs per style): 30 fps
-        # while something is happening, 12 fps idle, and 4 fps idle while the
-        # window is in the background — the orb barely moves then anyway.
-        active = (self.speaking or amp > 0.02
-                  or self.state in ("THINKING", "PROCESSING"))
-        if active:
-            fps = 30.0
-        else:
-            try:
-                fps = 12.0 if self.window().isActiveWindow() else 4.0
-            except Exception:
-                fps = 12.0
+        # Frame budget by wall clock: a steady 30 fps whenever the HUD is on
+        # screen, whether or not the window has focus (people talk to Jarvis
+        # while working in another app, and a 4-12 fps orb looked broken).
+        # Hidden or minimised windows still draw nothing, below.
+        fps = 30.0
         due = now - self._last_paint >= (1.0 / fps) - 0.004
         if _blinked or due:
             self._last_paint = now
@@ -862,20 +853,24 @@ class HudCanvas(QWidget):
         return self._orb_pm
 
     def _orb_scaled(self, px: int) -> QPixmap:
-        """The artwork resized to ~px, cached, so each frame only rotates it."""
-        px = max(32, (px + 4) // 8 * 8)
-        cache = getattr(self, "_orb_cache", None)
-        if cache is None:
-            cache = self._orb_cache = {}
-        sc = cache.get(px)
-        if sc is None:
-            if len(cache) > 12:
-                cache.clear()
+        """The artwork resized once for this canvas size, at the screen's real
+        pixel density (sharp on Retina). Each frame then only turns and slightly
+        scales it in a single transform, so size changes with the voice are
+        smooth rather than stepping between cached sizes."""
+        try:
+            dpr = max(1.0, float(self.devicePixelRatioF()))
+        except Exception:
+            dpr = 1.0
+        px = max(32, (px + 8) // 16 * 16)
+        key = (px, dpr)
+        if getattr(self, "_orb_cache_key", None) != key:
             pm = self._orb_pixmap()
-            sc = cache[px] = pm.scaled(
-                px, px, Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation)
-        return sc
+            dev = int(px * dpr)
+            sc = pm.scaled(dev, dev, Qt.AspectRatioMode.KeepAspectRatio,
+                           Qt.TransformationMode.SmoothTransformation)
+            sc.setDevicePixelRatio(dpr)
+            self._orb_cache, self._orb_cache_key = sc, key
+        return self._orb_cache
 
     def _paint_orb(self, p, cx, cy, r):
         from core.orb import orb_spin, orb_brightness, orb_scale
@@ -911,11 +906,13 @@ class HudCanvas(QWidget):
         p.setBrush(QBrush(g))
         p.drawEllipse(QRectF(cx - half * 1.05, cy - half * 1.05, half * 2.1, half * 2.1))
 
-        # The artwork itself, twice: one layer turning forward, a fainter one
-        # turning back, added together so the black of the image stays clear.
+        # The artwork itself (its alpha is its brightness, so a plain blend reads
+        # as glowing light without the slower additive mode). A second, fainter
+        # counter-turning layer is added only while speaking.
         p.save()
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
+        base = self._orb_scaled(int(r * 2 * 1.08))
+        bw = base.width() / max(1.0, base.devicePixelRatio())
         layers = [(t * spin, bright, 1.0)]
         if self.speaking:     # a second, counter-turning layer only while talking
             layers.append((-t * spin * 0.6 + 40.0, bright * 0.45, 0.92))
@@ -923,9 +920,9 @@ class HudCanvas(QWidget):
             p.save()
             p.translate(cx, cy)
             p.rotate(ang)
+            p.scale(half * 2 * k / bw, half * 2 * k / bw)
             p.setOpacity(max(0.0, min(1.0, op)))
-            sc = self._orb_scaled(int(half * 2 * k))
-            p.drawPixmap(-(sc.width() // 2), -(sc.height() // 2), sc)
+            p.drawPixmap(QPointF(-bw / 2, -bw / 2), base)
             p.restore()
         p.restore()
 
@@ -1064,14 +1061,13 @@ class NoteGraphPanel(QWidget):
     thread, and nothing about the notes leaves the computer.
 
     Kept light on purpose: bubbles are pre-rendered sprites, edges go out in a
-    handful of batched calls, labels are cached, and the animation drops to a
-    few frames a second when the window is in the background and stops
-    entirely when it is hidden or minimised.
+    handful of batched calls, labels are cached, and the animation runs at a
+    steady 30 fps while visible and stops entirely when the window is hidden
+    or minimised.
     """
     _loaded = pyqtSignal(object)
 
-    _FPS_ACTIVE   = 24
-    _FPS_INACTIVE = 6
+    _FPS          = 30
     _SPIN         = 0.09     # radians per second of automatic turn
     _LABELS       = 28       # how many of the best-linked notes always show a name
 
@@ -1109,7 +1105,8 @@ class NoteGraphPanel(QWidget):
         self._loaded.connect(self._apply)
         self._tmr = QTimer(self)
         self._tmr.timeout.connect(self._tick)
-        self._tmr.start(int(1000 / self._FPS_ACTIVE))
+        self._tmr.setTimerType(Qt.TimerType.PreciseTimer)
+        self._tmr.start(int(1000 / self._FPS))
         QTimer.singleShot(500, self.refresh)
         # Pick up notes added later (by Jarvis or by hand) without a restart.
         self._reload_tmr = QTimer(self)
@@ -1191,11 +1188,7 @@ class NoteGraphPanel(QWidget):
         state = self._window_state()
         if state == "hidden" or not self._nodes:
             return
-        self._frame += 1
-        if state == "inactive" and self._frame % max(1, self._FPS_ACTIVE // self._FPS_INACTIVE):
-            return
-        if state == "inactive":
-            dt *= self._FPS_ACTIVE / self._FPS_INACTIVE
+        # Same smooth rate with or without focus; only hidden/minimised stops.
         if self._drag_from is None and now - self._last_touch > 3.0:
             self._yaw = (self._yaw + self._SPIN * dt) % (2 * math.pi)
         self.update()
@@ -1280,19 +1273,31 @@ class NoteGraphPanel(QWidget):
             * (0.75 + 0.25 * self._zoom)
 
     def _sprite(self, r: int, tone: str, level: int) -> QPixmap:
-        """A glowing bubble, pre-rendered once per size/tone/brightness."""
-        key = (r, tone, level, C.PRI)
+        """A glowing bubble, pre-rendered once per size bucket/tone/brightness at
+        the screen's pixel density. Drawn scaled to the exact (fractional) size,
+        so bubbles grow and shrink smoothly as the graph turns instead of
+        popping between whole-pixel sizes."""
+        try:
+            dpr = max(1.0, float(self.devicePixelRatioF()))
+        except Exception:
+            dpr = 1.0
+        bucket = 4
+        while bucket < r:
+            bucket *= 2
+        key = (bucket, tone, level, C.PRI, dpr)
         pm = self._sprites.get(key)
         if pm is not None:
             return pm
-        if len(self._sprites) > 1500:
+        if len(self._sprites) > 400:
             self._sprites.clear()
+        r = bucket
         core = {"hot": qcol(C.WHITE), "near": qcol(C.TEXT), "dim": qcol(C.PRI_DIM)}.get(
             tone, qcol(C.TEXT_MED))
         glow = qcol(C.PRI)
         a = (0.30, 0.50, 0.75, 1.0)[level]
         size = r * 4 + 2
-        pm = QPixmap(size, size)
+        pm = QPixmap(int(size * dpr), int(size * dpr))
+        pm.setDevicePixelRatio(dpr)
         pm.fill(Qt.GlobalColor.transparent)
         q = QPainter(pm)
         q.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -1392,18 +1397,23 @@ class NoteGraphPanel(QWidget):
         order = sorted(range(len(proj)), key=lambda i: proj[i][3])
         for i in order:
             x, y, s, z = proj[i]
-            r = max(2, int(self._radius(i, s) + 0.5))
-            level = 0 if z < -0.5 else (1 if z < 0.0 else (2 if z < 0.5 else 3))
+            rad = self._radius(i, s)
+            # Brightness follows depth continuously (no steps to pop between).
+            depth = 0.30 + 0.70 * (z + 1.0) / 2.0
             if near is None:
                 tone = "normal"
             elif i == hov:
-                tone, level = "hot", 3
+                tone, depth = "hot", 1.0
             elif i in near:
-                tone, level = "near", max(level, 2)
+                tone, depth = "near", max(depth, 0.8)
             else:
-                tone, level = "dim", min(level, 1)
-            sp = self._sprite(r, tone, level)
-            p.drawPixmap(int(x - sp.width() / 2), int(y - sp.height() / 2), sp)
+                tone, depth = "dim", min(depth, 0.4)
+            sp = self._sprite(int(rad + 0.5), tone, 3)
+            box = rad * 4 + 2                    # sprite spans 4 radii (halo included)
+            p.setOpacity(max(0.05, min(1.0, depth)))
+            p.drawPixmap(QRectF(x - box / 2, y - box / 2, box, box), sp,
+                         QRectF(0, 0, sp.width(), sp.height()))
+        p.setOpacity(1.0)
 
         # Names: the best-linked notes, anything close to the viewer when
         # zoomed in, and the hovered note with its neighbours.
@@ -2473,7 +2483,7 @@ class ConfirmBanner(_HudOverlay):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(f"""
             ConfirmBanner {{
-                background: rgba(14, 3, 0, 250);
+                background: rgba(3, 10, 30, 250);
                 border: 1px solid {C.ACC};
                 border-radius: 6px;
             }}
@@ -2484,7 +2494,7 @@ class ConfirmBanner(_HudOverlay):
         lay.setContentsMargins(20, 16, 20, 16)
         lay.setSpacing(8)
 
-        hdr = QLabel("⚠  CONFIRM")
+        hdr = QLabel("⚠  CONFIRM  ·  just say \"yes\" or \"no\"")
         hdr.setFont(QFont("Courier New", 11, QFont.Weight.Bold))
         hdr.setStyleSheet(f"color: {C.ACC}; background: transparent;")
         lay.addWidget(hdr)
@@ -2511,7 +2521,7 @@ class ConfirmBanner(_HudOverlay):
         yes.setStyleSheet(f"""
             QPushButton {{ background: transparent; color: {C.ACC};
                 border: 1px solid {C.ACC}; border-radius: 3px; }}
-            QPushButton:hover {{ background: rgba(255,107,0,40); }}
+            QPushButton:hover {{ background: rgba(90,150,255,40); }}
         """)
         yes.clicked.connect(lambda: self.answered.emit(True))
         row.addWidget(yes)
@@ -3674,16 +3684,17 @@ class MainWindow(QMainWindow):
                               Qt.TransformationMode.SmoothTransformation)
                 )
 
-    def start_camera_stream(self) -> None:
+    def start_camera_stream(self, index=None) -> None:
         self._cam_stop.clear()
         self._cam_stream_sig.emit(True)
-        t = threading.Thread(target=self._cam_loop, daemon=True, name="cam-stream")
+        t = threading.Thread(target=self._cam_loop, args=(index,), daemon=True, name="cam-stream")
         t.start()
 
-    def _cam_loop(self) -> None:
+    def _cam_loop(self, index=None) -> None:
         try:
             import cv2
-            # Reuse camera index detected by screen_processor (cached in api_keys.json)
+            # The camera the snapshot just came from (computer or phone); else
+            # the index screen_processor detected and cached in api_keys.json.
             cam_idx = 0
             try:
                 import json as _j
@@ -3691,6 +3702,8 @@ class MainWindow(QMainWindow):
                 cam_idx = int(cfg.get("camera_index", 0))
             except Exception:
                 pass
+            if index is not None:
+                cam_idx = int(index)
             try:
                 backend = cv2.CAP_DSHOW if _OS == "Windows" else cv2.CAP_ANY
             except AttributeError:
@@ -6141,9 +6154,9 @@ class JarvisUI:
         """Thread-safe: show a webcam frame in the small overlay (screen captures)."""
         self._win._camera_sig.emit(img_bytes)
 
-    def start_camera_stream(self) -> None:
+    def start_camera_stream(self, index=None) -> None:
         """Thread-safe: start live camera feed in the full HUD area."""
-        self._win.start_camera_stream()
+        self._win.start_camera_stream(index)
 
     def stop_camera_stream(self) -> None:
         """Thread-safe: stop the live camera feed."""

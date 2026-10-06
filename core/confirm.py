@@ -106,9 +106,11 @@ def request(key: str, title: str, detail: str, run: Callable[[], str]) -> str:
 
     _log(f"SYS: Awaiting confirmation — {title}")
     return (
-        f"[CONFIRMATION_PENDING] I have put a confirmation on screen for: {title}. "
-        f"Say ONE short sentence in the user's own language telling them you need "
-        f"them to confirm it on the HUD before you do it. Do not claim it is done."
+        f"[CONFIRMATION_PENDING] Waiting for the user's OK for: {title}. "
+        f"In one short, natural sentence in their language, say what you're about to "
+        f"do (who it goes to and the gist) and ask if you should go ahead. They answer "
+        f"out loud (yes / no) or on screen. When they say yes, the app does it by "
+        f"itself: do NOT call the tool again. Do not claim it is done until it is."
     )
 
 
@@ -149,6 +151,55 @@ def resolve(accepted: bool) -> None:
 
     threading.Thread(target=_worker, daemon=True,
                      name=f"confirm-{p.key}").start()
+
+
+_NO = ("no", "nope", "nah", "cancel", "dont", "don't", "stop", "wait", "hold",
+       "never", "nevermind", "not", "abort", "scratch")
+_YES_STRONG = {"yes", "yeah", "yea", "yep", "yup", "sure", "ok", "okay", "confirm",
+               "confirmed", "send", "do", "go", "correct", "absolutely", "definitely",
+               "alright", "affirmative", "proceed", "approved", "approve"}
+_YES_FILLER = {"it", "ahead", "please", "thats", "that's", "right", "sir", "jarvis",
+               "all", "good", "fine", "yes", "now", "then", "sounds", "and", "the",
+               "message", "email", "text", "call", "for", "me", "on", "of", "course",
+               "just", "go", "do"}
+_MAX_WORDS = 7
+
+
+def classify(text: str):
+    """True for a plain spoken yes ("yes", "yeah send it", "go ahead"), False for a
+    no/cancel/wait, None for anything else (ignored — the request stays open).
+
+    Deliberately narrow: only a short utterance made of yes-words counts, so a new
+    request or a question ("yes, but change the time") never sends anything."""
+    import re
+    words = re.sub(r"[^a-z' ]+", " ", str(text or "").lower()).split()
+    if not words:
+        return None
+    if any(w in _NO for w in words):
+        return False
+    if len(words) > _MAX_WORDS:
+        return None
+    if any(w in _YES_STRONG for w in words) and all(w in _YES_STRONG or w in _YES_FILLER
+                                                   for w in words):
+        return True
+    return None
+
+
+def voice_answer(text: str, started_at: float) -> Optional[bool]:
+    """Resolve the pending confirmation from what the USER said (speech
+    transcription, which the model cannot write). `started_at` is the monotonic
+    time the utterance began; speech from before the request was made is ignored.
+    Returns the answer acted on, or None if nothing was resolved."""
+    with _lock:
+        p = _pending
+    if p is None or time.monotonic() - p.at > TIMEOUT_SECONDS or started_at < p.at:
+        return None
+    answer = classify(text)
+    if answer is None:
+        return None
+    _log(f"SYS: Heard {'yes' if answer else 'no'} — {p.title}")
+    resolve(answer)
+    return answer
 
 
 def pending_title() -> str:
