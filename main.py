@@ -659,6 +659,15 @@ class JarvisLive:
         self.ui.get_plugin_settings = self._plugin_registry.settings_schemas  # ⚙ settings tab
         self.ui.request_say = self.plugin_say   # plugins: mid-task speech channel
 
+        # Announce replies to texts and emails while Jarvis is open.
+        try:
+            from memory.config_manager import get_plugin_enabled as _gpe
+            if self._plugin_registry.has("messages_inbox") and _gpe("messages_inbox"):
+                import plugins.messages_inbox as _inbox
+                _inbox.start(self.plugin_say)
+        except Exception as e:
+            print(f"[Messages] watcher not started: {e!r}")
+
         # ── Wake word ────────────────────────────────────────────────────────
         # _awake gates the mic (see _listen_audio) and the background speakers.
         # It is True whenever wake word is OFF, so default behaviour is unchanged.
@@ -788,7 +797,7 @@ class JarvisLive:
         """
         loop = getattr(self, "_loop", None)
         if not loop or not self.session:
-            return
+            return False
 
         async def _say():
             try:
@@ -801,8 +810,10 @@ class JarvisLive:
 
         try:
             asyncio.run_coroutine_threadsafe(_say(), loop)
+            return True
         except Exception as e:
             print(f"[PluginSay] {e}")
+            return False
 
     def request_reconnect(self, keep_context: bool = True, reason: str = ""):
         """Thread-safe: ask the run loop to tear down and rebuild the Live
