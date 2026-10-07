@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from core.events import Store as EventStore
-from worker.campaign import audit as auditmod, build, check, discover, mail as mailmod, messages, policy as pol, preview, replies
+from worker.campaign import audit as auditmod, build, check, design as designmod, discover, mail as mailmod, messages, policy as pol, preview, replies
 from worker.campaign.policy import Policy
 from worker.campaign.store import CampaignStore
 from worker.runtime import Deferred, Fatal, NeedsSetup
@@ -39,6 +39,7 @@ class Env:
     clock: Callable[[], float] = time.time
     sleep: Callable[[float], None] = time.sleep
     pace: float = 30.0                         # seconds between two sends
+    designer: Optional[Callable[[str], Optional[str]]] = None   # asks an AI model for a page; None = template designs only
 
 
 def default_env() -> Env:
@@ -51,8 +52,10 @@ def default_env() -> Env:
         c = get_plugin_config("product_sales")
         return {"sender_name": (c.get("sender_name") or "").strip(), "postal_address": (c.get("postal_address") or "").strip(),
                 "gmail_account": (c.get("gmail_account") or "spam").strip() or "spam"}
+    ai_on = str(cfg.get("ai_sites") or "on").strip().lower() not in ("off", "no", "false", "0")
     return Env(store=CampaignStore(d / "campaign.db"), provider=discover.OverpassProvider(), fetcher=auditmod.HttpFetcher(),
-               host=preview.from_settings(cfg, d), mailer=mailmod.GmailMailer("spam"), identity=identity, workdir=d)
+               host=preview.from_settings(cfg, d), mailer=mailmod.GmailMailer("spam"), identity=identity, workdir=d,
+               designer=designmod.gemini_generate() if ai_on else None)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -247,6 +250,34 @@ def h_audit(ctx, job, env: Env) -> dict:
 
 
 # ── build + check ────────────────────────────────────────────────────────────
+def _ai_site(env: Env, shown: dict, facts: dict, sender: str, out: Path, ctx=None):
+    """An AI-designed page that passed every check, or (None, why not). Never raises: the template is the fallback."""
+    def extra(html: str, tokens: dict, used: dict) -> list:
+        if ctx is not None and ctx.should_stop():
+            return ["stopped before the checks finished"]
+        res = check.static_checks(html, "ai", used, sender, tokens=tokens)
+        bad = [f"{r['check']}: {r['detail']}" if r["detail"] else r["check"] for r in res if r["required"] and not r["ok"]]
+        if bad:
+            return ["failed checks: " + "; ".join(bad)]
+        trial = out / "ai-trial.html"
+        trial.write_text(html, encoding="utf-8")
+        audit = check.contrast_audit(trial)
+        if audit["status"] != "passed":
+            return [f"contrast check {audit['status']}: {audit['detail']}"]
+        visual = check.visual_check(trial, out / "ai-trial")
+        if visual["status"] != "passed":
+            return [f"browser check {visual['status']}: {visual['detail']}"]
+        extra.audit = audit                                  # type: ignore[attr-defined]
+        return []
+    try:
+        site, notes = designmod.design(shown, facts, sender=sender, generate=env.designer, extra_checks=extra)
+    except Exception as exc:
+        return None, [f"the AI designer failed ({type(exc).__name__}); used the template"]
+    if site is not None:
+        site.audit = getattr(extra, "audit", None)           # type: ignore[attr-defined]
+    return site, notes
+
+
 def h_generate(ctx, job, env: Env) -> dict:
     bid = job["payload"]["business_id"]
     biz = env.store.business(bid)
@@ -264,17 +295,28 @@ def h_generate(ctx, job, env: Env) -> dict:
     now = env.clock()
     conflicted = {x["field"] for x in biz["data"].get("conflicts", [])}
     shown = {k: ("" if k in conflicted else biz[k]) for k in ("phone", "email", "address", "city", "name", "category")}
-    site = build.render(shown, {"hours": biz["data"].get("hours", "")}, sender=ident["sender_name"])
-    static = check.static_checks(site.files["index.html"], site.theme, site.used, ident["sender_name"])
+    facts = {"hours": biz["data"].get("hours", "")}
     out = env.workdir / "sites" / str(bid)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "index.html").write_text(site.files["index.html"], encoding="utf-8")
+    site, contrast, design_notes = None, None, []
+    if env.designer and not ctx.should_stop():
+        site, design_notes = _ai_site(env, shown, facts, ident["sender_name"], out, ctx)
+        if site is not None:
+            contrast = getattr(site, "audit", None)
+    designer = "ai" if site is not None else "template"
+    if site is None:
+        site = build.render(shown, facts, sender=ident["sender_name"])
+    html = site.files["index.html"]
+    static = check.static_checks(html, site.theme, site.used, ident["sender_name"], tokens=getattr(site, "tokens", None))
+    (out / "index.html").write_text(html, encoding="utf-8")
     visual = check.visual_check(out / "index.html", out) if not ctx.should_stop() else None
     ok, why_not = check.verdict(static, visual, p.require_visual_check)
-    data = {"site": {"theme": site.theme, "layout": site.layout, "used": site.used},
-            "checks": {"static": static, "visual": visual, "passed": ok, "why_not": why_not}}
+    data = {"site": {"theme": site.theme, "layout": site.layout, "used": site.used, "designer": designer},
+            "checks": {"static": static, "visual": visual, "contrast": contrast, "passed": ok, "why_not": why_not}}
+    if design_notes:
+        data["site"]["design_notes"] = design_notes[:4]
     biz = {**biz, "id": bid}
-    _emit(ctx, "site_built", cid, biz, detail={"theme": site.theme}, evidence={"files": ["index.html"]})
+    _emit(ctx, "site_built", cid, biz, detail={"theme": site.theme, "designer": designer}, evidence={"files": ["index.html"]})
     if not ok:
         env.store.update_business(bid, stage="built", status="held", hold_reason=why_not[:250], data=data, now=now)
         return {"held": why_not}
