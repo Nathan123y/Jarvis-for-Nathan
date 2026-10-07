@@ -31,7 +31,7 @@ MODEL_LADDER = ("gemini-3.5-flash", "gemini-3.8-flash", "gemini-3.7-flash", "gem
 # 3.5 is the one that answers reliably, so it goes first; the others are only fallbacks
 MAX_TOKENS = 12000
 MAX_PAGE_BYTES = 40_000
-TRIES = 2
+TRIES = 3
 
 DIRECTIONS = (
     "a bold poster: huge confident type, strong blocks of flat colour, one memorable graphic idea",
@@ -130,7 +130,9 @@ def prompt(biz: dict, facts: dict, *, direction: str, problems: Optional[list] =
         "from simple paths that suit the trade. SVG fill and stroke may only be none, currentColor or var(--token).",
         "- Responsive: mobile first, no horizontal scroll at 375px wide, body text at least 16px, buttons at least 44px tall. "
         "Keep the whole answer compact: under 24 KB.",
-        "- Every text colour must be readable on the colour behind it (at least 4.5:1, or 3:1 for text 24px or larger).",
+        "- Every text colour must be readable on the colour behind it (at least 4.5:1, or 3:1 for text 24px or larger). "
+        "Choose --primary dark enough that it reaches 4.5:1 against BOTH --bg and --surface (it is used for links and headings), "
+        "and so that --on-primary text on --primary also reaches 4.5:1. --muted must reach 4.5:1 on --bg and --surface too.",
         "- Include a visible keyboard focus style. Respect prefers-reduced-motion if you animate anything (prefer not to).",
     ]
     if problems:
@@ -140,7 +142,8 @@ def prompt(biz: dict, facts: dict, *, direction: str, problems: Optional[list] =
 
 
 def strip_harmless(body: str) -> str:
-    return re.sub(r"<[a-zA-Z][^>]*>", lambda m: STRIP_ATTRS.sub("", m.group(0)), body)
+    body = re.sub(r"<[a-zA-Z][^>]*>", lambda m: STRIP_ATTRS.sub("", m.group(0)), body)
+    return re.sub(r"""(href\s*=\s*)(["'])#\2""", r"\1\2#main\2", body)         # a bare "#" link goes nowhere: point it at the page
 
 
 def split_reply(raw: str) -> tuple[str, str]:
