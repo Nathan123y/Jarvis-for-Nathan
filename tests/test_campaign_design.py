@@ -89,6 +89,23 @@ class ValidationTests(unittest.TestCase):
         self.assertIn("REJECTED", prompts[1])
         self.assertIn("<script>", prompts[1])
 
+    def test_smooth_scrolling_and_plain_phone_links_are_fine(self):
+        css = CSS + "\nhtml{scroll-behavior:smooth}"
+        for href in ("tel:+14085550101", "tel:4085550101", "tel:(408) 555-0101", "tel:408-555-0101"):
+            reply = f"===CSS===\n{css}\n===BODY===\n{BODY.replace('tel:+14085550101', href)}"
+            extra = lambda html, tokens, used: [r["check"] for r in check.static_checks(html, "ai", used, "Sam", tokens=tokens)
+                                                if r["required"] and not r["ok"]]
+            site, notes, _ = run(reply, tries=1, extra=extra)
+            self.assertIsNotNone(site, (href, notes))
+        wrong = f"===CSS===\n{css}\n===BODY===\n{BODY.replace('tel:+14085550101', 'tel:+14085559999')}"
+        extra = lambda html, tokens, used: [r["check"] for r in check.static_checks(html, "ai", used, "Sam", tokens=tokens)
+                                            if r["required"] and not r["ok"]]
+        self.assertIsNone(run(wrong, tries=1, extra=extra)[0])                       # the digits must still be the verified ones
+        self.assertIsNone(run(CSS.replace("*{", "*{behavior:url(x);") and f"===CSS===\n{CSS}\nbody{{behavior:none}}\n===BODY===\n{BODY}", tries=1)[0])
+
+    def test_the_prompt_gives_the_exact_phone_link(self):
+        self.assertIn('href="tel:+14085550101"', design.prompt(SHOWN, FACTS, direction="x"))
+
     def test_an_unavailable_model_is_not_hammered(self):
         site, notes, prompts = run(None)
         self.assertIsNone(site)
