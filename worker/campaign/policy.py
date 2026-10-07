@@ -43,13 +43,27 @@ SCOPE_TEXT = ("A custom one-page website: your business details and approved cop
               "would be quoted separately.")
 
 
+# Gmail refuses to send past roughly 500 messages a day from a regular account. With no cap of our own,
+# this stays the ceiling so Jarvis stops cleanly instead of running into errors and a locked account.
+GMAIL_DAILY_CEILING = 450
+
+
+def effective_daily_cap(p: "Policy") -> int:
+    return p.daily_cap if p.daily_cap > 0 else GMAIL_DAILY_CEILING
+
+
+def limit_text(p: "Policy") -> str:
+    return (f"up to {p.daily_cap} emails a day" if p.daily_cap else
+            f"with no daily cap of its own (Gmail's limit of about {GMAIL_DAILY_CEILING} a day is the ceiling, sent a few at a time through the day)")
+
+
 @dataclass
 class Policy:
     area: str = "san-jose"
     nearby_areas: list = field(default_factory=lambda: ["santa-clara", "sunnyvale-cupertino"])
     categories: list = field(default_factory=lambda: list(DEFAULT_CATEGORIES))
-    batch_size: int = 20                       # qualified businesses per batch
-    daily_cap: int = 20                        # outreach emails per day, across all campaigns
+    batch_size: int = 100                      # qualified businesses per batch
+    daily_cap: int = 0                         # outreach emails per day across all campaigns; 0 = no cap of our own
     price_cents: int = 24900                   # one-page site, once (matches the published Soccer Coach Website price)
     scope: str = SCOPE_TEXT
     sender_account: str = "spam"               # the Gmail account Jarvis labels "spam"; never rotated
@@ -86,10 +100,10 @@ def validate(p: Policy) -> list[str]:
     for a in [p.area, *p.nearby_areas]:
         if a not in AREAS:
             bad.append(f"unknown area {a!r}")
-    if not 1 <= p.batch_size <= 20:
-        bad.append("batch size must be 1 to 20")
-    if not 1 <= p.daily_cap <= 20:
-        bad.append("daily cap must be 1 to 20")
+    if not 1 <= p.batch_size <= 200:
+        bad.append("batch size must be 1 to 200")
+    if not 0 <= p.daily_cap <= GMAIL_DAILY_CEILING:
+        bad.append(f"daily cap must be 0 (none) to {GMAIL_DAILY_CEILING}")
     if p.budget_cents != 0:
         bad.append("budget must be $0: paid services are not authorized")
     if p.followups:
@@ -192,8 +206,9 @@ def may_send(store: CampaignStore, cid: str, *, sent_today_all: int, now: Option
     p = from_dict(store.campaign(cid)["policy"])
     if not in_send_window(p, now):
         return False, "outside the allowed sending hours"
-    if sent_today_all >= p.daily_cap:
-        return False, f"daily cap of {p.daily_cap} reached"
+    cap = effective_daily_cap(p)
+    if sent_today_all >= cap:
+        return False, f"daily cap of {cap} reached" + ("" if p.daily_cap else " (Gmail's own sending limit)")
     return True, ""
 
 
@@ -205,7 +220,7 @@ def review_text(p: Policy, *, identity: dict, hosting: dict, samples: list[dict]
         "",
         f"Area: {p.area} plus {', '.join(p.nearby_areas) or 'nothing else'}",
         f"Categories: {', '.join(p.categories)}",
-        f"Per batch: up to {p.batch_size} qualified businesses. Daily limit: {p.daily_cap} emails across all campaigns.",
+        f"Per batch: up to {p.batch_size} qualified businesses. Daily limit: {limit_text(p)}, across all campaigns.",
         "",
         f"Sender: the {p.sender_account} Gmail account"
         + (f", as {identity.get('sender_name')}" if identity.get("sender_name") else "")

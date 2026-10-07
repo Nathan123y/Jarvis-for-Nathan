@@ -23,7 +23,7 @@ from worker.campaign.policy import Policy
 from worker.campaign.store import CampaignStore
 from worker.runtime import Deferred, Fatal, NeedsSetup
 
-SEND_PER_RUN = 3
+SEND_PER_RUN = 5
 PROMOTION_SOURCE = "promotion"
 
 

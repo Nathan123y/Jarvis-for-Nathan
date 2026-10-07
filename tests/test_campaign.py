@@ -90,7 +90,7 @@ class PolicyTests(unittest.TestCase):
 
     def test_defaults_are_valid_and_limits_are_ceilings(self):
         self.assertEqual(pol.validate(pol.Policy()), [])
-        for kw in ({"batch_size": 21}, {"daily_cap": 21}, {"budget_cents": 1}, {"followups": True}, {"sender_account": "work"},
+        for kw in ({"batch_size": 201}, {"daily_cap": 451}, {"daily_cap": -1}, {"budget_cents": 1}, {"followups": True}, {"sender_account": "work"},
                    {"area": "mars"}, {"price_cents": 5}):
             self.assertTrue(pol.validate(pol.Policy(**kw)), kw)
 
@@ -124,8 +124,15 @@ class PolicyTests(unittest.TestCase):
         pol.authorize(self.s, "c", by="n", now=TUE_10AM)
         self.assertEqual(pol.may_send(self.s, "c", sent_today_all=0, now=TUE_8PM), (False, "outside the allowed sending hours"))
         self.assertFalse(pol.may_send(self.s, "c", sent_today_all=0, now=SAT_10AM)[0])
-        self.assertFalse(pol.may_send(self.s, "c", sent_today_all=20, now=TUE_10AM)[0])
-        self.assertTrue(pol.may_send(self.s, "c", sent_today_all=19, now=TUE_10AM)[0])
+        self.assertTrue(pol.may_send(self.s, "c", sent_today_all=20, now=TUE_10AM)[0])      # no cap of our own by default
+        self.assertTrue(pol.may_send(self.s, "c", sent_today_all=449, now=TUE_10AM)[0])
+        ok, why = pol.may_send(self.s, "c", sent_today_all=450, now=TUE_10AM)               # Gmail's limit is the ceiling
+        self.assertFalse(ok)
+        self.assertIn("Gmail", why)
+        self.s.save_campaign("c", "t", pol.Policy(daily_cap=5).__dict__.copy(), TUE_10AM)   # a cap can still be set
+        pol.authorize(self.s, "c", by="n", now=TUE_10AM)
+        self.assertFalse(pol.may_send(self.s, "c", sent_today_all=5, now=TUE_10AM)[0])
+        self.assertTrue(pol.may_send(self.s, "c", sent_today_all=4, now=TUE_10AM)[0])
         nxt = pol.next_window_start(pol.Policy(), TUE_8PM)
         self.assertTrue(pol.in_send_window(pol.Policy(), nxt))
         self.assertGreater(nxt, TUE_8PM)
@@ -248,6 +255,22 @@ class BuildTests(unittest.TestCase):
             site = build.render({k: BIZ[k] for k in ("name", "category", "address", "city", "phone", "email")}, {}, sender="Sam", theme=t)
             res = {r["check"]: r for r in check.static_checks(site.files["index.html"], t, site.used, "Sam")}
             self.assertTrue(all(r["ok"] for r in res.values() if r["required"]), (t, res))
+
+    def test_every_trade_gets_its_own_icon_and_a_page_that_passes_every_check(self):
+        for cat in build.CATEGORY_TITLES:
+            site = build.render({**{k: BIZ[k] for k in ("name", "address", "city", "phone", "email")}, "category": cat}, {}, sender="Sam")
+            html = site.files["index.html"]
+            res = check.static_checks(html, site.theme, site.used, "Sam")
+            self.assertEqual([r for r in res if r["required"] and not r["ok"]], [], cat)
+            self.assertIn(build.ICONS[cat], html, cat)
+            self.assertIn('class="callbar"', html)                      # the phone bar, so a customer can call in one tap
+            self.assertNotIn("url(", html)                              # nothing loaded from anywhere
+
+    def test_a_business_without_a_phone_still_renders_without_a_call_bar(self):
+        site = build.render({**{k: BIZ[k] for k in ("name", "category", "address", "city", "email")}, "phone": ""}, {}, sender="Sam")
+        res = check.static_checks(site.files["index.html"], site.theme, site.used, "Sam")
+        self.assertEqual([r for r in res if r["required"] and not r["ok"]], [])
+        self.assertNotIn('class="callbar"', site.files["index.html"])
 
     def test_html_in_names_is_escaped(self):
         site = build.render({**{k: BIZ[k] for k in ("category", "address", "city", "phone", "email")}, "name": "<img src=x onerror=alert(1)> Co"}, {}, sender="Sam")
