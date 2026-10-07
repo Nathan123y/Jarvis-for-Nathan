@@ -48,7 +48,10 @@ SVG_TAGS = {"svg", "path", "circle", "rect", "line", "polyline", "polygon", "ell
 ALLOWED_ATTRS = {"class", "id", "href", "role", "lang", "viewbox", "width", "height", "fill", "stroke", "stroke-width", "stroke-linecap",
                  "stroke-linejoin", "d", "cx", "cy", "r", "x", "y", "x1", "y1", "x2", "y2", "rx", "ry", "points", "transform",
                  "focusable", "preserveaspectratio", "text-anchor", "font-size", "font-weight", "font-family", "font-style",
-                 "xmlns", "fill-rule", "clip-rule", "stroke-miterlimit"}
+                 "xmlns", "fill-rule", "clip-rule", "stroke-miterlimit", "stroke-dasharray", "stroke-dashoffset", "opacity",
+                 "fill-opacity", "stroke-opacity", "vector-effect"}
+# harmless attributes a model likes to add; they are removed (not rejected) before the page is checked
+STRIP_ATTRS = re.compile(r"""\s+(?:target|rel|style|tabindex|title|alt|loading|download|data-[\w-]+|on[a-z]+)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)""", re.I)
 COLOR_ATTRS = {"fill", "stroke"}
 MAPS_PREFIX = "https://www.google.com/maps/search/?api=1&query="
 NAMED_COLORS = set("""aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond blue blueviolet brown burlywood
@@ -135,16 +138,31 @@ def prompt(biz: dict, facts: dict, *, direction: str, problems: Optional[list] =
     return "\n".join(lines)
 
 
+def strip_harmless(body: str) -> str:
+    return re.sub(r"<[a-zA-Z][^>]*>", lambda m: STRIP_ATTRS.sub("", m.group(0)), body)
+
+
 def split_reply(raw: str) -> tuple[str, str]:
     raw = (raw or "").strip()
     raw = re.sub(r"^```[a-z]*\n|\n```$", "", raw)
-    m = re.search(r"===CSS===\s*(.*?)\s*===BODY===\s*(.*)$", raw, re.S)
+    m = re.search(r"===\s*CSS\s*===\s*(.*?)\s*===\s*BODY\s*===\s*(.*)$", raw, re.S | re.I)
     if not m:
-        return "", ""
+        # forgiving fallback: a <style> block plus the page body (or fenced css + html blocks)
+        st = re.search(r"<style[^>]*>(.*?)</style>", raw, re.S | re.I)
+        fenced = re.findall(r"```(?:css|html)?\s*\n(.*?)```", raw, re.S | re.I)
+        if st:
+            css, rest = st.group(1), raw.replace(st.group(0), "")
+        elif len(fenced) >= 2:
+            css, rest = fenced[0], "\n".join(fenced[1:])
+        else:
+            return "", ""
+        bm = re.search(r"<body[^>]*>(.*?)</body>", rest, re.S | re.I)
+        body = (bm.group(1) if bm else re.sub(r"</?(?:html|head|body)[^>]*>|<!doctype[^>]*>|<meta[^>]*>|<title>.*?</title>", "", rest, flags=re.S | re.I))
+        return css.strip(), strip_harmless(body.strip())
     css, body = m.group(1).strip(), m.group(2).strip()
     css = re.sub(r"^```[a-z]*\n|\n```$", "", css).strip()
     body = re.sub(r"^```[a-z]*\n|\n```$", "", body).strip()
-    return css, body
+    return css, strip_harmless(body)
 
 
 def parse_tokens(css: str) -> dict:
