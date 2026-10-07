@@ -325,6 +325,10 @@ def design(biz: dict, facts: dict, *, sender: str, generate: Generate, tries: in
 
 
 # ── the real model ───────────────────────────────────────────────────────────
+_down_until = 0.0          # when every model last failed, the AI is skipped for a while instead of retried for every business
+COOLDOWN_S = 900.0
+
+
 def gemini_generate(timeout_s: float = 150.0) -> Optional[Generate]:
     """A `generate` that asks Gemini over REST, newest model first. None if there is no key or no SDK."""
     try:
@@ -337,6 +341,9 @@ def gemini_generate(timeout_s: float = 150.0) -> Optional[Generate]:
         return None
 
     def generate(text: str) -> Optional[str]:
+        global _down_until
+        if time.time() < _down_until:
+            return None                                          # the models are busy right now: go straight to the built-in design
         try:
             cl = gemini.client(timeout_ms=int(timeout_s * 1000), key=key)
         except Exception:
@@ -361,5 +368,7 @@ def gemini_generate(timeout_s: float = 150.0) -> Optional[Generate]:
                         time.sleep(8)
                         continue
                     break
+        _down_until = time.time() + COOLDOWN_S
+        print(f"[design] no model answered; using the built-in designs for the next {int(COOLDOWN_S // 60)} minutes", flush=True)
         return None
     return generate
