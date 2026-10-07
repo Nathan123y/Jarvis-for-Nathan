@@ -143,6 +143,32 @@ class BrowserTests(unittest.TestCase):
             self.assertIn("low contrast", r["detail"])
 
 
+class OutageTests(unittest.TestCase):
+    def test_after_every_model_fails_the_ai_is_skipped_for_a_while(self):
+        import sys, types, time as _t
+        calls = []
+
+        class Models:
+            def generate_content(self, **kw):
+                calls.append(kw["model"])
+                raise RuntimeError("503 UNAVAILABLE")
+        fake_client = types.SimpleNamespace(models=Models())
+        gem = types.SimpleNamespace(api_key=lambda: "k", client=lambda **kw: fake_client)
+        gtypes = types.SimpleNamespace(GenerateContentConfig=lambda **kw: kw)
+        with mock.patch.dict(sys.modules, {"core.gemini": gem, "google": types.SimpleNamespace(genai=types.SimpleNamespace(types=gtypes)),
+                                           "google.genai": types.SimpleNamespace(types=gtypes), "google.genai.types": gtypes}), \
+             mock.patch("core.gemini", gem, create=True), mock.patch.object(_t, "sleep"):
+            design._down_until = 0.0
+            gen = design.gemini_generate()
+            self.assertIsNotNone(gen)
+            self.assertIsNone(gen("x"))
+            first = len(calls)
+            self.assertGreaterEqual(first, len(design.MODEL_LADDER))
+            self.assertIsNone(gen("x"))                                   # cooling down: no new requests at all
+            self.assertEqual(len(calls), first)
+            design._down_until = 0.0
+
+
 class PipelineTests(unittest.TestCase):
     def build_one(self, designer, **patches):
         r = Rig(self, [biz(1)])
