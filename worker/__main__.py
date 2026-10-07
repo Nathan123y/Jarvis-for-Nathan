@@ -11,7 +11,7 @@
     python3 -m worker logs [N]       the last N log lines
     python3 -m worker install | uninstall | restart | rollback    the per-user launchd job (macOS)
     python3 -m worker sales import FILE.csv   count verified payments from a payment export
-    python3 -m worker campaign dryrun|designtest|status|review|enable|pause|resume|stop|mode   the website campaign
+    python3 -m worker campaign dryrun|designtest|status|review|enable|start|pause|resume|stop|mode   the website campaign
 """
 from __future__ import annotations
 
@@ -266,6 +266,10 @@ def cmd_campaign(args) -> int:
             print("Not enabled.")
             return 1
         print(control.enable(env, db, by=me))
+    elif args.action == "start":
+        out = control.start(env, db, by=me)
+        print("Not authorized yet: run `python3 -m worker campaign enable` first (" + out[len("NEEDS_AUTH: "):] + ")."
+              if out.startswith("NEEDS_AUTH: ") else out)
     elif args.action == "pause":
         print(control.pause(env, by=me))
     elif args.action == "resume":
@@ -320,7 +324,7 @@ def main(argv=None) -> int:
     sub.add_parser("selftest").set_defaults(fn=cmd_selftest)
     lg = sub.add_parser("logs"); lg.add_argument("n", type=int, nargs="?", default=40); lg.set_defaults(fn=cmd_logs)
     cp = sub.add_parser("campaign")
-    cp.add_argument("action", choices=["dryrun", "status", "review", "enable", "pause", "resume", "stop", "mode"])
+    cp.add_argument("action", choices=["dryrun", "designtest", "status", "review", "enable", "start", "pause", "resume", "stop", "mode"])
     cp.add_argument("value", nargs="?")
     cp.add_argument("--visual", action="store_true", help="dryrun: also run the browser check (needs Playwright)")
     cp.set_defaults(fn=cmd_campaign)

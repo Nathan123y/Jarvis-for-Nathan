@@ -84,6 +84,35 @@ def enable(env: "pipeline.Env", db, cid: str = DEFAULT_ID, *, by: str, check_gma
             "It stops by itself on Gmail errors, a complaint or bounces, and you can say 'stop the campaign' any time.")
 
 
+def start(env: "pipeline.Env", db, cid: str = DEFAULT_ID, *, by: str) -> str:
+    """'Start selling websites' / run now: resume if paused, then kick off discovery and a send check right away.
+
+    Needs the one-time authorization (it never grants it). Sending still obeys the policy: its hours,
+    daily cap and every stop condition. Asking twice within ten minutes does not queue it twice.
+    """
+    c = ensure(env.store, cid)
+    now = env.clock()
+    if c["status"] == "paused":
+        resume(env, cid, by=by)
+    auth = pol.authorization(env.store, cid, now)
+    if auth["state"] != "active":
+        return "NEEDS_AUTH: " + auth["reason"]
+    pipeline.schedule_campaign(db, cid)
+    slot = int(now // 600)
+    db.enqueue("campaign_discover", {"campaign_id": cid}, campaign_id=cid, unique_key=f"discover:{cid}:now:{slot}")
+    db.enqueue("campaign_send", {"campaign_id": cid}, campaign_id=cid, unique_key=f"send:{cid}:now:{slot}")
+    for b in env.store.businesses(cid, stage="preview", status="ok"):
+        db.enqueue("campaign_offer", {"business_id": b["id"]}, campaign_id=cid, unique_key=f"offer:{b['id']}:now:{slot}", max_attempts=2)
+    env.store.audit(cid, by, "started", {}, now)
+    p = pol.from_dict(env.store.campaign(cid)["policy"])
+    if pol.in_send_window(p, now):
+        when = "Emails start going out within about ten minutes (the next send check), up to the daily limit."
+    else:
+        nxt = time.strftime("%A %-I %p", time.localtime(pol.next_window_start(p, now)))
+        when = f"It's outside sending hours, so I'll find and build now and the emails go out {nxt}."
+    return f"Started. Finding businesses with no or weak websites and building their concepts now. {when} The Mac has to stay awake for the worker."
+
+
 def stop(env: "pipeline.Env", cid: str = DEFAULT_ID, *, by: str, reason: str = "stopped by you") -> str:
     ensure(env.store, cid)
     pol.revoke(env.store, cid, by=by, reason=reason, now=env.clock())
