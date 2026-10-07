@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import time
 from html.parser import HTMLParser
 from typing import Callable, Optional
 
@@ -41,7 +42,7 @@ DIRECTIONS = (
 )
 
 ALLOWED_TAGS = {"header", "nav", "main", "section", "article", "aside", "div", "span", "p", "h1", "h2", "h3", "h4", "ul", "ol",
-                "li", "a", "strong", "em", "br", "dl", "dt", "dd", "address", "small", "svg", "path", "circle", "rect", "line",
+                "li", "a", "strong", "em", "b", "i", "time", "figure", "figcaption", "br", "dl", "dt", "dd", "address", "small", "svg", "path", "circle", "rect", "line",
                 "polyline", "polygon", "ellipse", "g", "title", "desc", "text"}
 SVG_TAGS = {"svg", "path", "circle", "rect", "line", "polyline", "polygon", "ellipse", "g", "title", "desc", "text"}
 ALLOWED_ATTRS = {"class", "id", "href", "role", "lang", "viewbox", "width", "height", "fill", "stroke", "stroke-width", "stroke-linecap",
@@ -63,7 +64,7 @@ peru pink plum powderblue purple rebeccapurple red rosybrown royalblue saddlebro
 skyblue slateblue slategray slategrey snow springgreen steelblue tan teal thistle tomato turquoise violet wheat white whitesmoke yellow
 yellowgreen""".split())
 BANNED_CSS = re.compile(r"@import|@font-face|url\s*\(|expression\s*\(|javascript:|gradient\s*\(|color-mix\s*\(|image-set|element\s*\(|"
-                        r"\bopacity\s*:|behavior\s*:|-moz-binding|@namespace|@charset|\bfilter\s*:|mix-blend-mode|backdrop-filter", re.I)
+                        r"\bopacity\s*:|(?<![\w-])behavior\s*:|-moz-binding|@namespace|@charset|\bfilter\s*:|mix-blend-mode|backdrop-filter", re.I)
 COLOR_PROP = re.compile(r"(?:^|;|\{)\s*(color|background|background-color|border|border-top|border-right|border-bottom|border-left|"
                         r"border-color|outline|outline-color|fill|stroke|box-shadow|text-shadow|text-decoration|text-decoration-color|"
                         r"caret-color|accent-color|column-rule|stop-color)\s*:\s*([^;}{]+)", re.I)
@@ -106,8 +107,8 @@ def prompt(biz: dict, facts: dict, *, direction: str, problems: Optional[list] =
         "- Services: if verified services exist, list those. Otherwise you may show these typical services, and you must say "
         f"plainly near them that they are samples the owner will replace: {', '.join(sample) or 'a short generic list'}.",
         "- An About section is fine, but write it as a clearly labelled sample for the owner to replace, with no factual claims.",
-        "- The phone number must appear as a tel: link and the email as a mailto: link, exactly as given. Add a directions "
-        f"link using exactly this form: {MAPS_PREFIX}<url-encoded address>.",
+        f"- The phone number must appear as a link with exactly href=\"tel:{build.tel_digits(biz.get('phone') or '') or '(none)'}\" and the visible text {biz.get('phone') or '(none)'}; "
+        f"the email as a mailto: link, exactly as given. Add a directions link using exactly this form: {MAPS_PREFIX}<url-encoded address>.",
         "- Do not write a banner, footer, cookie notice, contact form or any 'preview' wording: those are added for you.",
         "",
         "TECHNICAL RULES (a checker enforces these):",
@@ -207,7 +208,7 @@ class _Body(HTMLParser):
             elif k in COLOR_ATTRS and v.lower() not in ("none", "currentcolor") and not re.fullmatch(r"var\(--[a-z-]+\)", v.lower()):
                 self.problems.append(f"{k}=\"{v}\": use none, currentColor or var(--token)")
             elif k == "href" and tag == "a":
-                if not (v.startswith(("tel:+", "mailto:", "#")) or v.startswith(MAPS_PREFIX)):
+                if not (re.fullmatch(r"tel:\+?[\d\s().-]{7,20}", v) or v.startswith(("mailto:", "#")) or v.startswith(MAPS_PREFIX)):
                     self.problems.append(f"link '{v[:60]}' is not allowed (only tel:, mailto:, #section and the Google Maps directions link)")
             elif k == "href":
                 self.problems.append("href is only allowed on <a>")
@@ -341,14 +342,24 @@ def gemini_generate(timeout_s: float = 150.0) -> Optional[Generate]:
         except Exception:
             return None
         for model in MODEL_LADDER:
-            try:
-                resp = cl.models.generate_content(
-                    model=model, contents=text,
-                    config=types.GenerateContentConfig(temperature=0.9, max_output_tokens=MAX_TOKENS))
-                out = (getattr(resp, "text", None) or "").strip()
-                if out:
-                    return out
-            except Exception as exc:                            # not found, quota, overloaded: try the next model
-                print(f"[design] {model}: {type(exc).__name__}: {str(exc)[:120]}")
+            for go in range(2):
+                started = time.time()
+                print(f"[design] asking {model} ...", flush=True)
+                try:
+                    resp = cl.models.generate_content(
+                        model=model, contents=text,
+                        config=types.GenerateContentConfig(temperature=0.9, max_output_tokens=MAX_TOKENS))
+                    out = (getattr(resp, "text", None) or "").strip()
+                    print(f"[design] {model} answered in {time.time() - started:.0f}s ({len(out)} characters)", flush=True)
+                    if out:
+                        return out
+                    break
+                except Exception as exc:                        # not found, quota, overloaded: retry once if busy, else next model
+                    msg = str(exc)
+                    print(f"[design] {model}: {type(exc).__name__}: {msg[:90]}", flush=True)
+                    if go == 0 and ("503" in msg or "UNAVAILABLE" in msg or "overloaded" in msg.lower()):
+                        time.sleep(8)
+                        continue
+                    break
         return None
     return generate
