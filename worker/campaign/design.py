@@ -27,9 +27,9 @@ from worker.campaign import build
 
 TOKENS = ("bg", "surface", "text", "muted", "primary", "on-primary", "accent")
 # Newest first. A model name this account does not have is skipped, not fatal.
-MODEL_LADDER = ("gemini-3.8-flash", "gemini-3.5-flash", "gemini-2.5-flash")
-MAX_TOKENS = 16000
-MAX_PAGE_BYTES = 55_000
+MODEL_LADDER = ("gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite")
+MAX_TOKENS = 12000
+MAX_PAGE_BYTES = 40_000
 TRIES = 2
 
 DIRECTIONS = (
@@ -125,7 +125,7 @@ def prompt(biz: dict, facts: dict, *, direction: str, problems: Optional[list] =
         "- Pictures: none. Make the visual interest from type, flat colour shapes, CSS and inline <svg> illustration drawn "
         "from simple paths that suit the trade. SVG fill and stroke may only be none, currentColor or var(--token).",
         "- Responsive: mobile first, no horizontal scroll at 375px wide, body text at least 16px, buttons at least 44px tall. "
-        "Keep the whole answer under 40 KB.",
+        "Keep the whole answer compact: under 24 KB.",
         "- Every text colour must be readable on the colour behind it (at least 4.5:1, or 3:1 for text 24px or larger).",
         "- Include a visible keyboard focus style. Respect prefers-reduced-motion if you animate anything (prefer not to).",
     ]
@@ -230,7 +230,7 @@ def body_problems(body: str) -> list[str]:
     if "<header" not in body or "<nav" not in body:
         bad.append("the body needs a <header> containing a <nav>")
     if len(body.encode()) > MAX_PAGE_BYTES:
-        bad.append("the page is too large (keep it under 40 KB)")
+        bad.append("the page is too large (keep it well under 40 KB)")
     p = _Body()
     try:
         p.feed(body)
