@@ -27,7 +27,8 @@ from worker.campaign import build
 
 TOKENS = ("bg", "surface", "text", "muted", "primary", "on-primary", "accent")
 # Newest first. A model name this account does not have is skipped, not fatal.
-MODEL_LADDER = ("gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite")
+MODEL_LADDER = ("gemini-3.5-flash", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite")
+# 3.5 is the one that answers reliably, so it goes first; the others are only fallbacks
 MAX_TOKENS = 12000
 MAX_PAGE_BYTES = 40_000
 TRIES = 2
@@ -345,6 +346,8 @@ def design(biz: dict, facts: dict, *, sender: str, generate: Generate, tries: in
 # ── the real model ───────────────────────────────────────────────────────────
 _down_until = 0.0          # when every model last failed, the AI is skipped for a while instead of retried for every business
 COOLDOWN_S = 900.0
+MODEL_SKIP_S = 1800.0      # a model that just failed is not asked again for half an hour
+_model_skip: dict = {}
 
 
 def gemini_generate(timeout_s: float = 150.0) -> Optional[Generate]:
@@ -367,6 +370,8 @@ def gemini_generate(timeout_s: float = 150.0) -> Optional[Generate]:
         except Exception:
             return None
         for model in MODEL_LADDER:
+            if time.time() < _model_skip.get(model, 0.0):
+                continue
             for go in range(2):
                 started = time.time()
                 print(f"[design] asking {model} ...", flush=True)
@@ -377,6 +382,7 @@ def gemini_generate(timeout_s: float = 150.0) -> Optional[Generate]:
                     out = (getattr(resp, "text", None) or "").strip()
                     print(f"[design] {model} answered in {time.time() - started:.0f}s ({len(out)} characters)", flush=True)
                     if out:
+                        _model_skip.pop(model, None)
                         return out
                     break
                 except Exception as exc:                        # not found, quota, overloaded: retry once if busy, else next model
@@ -385,6 +391,7 @@ def gemini_generate(timeout_s: float = 150.0) -> Optional[Generate]:
                     if go == 0 and ("503" in msg or "UNAVAILABLE" in msg or "overloaded" in msg.lower()):
                         time.sleep(8)
                         continue
+                    _model_skip[model] = time.time() + MODEL_SKIP_S
                     break
         _down_until = time.time() + COOLDOWN_S
         print(f"[design] no model answered; using the built-in designs for the next {int(COOLDOWN_S // 60)} minutes", flush=True)
