@@ -41,6 +41,24 @@ def run(reply, tries=2, extra=None):
 
 
 class ValidationTests(unittest.TestCase):
+    def test_harmless_attributes_are_stripped_not_rejected(self):
+        messy = GOOD.replace('<a ', '<a target="_blank" rel="noopener" style="color:red" ', 1)
+        site, notes, _ = run(messy)
+        self.assertIsNotNone(site, notes)
+        self.assertNotIn("target=", site.files["index.html"])
+        self.assertNotIn('style="color:red"', site.files["index.html"])
+
+    def test_a_reply_without_our_markers_is_still_understood(self):
+        css, body = design.split_reply("```html\n<style>:root{--a:#fff}</style>\n<body><main id=\"main\">x</main></body>\n```")
+        self.assertEqual(css, ":root{--a:#fff}")
+        self.assertIn("<main", body)
+
+    def test_script_tags_are_still_rejected(self):
+        self.assertTrue(design.body_problems('<header><nav></nav></header><main id="main"><script>x</script></main>'))
+
+    def test_inline_event_handlers_are_removed(self):
+        self.assertNotIn("onclick", design.strip_harmless('<a onclick="x()" href="#a">y</a>'))
+
     def test_a_good_page_is_accepted_and_wrapped_in_our_own_labels(self):
         site, notes, _ = run(GOOD)
         self.assertIsNotNone(site, notes)
@@ -60,9 +78,7 @@ class ValidationTests(unittest.TestCase):
             "script": with_body("</main>", "<script>1</script></main>"),
             "image": with_body("<h2>What we do</h2>", "<h2>What we do</h2><img src='x.png'>"),
             "outside link": with_body("Get directions", "Get directions</a><a href='https://evil.example/x'>x"),
-            "inline style": with_body('<section class="hero">', '<section class="hero" style="color:red">'),
             "form": with_body("</main>", "<form><input></form></main>"),
-            "event handler": with_body("<h1>", '<h1 onclick="x()">'),
             "hex colour outside tokens": with_body("section{padding", "section{border:1px solid #ff0000;padding"),
             "colour name": with_body("section{padding", "section{border:1px solid red;padding"),
             "rgb": with_body("section{padding", "section{color:rgb(0,0,0);padding"),
