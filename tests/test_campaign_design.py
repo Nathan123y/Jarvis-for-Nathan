@@ -175,6 +175,7 @@ class OutageTests(unittest.TestCase):
                                            "google.genai": types.SimpleNamespace(types=gtypes), "google.genai.types": gtypes}), \
              mock.patch("core.gemini", gem, create=True), mock.patch.object(_t, "sleep"):
             design._down_until = 0.0
+            design._model_skip.clear()
             gen = design.gemini_generate()
             self.assertIsNotNone(gen)
             self.assertIsNone(gen("x"))
@@ -183,6 +184,33 @@ class OutageTests(unittest.TestCase):
             self.assertIsNone(gen("x"))                                   # cooling down: no new requests at all
             self.assertEqual(len(calls), first)
             design._down_until = 0.0
+            design._model_skip.clear()
+
+    def test_a_model_that_failed_is_skipped_and_the_working_one_goes_first(self):
+        import sys, types, time as _t
+        calls = []
+
+        class Models:
+            def generate_content(self, **kw):
+                calls.append(kw["model"])
+                if kw["model"] != "gemini-3.7-flash":
+                    raise RuntimeError("404 not found")
+                return types.SimpleNamespace(text="hello")
+        gem = types.SimpleNamespace(api_key=lambda: "k", client=lambda **kw: types.SimpleNamespace(models=Models()))
+        gtypes = types.SimpleNamespace(GenerateContentConfig=lambda **kw: kw)
+        with mock.patch.dict(sys.modules, {"core.gemini": gem, "google": types.SimpleNamespace(genai=types.SimpleNamespace(types=gtypes)),
+                                           "google.genai": types.SimpleNamespace(types=gtypes), "google.genai.types": gtypes}), \
+             mock.patch("core.gemini", gem, create=True), mock.patch.object(_t, "sleep"):
+            design._down_until = 0.0
+            design._model_skip.clear()
+            gen = design.gemini_generate()
+            self.assertEqual(design.MODEL_LADDER[0], "gemini-3.5-flash")
+            self.assertEqual(gen("x"), "hello")
+            self.assertIn("gemini-3.5-flash", calls)
+            calls.clear()
+            self.assertEqual(gen("x"), "hello")
+            self.assertEqual(calls, ["gemini-3.7-flash"])                 # the ones that failed are not asked again
+            design._model_skip.clear()
 
 
 class PipelineTests(unittest.TestCase):
