@@ -79,7 +79,7 @@ def enable(env: "pipeline.Env", db, cid: str = DEFAULT_ID, *, by: str, check_gma
         db.enqueue("campaign_offer", {"business_id": b["id"]}, campaign_id=cid, unique_key=f"offer:{b['id']}:{int(now)}", max_attempts=2)
     until = time.strftime("%b %d", time.localtime(info["until"]))
     p = pol.from_dict(env.store.campaign(cid)["policy"])
-    return (f"Enabled until {until}. Jarvis will find, build, check and pitch businesses on its own, up to {p.daily_cap} emails a day "
+    return (f"Enabled until {until}. Jarvis will find, build, check and pitch businesses on its own, {pol.limit_text(p)} "
             f"at {pol.price_text(p)}, only Mon-Fri {p.send_from_hour}-{p.send_to_hour} Pacific, only while the background worker is running. "
             "It stops by itself on Gmail errors, a complaint or bounces, and you can say 'stop the campaign' any time.")
 
@@ -125,7 +125,7 @@ def status(env: "pipeline.Env", cid: str = DEFAULT_ID, db=None) -> str:
     stages = env.store.count_by_stage(cid)
     lines = [f"Campaign: {c['name']}", f"Status: {c['status']}" + (f" ({c['stop_reason']})" if c["stop_reason"] else "") + f", mode {c['mode']}",
              f"Authorization: {auth['state']}" + (f" ({auth['reason']})" if auth["reason"] else ""),
-             f"Offer: {pol.price_text(p)}; daily limit {p.daily_cap}; batch {p.batch_size}",
+             f"Offer: {pol.price_text(p)}; daily limit {p.daily_cap or 'none'}; batch {p.batch_size}",
              "Businesses by stage: " + (", ".join(f"{k} {v}" for k, v in stages.items()) or "none yet")]
     held = [b for b in env.store.businesses(cid) if b["status"] in ("held", "backlog")][:5]
     for b in held:
