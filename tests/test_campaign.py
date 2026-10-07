@@ -861,6 +861,31 @@ class StartNowTests(unittest.TestCase):
         self.assertTrue(control.start(r.env, r.worker.db, "c1", by="t").startswith("NEEDS_AUTH: "))
 
 
+class PrepareTests(unittest.TestCase):
+    def test_prepare_builds_and_drafts_but_never_sends(self):
+        from worker.campaign import control
+        r = Rig(self, [biz(1), biz(2)], mode="draft")
+        out = control.prepare(r.env, r.worker.db, "c1", by="t")
+        self.assertIn("Nothing is queued or emailed", out)
+        r.drain()
+        r.enqueue("campaign_send", key="check"); r.drain()
+        self.assertEqual(len(r.businesses()), 2)
+        self.assertEqual(r.mailer.sent, [])
+        self.assertEqual(pol.authorization(r.store, "c1", r.now[0])["state"], "none")
+        self.assertTrue(all(b["data"].get("offer", {}).get("state") == "drafted" for b in r.businesses() if b["stage"] == "preview"))
+
+    def test_prepare_refuses_once_authorized(self):
+        from worker.campaign import control
+        r = Rig(self, [biz(1)])
+        self.assertIn("already authorized", control.prepare(r.env, r.worker.db, "c1", by="t"))
+
+    def test_a_stopped_campaign_is_not_prepared(self):
+        from worker.campaign import control
+        r = Rig(self, [biz(1)], mode="draft")
+        control.stop(r.env, "c1", by="t")
+        self.assertNotIn("Preparing", control.prepare(r.env, r.worker.db, "c1", by="t"))
+
+
 class BriefingDetailTests(unittest.TestCase):
     def test_briefing_counts_no_website_and_names_who_is_interested(self):
         from core import away
