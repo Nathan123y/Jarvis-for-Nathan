@@ -74,3 +74,4 @@ config/events.db
 config/events.db-wal
 config/events.db-shm
 config/worker/
+config/dryrun/
