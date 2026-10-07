@@ -113,6 +113,29 @@ def start(env: "pipeline.Env", db, cid: str = DEFAULT_ID, *, by: str) -> str:
     return f"Started. Finding businesses with no or weak websites and building their concepts now. {when} The Mac has to stay awake for the worker."
 
 
+def prepare(env: "pipeline.Env", db, cid: str = DEFAULT_ID, *, by: str) -> str:
+    """Find businesses and build + draft everything, WITHOUT authorization: nothing is queued or sent.
+
+    This is the safe way to let it run while you are away. When you come back, review the drafts and
+    run `enable`: drafts made here are queued then. Refuses once the campaign is authorized
+    (use `start` for that), so it can never be the thing that sends."""
+    c = ensure(env.store, cid)
+    now = env.clock()
+    if pol.authorization(env.store, cid, now)["state"] == "active":
+        return "The campaign is already authorized, so it sends on its own. Use start to run it now, or stop it first."
+    if c["status"] == "paused":
+        resume(env, cid, by=by)
+    elif c["status"] != "active":
+        return f"The campaign is {c['status']}, so nothing was started."
+    env.store.set_campaign(cid, now, mode="draft")
+    pipeline.schedule_campaign(db, cid)
+    slot = int(now // 600)
+    db.enqueue("campaign_discover", {"campaign_id": cid}, campaign_id=cid, unique_key=f"discover:{cid}:prep:{slot}")
+    env.store.audit(cid, by, "prepare", {}, now)
+    return ("Preparing: finding businesses and building and drafting their concepts. Nothing is queued or emailed. "
+            "Check status later; when you like the drafts, run enable and they are queued then. The Mac has to stay awake for the worker.")
+
+
 def stop(env: "pipeline.Env", cid: str = DEFAULT_ID, *, by: str, reason: str = "stopped by you") -> str:
     ensure(env.store, cid)
     pol.revoke(env.store, cid, by=by, reason=reason, now=env.clock())
