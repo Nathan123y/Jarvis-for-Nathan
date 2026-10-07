@@ -76,7 +76,7 @@ def _r(name: str, ok: bool, detail: str = "", required: bool = True) -> dict:
     return {"check": name, "ok": bool(ok), "detail": detail, "required": required}
 
 
-def static_checks(html: str, theme: str, used: dict, sender: str) -> list[dict]:
+def static_checks(html: str, theme: str, used: dict, sender: str, tokens: Optional[dict] = None) -> list[dict]:
     d = _Doc()
     d.feed(html)
     text = " ".join(d.text)
@@ -99,7 +99,7 @@ def static_checks(html: str, theme: str, used: dict, sender: str) -> list[dict]:
     res.append(_r("forms_disabled", "form" not in d.tags and "input" not in d.tags and "button" not in d.tags and "disabled" in text.lower()))
     bad_anchor = [h for h in d.hrefs if h.startswith("#") and h[1:] not in d.ids]
     res.append(_r("anchors_resolve", not bad_anchor, ", ".join(bad_anchor)))
-    t = THEMES[theme]
+    t = tokens or THEMES[theme]
     low = [f"{a}/{b}={contrast(t[a], t[b]):.1f}" for a, b in PAIRS if contrast(t[a], t[b]) < 4.5]
     res.append(_r("contrast_wcag_aa", not low, ", ".join(low) or "all text pairs >= 4.5"))
     res.append(_r("page_weight", len(html.encode()) < 60_000, f"{len(html.encode())} bytes"))
@@ -153,6 +153,78 @@ def visual_check(html_path: Path, out_dir: Path) -> dict:
     except Exception as exc:
         return {"status": "not_run", "detail": f"browser could not run: {type(exc).__name__}", "screens": screens}
     return {"status": "failed" if problems else "passed", "detail": "; ".join(problems) or "no overflow, readable text", "screens": screens}
+
+
+_AUDIT_JS = r"""
+() => {
+  const parse = (c) => {
+    let m = c.match(/rgba?\(([^)]+)\)/);
+    if (!m) return null;
+    const p = m[1].split(/[ ,\/]+/).filter(Boolean).map(Number);
+    return {r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1};
+  };
+  const lum = (c) => { const f = v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b); };
+  const over = (top, bot) => ({r: top.r * top.a + bot.r * (1 - top.a), g: top.g * top.a + bot.g * (1 - top.a),
+                               b: top.b * top.a + bot.b * (1 - top.a), a: 1});
+  const out = [];
+  let checked = 0, skipped = 0;
+  for (const el of document.querySelectorAll('body *')) {
+    const own = [...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim());
+    if (!own) continue;
+    const cs = getComputedStyle(el);
+    if (cs.visibility === 'hidden' || cs.display === 'none') continue;
+    let fg = parse(cs.color);
+    if (!fg) { skipped++; continue; }
+    let bg = null, unknown = false;
+    const chain = [];
+    for (let n = el; n; n = n.parentElement) {
+      const s = getComputedStyle(n);
+      if (s.backgroundImage !== 'none') { unknown = true; break; }
+      const b = parse(s.backgroundColor);
+      if (b && b.a > 0) { chain.push(b); if (b.a >= 0.999) break; }
+    }
+    if (unknown) { skipped++; continue; }
+    bg = {r: 255, g: 255, b: 255, a: 1};
+    for (let i = chain.length - 1; i >= 0; i--) bg = over(chain[i], bg);
+    fg = over(fg, bg);
+    const l1 = lum(fg), l2 = lum(bg);
+    const ratio = (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+    const size = parseFloat(cs.fontSize), bold = parseInt(cs.fontWeight, 10) >= 700;
+    const need = (size >= 24 || (size >= 18.66 && bold)) ? 3 : 4.5;
+    checked++;
+    if (ratio < need) out.push(el.tagName.toLowerCase() + ' "' + el.textContent.trim().slice(0, 30) + '" ' + ratio.toFixed(1) + ':1');
+  }
+  return {bad: out.slice(0, 8), checked, skipped};
+}
+"""
+
+
+def contrast_audit(html_path: Path) -> dict:
+    """Measure the real contrast of every piece of text as the browser draws it (for pages whose colours
+    we did not choose ourselves). {"status": passed|failed|not_run, "detail"}"""
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception:
+        return {"status": "not_run", "detail": "Playwright is not installed"}
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            try:
+                page = browser.new_page(viewport={"width": 1280, "height": 800})
+                page.goto(html_path.resolve().as_uri())
+                res = page.evaluate(_AUDIT_JS)
+            finally:
+                browser.close()
+    except Exception as exc:
+        return {"status": "not_run", "detail": f"browser could not run: {type(exc).__name__}"}
+    if res["bad"]:
+        return {"status": "failed", "detail": "low contrast: " + "; ".join(res["bad"])}
+    if res["checked"] == 0:
+        return {"status": "failed", "detail": "no text could be measured"}
+    if res["skipped"] > res["checked"] // 4:
+        return {"status": "failed", "detail": f"{res['skipped']} text blocks sit on backgrounds that could not be measured"}
+    return {"status": "passed", "detail": f"{res['checked']} text blocks measured, all readable"}
 
 
 def verdict(static: list[dict], visual: Optional[dict], require_visual: bool) -> tuple[bool, str]:

@@ -43,6 +43,8 @@ PLUGIN_SETTINGS = {
          "placeholder": "git@github.com:you/jarvis-previews.git"},
         {"key": "preview_base_url", "type": "text", "label": "Preview address (https URL where that repo is served)",
          "placeholder": "https://you.github.io/jarvis-previews"},
+        {"key": "ai_sites", "type": "text", "label": "Let Gemini design each site (on or off; off uses the built-in designs only)",
+         "placeholder": "on"},
     ],
 }
 

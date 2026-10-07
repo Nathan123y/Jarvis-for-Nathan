@@ -11,7 +11,7 @@
     python3 -m worker logs [N]       the last N log lines
     python3 -m worker install | uninstall | restart | rollback    the per-user launchd job (macOS)
     python3 -m worker sales import FILE.csv   count verified payments from a payment export
-    python3 -m worker campaign dryrun|status|review|enable|start|pause|resume|stop|mode   the website campaign
+    python3 -m worker campaign dryrun|designtest|status|review|enable|start|pause|resume|stop|mode   the website campaign
 """
 from __future__ import annotations
 
@@ -201,6 +201,40 @@ def cmd_logs(args) -> int:
     return 0
 
 
+def _designtest(d) -> int:
+    """Ask Gemini to design three made-up businesses for real, run every check, and save the pages to look at."""
+    from worker.campaign import pipeline
+    env = pipeline.default_env()
+    if not env.designer:
+        print("No Gemini key found (config/api_keys.json) or the AI designer is switched off in Plugin Settings. Nothing to test.")
+        return 1
+    base = d.parent / "dryrun" / "ai-sites"
+    base.mkdir(parents=True, exist_ok=True)
+    samples = [
+        ({"name": "Redwood Plumbing", "category": "plumber", "city": "San Jose", "address": "120 Almaden Ave, San Jose, CA 95110",
+          "phone": "(408) 555-0142", "email": "hello@redwoodplumbing.example"}, {"hours": "Mo-Fr 08:00-17:00"}),
+        ({"name": "Clover Hair Studio", "category": "hairdresser", "city": "Sunnyvale", "address": "88 Murphy Ave, Sunnyvale, CA 94086",
+          "phone": "(408) 555-0177", "email": "book@cloverhair.example"}, {}),
+        ({"name": "Alder Auto Care", "category": "car_repair", "city": "Santa Clara", "address": "2100 El Camino Real, Santa Clara, CA 95050",
+          "phone": "(408) 555-0119", "email": "service@alderauto.example"}, {"hours": "Mo-Sa 07:30-18:00"}),
+    ]
+    for i, (biz, facts) in enumerate(samples, 1):
+        out = base / str(i)
+        out.mkdir(exist_ok=True)
+        print(f"Designing {biz['name']} ... (this can take a minute)")
+        site, notes = pipeline._ai_site(env, biz, facts, "Dry Run Sender", out)
+        if site is None:
+            print("  The AI page did not pass the checks, so the campaign would use the built-in design here.")
+            for n in notes:
+                print("   -", n[:300])
+            site = pipeline.build.render(biz, facts, sender="Dry Run Sender")
+        else:
+            print("  Passed every check.")
+        (out / "index.html").write_text(site.files["index.html"], encoding="utf-8")
+    print(f"\nOpen these in a browser: {base}/1/index.html, {base}/2/index.html, {base}/3/index.html")
+    return 0
+
+
 def cmd_campaign(args) -> int:
     campaign = _campaign()
     if campaign is None:
@@ -214,6 +248,8 @@ def cmd_campaign(args) -> int:
         shutil.rmtree(base, ignore_errors=True)
         print(dryrun.report(dryrun.run(base, visual=args.visual)))
         return 0
+    if args.action == "designtest":
+        return _designtest(d)
     env = pipeline.default_env()
     db = jobs_mod.JobDB(d / "jobs.db")
     me = "cli"
@@ -288,7 +324,7 @@ def main(argv=None) -> int:
     sub.add_parser("selftest").set_defaults(fn=cmd_selftest)
     lg = sub.add_parser("logs"); lg.add_argument("n", type=int, nargs="?", default=40); lg.set_defaults(fn=cmd_logs)
     cp = sub.add_parser("campaign")
-    cp.add_argument("action", choices=["dryrun", "status", "review", "enable", "start", "pause", "resume", "stop", "mode"])
+    cp.add_argument("action", choices=["dryrun", "designtest", "status", "review", "enable", "start", "pause", "resume", "stop", "mode"])
     cp.add_argument("value", nargs="?")
     cp.add_argument("--visual", action="store_true", help="dryrun: also run the browser check (needs Playwright)")
     cp.set_defaults(fn=cmd_campaign)
