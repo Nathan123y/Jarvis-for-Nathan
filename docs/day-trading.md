@@ -271,3 +271,26 @@ comparison over.
 - Known differences from the replay: real stops are triggered by Alpaca's own price feed, not the
   candles the backtest uses, and the live trader skips a breakout whose price has already run
   away, which the backtest does not model.
+
+## Learning from past days
+
+After each day's result is recorded, the trader re-tests its own rule on up to ~18 months of
+minute bars and asks whether a slightly different setting would have done better.
+
+- Only three settings can ever change: `range_minutes` (5/10/15/20/30), `last_entry_minute`
+  (12:00/13:00/14:00 ET) and `flatten_before_close` (15/30/60). Risk, position size and the daily
+  loss halt are never touched.
+- A change is considered only with at least 120 trading days of prices and enough trades, one step
+  at a time, and it must win on older days *and* on the newest 30% it was not chosen on. At most
+  one change per 20 trading days; a change that then does clearly worse is rolled back.
+- Default mode is `propose`: it never changes anything by itself. You approve with `learn apply`.
+- Early on it will mostly say "not enough data yet". That is expected and is not a bug.
+
+```
+python3 -m trading.day learn status        # what it knows, what it proposes
+python3 -m trading.day learn run           # run the analysis now (first run downloads prices, a few minutes)
+python3 -m trading.day learn mode auto     # or propose / off
+python3 -m trading.day learn apply         # accept a proposal (applies from the next session)
+python3 -m trading.day learn reject
+python3 -m trading.day learn revert        # back to the previous settings
+```

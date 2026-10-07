@@ -61,12 +61,16 @@ class DayRunner:
     def __init__(self, broker, journal: Journal, *, cfg: DayConfig = DayConfig(),
                  log: Callable[[str], None] = print, clock: Callable[[], float] = time.monotonic,
                  analyst: Optional[Callable[[str], dict]] = None,
-                 sleep: Callable[[float], None] = time.sleep):
-        """`analyst`, if given, is called with a trading day ("YYYY-MM-DD") and returns that day's
+                 sleep: Callable[[float], None] = time.sleep,
+                 after_day: Optional[Callable[[str], None]] = None):
+        """`after_day`, if given, is called once with the trading day after its result is recorded
+        (on its own thread, errors ignored): the nightly learning review uses it.
+        `analyst`, if given, is called with a trading day ("YYYY-MM-DD") and returns that day's
         plan (see trading.day.analyst) or raises PlanError. Without it the trader watches
         `cfg.symbols` exactly as before."""
         self.broker, self.journal, self.cfg = broker, journal, cfg
         self.analyst = analyst
+        self.after_day = after_day
         self._log, self._clock, self._sleep = log, clock, sleep
         self._last_plan_try = -1e9
         self.hint = IDLE_MIN
@@ -357,6 +361,17 @@ class DayRunner:
         today["finished"] = True
         self._save(today)
         self._log("flat for the day; result recorded")
+        if self.after_day is not None and not today.get("learned"):
+            today["learned"] = True
+            self._save(today)
+            import threading
+
+            def _go(callback=self.after_day):
+                try:
+                    callback(day)
+                except Exception:                           # never let a review touch trading
+                    pass
+            threading.Thread(target=_go, daemon=True, name="learn-nightly").start()
 
     def _record_day(self, day: str, account: dict) -> bool:
         """Write the day's per-symbol results and an equity snapshot. False if Alpaca's order

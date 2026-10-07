@@ -8,6 +8,7 @@
     run         start the automatic day trader (leave it running; Ctrl+C stops it)
                   add --analyst to let the pre-market analyst choose what to trade each day
     report      results so far, next to simply holding SPY, with estimated costs
+    learn       the learning loop: status | run | mode propose|auto|off | apply | reject | revert
     pause       stop buying (it still sells what it holds, on schedule)
     resume      start buying again
     stop        stop a runner that is going in the background
@@ -233,15 +234,19 @@ def cmd_run(args) -> int:
             print("--analyst needs the Gemini key Jarvis already uses, and none was found. Add it, or start "
                   "without --analyst to run the plain rule on SPY and QQQ.")
             return 1
+    from trading.day import learn
+    tuned = learn.overrides()
+    cfg = learn.effective_cfg(cfg)
     runner = DayRunner(broker, journal, cfg=cfg, log=_stamp,
-                       analyst=(lambda day: make_plan(broker, day)) if use_analyst else None)
+                       analyst=(lambda day: make_plan(broker, day)) if use_analyst else None,
+                       after_day=lambda day: learn.nightly(broker, journal, day, log=_stamp))
     left = "flat"
     try:
         if args.once:
             print(runner.step())
             return 0
         _stamp("Day trader running with practice money only. Ctrl+C stops it.")
-        _stamp(f"Sizes: {size_text(cfg)}" + (" (the standard)." if cfg == DayConfig() else " (bigger or smaller "
+        _stamp(f"Sizes: {size_text(cfg)}" + (" (the standard)." if (cfg.risk_per_trade, cfg.max_position_pct) == (DayConfig().risk_per_trade, DayConfig().max_position_pct) else " (bigger or smaller "
                "than standard: gains and losses scale with it)."))
         journal.record("config", risk_pct=round(cfg.risk_per_trade * 100, 4),
                        max_fund_pct=round(cfg.max_position_pct * 100, 4), analyst=use_analyst)
@@ -254,6 +259,8 @@ def cmd_run(args) -> int:
             _stamp(f"Up to {MAX_PICKS} picks a day, so if every stop were hit in one day it could lose up to about "
                    f"{MAX_PICKS * cfg.risk_per_trade * 100:.2g}% of the account (the {cfg.daily_loss_halt * 100:g}% "
                    "daily-loss halt sells everything sooner if the account is down that much).")
+        if tuned:
+            _stamp(f"Using approved learned settings: {learn.describe(tuned)}. (`learn status` shows why; `learn revert` undoes it.)")
         _stamp("It looks every 15 seconds in market hours and sells everything before the close. "
                "Keep this Mac awake and online during the session.")
         try:
@@ -409,6 +416,57 @@ def cmd_autostart(args) -> int:
     return 0
 
 
+def cmd_learn(args) -> int:
+    from trading.day import learn
+    state = learn.load()
+    today = date.today().isoformat()
+    action = args.action
+    if action == "status":
+        print(learn.status_text(state))
+        return 0
+    if action == "mode":
+        if args.value not in ("propose", "auto", "off"):
+            print("Use: learn mode propose | auto | off")
+            return 1
+        state["mode"] = args.value
+        learn._note(state, today, "mode", f"Learning mode set to {args.value}.")
+        learn.save(state)
+        print(f"Learning mode: {args.value}.")
+        return 0
+    if action == "apply":
+        if not learn.apply_pending(state, today, "you approved it"):
+            print("Nothing is waiting for approval.")
+            return 1
+        learn.save(state)
+        print(f"Approved. From the next session the trader uses {learn.describe(state['applied'])}.")
+        return 0
+    if action == "reject":
+        if not state.get("pending"):
+            print("Nothing is waiting for approval.")
+            return 1
+        learn._note(state, today, "rejected", f"You declined: {state['pending']['text']}")
+        state["pending"] = None
+        learn.save(state)
+        print("Declined.")
+        return 0
+    if action == "revert":
+        if not learn.revert(state, today, "you asked"):
+            print("There is no earlier setting to go back to.")
+            return 1
+        learn.save(state)
+        print(f"Back to {learn.describe(state['applied'])}.")
+        return 0
+    if action == "run":
+        state["last_run_day"] = None
+        learn.save(state)
+        print("Updating prices and testing alternatives (the first run downloads about a year and a half of "
+              "one-minute prices and can take several minutes).")
+        res = learn.nightly(make_broker(), day_journal(), today, log=_stamp)
+        print(learn.status_text())
+        return 0 if "skipped" not in res else 1
+    return 1
+
+
 def cmd_pause(args) -> int:
     day_journal().pause()
     print("Paused. The day trader will make no new buys. It still sells what it holds on schedule. "
@@ -442,6 +500,7 @@ def main(argv=None) -> int:
                                     ("autostart", cmd_autostart, "start the trader by itself every weekday (macOS)"),
                                     ("run", cmd_run, "run the automatic day trader"),
                                     ("report", cmd_report, "results versus holding SPY"),
+                                    ("learn", cmd_learn, "the learning loop: status | run | mode | apply | reject | revert"),
                                     ("pause", cmd_pause, "stop new buys"),
                                     ("resume", cmd_resume, "allow new buys again"),
                                     ("stop", cmd_stop, "stop the background day trader")):
@@ -463,6 +522,9 @@ def main(argv=None) -> int:
                            help="let the pre-market analyst choose what to trade each day (AI reading of "
                                 "prices and news; the breakout rule still decides entries and stops)"
                                 if name in ("run", "autostart") else "also check what the analyst needs")
+        if name == "learn":
+            p.add_argument("action", choices=("status", "run", "mode", "apply", "reject", "revert"))
+            p.add_argument("value", nargs="?")
         if name == "analyst":
             p.add_argument("--show-input", action="store_true", help="also print exactly what the model is shown")
         if name == "run":
