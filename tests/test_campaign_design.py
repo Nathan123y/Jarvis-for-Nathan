@@ -53,6 +53,10 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(css, ":root{--a:#fff}")
         self.assertIn("<main", body)
 
+    def test_a_bare_hash_link_is_pointed_at_the_page(self):
+        self.assertIn('href="#main"', design.strip_harmless('<a href="#">x</a>'))
+        self.assertIn('href="#services"', design.strip_harmless('<a href="#services">x</a>'))
+
     def test_script_tags_are_still_rejected(self):
         self.assertTrue(design.body_problems('<header><nav></nav></header><main id="main"><script>x</script></main>'))
 
