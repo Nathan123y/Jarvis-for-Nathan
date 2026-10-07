@@ -264,6 +264,15 @@ def _reply_status_by_business(events: list[dict]) -> dict:
     return latest
 
 
+def _interested(events: list[dict]) -> list[str]:
+    """Names of businesses whose latest reply is interested or a call request (oldest first)."""
+    latest = _reply_status_by_business(events)
+    names: dict = {}
+    for e in sorted((e for e in events if e["kind"] == "reply_received"), key=lambda e: (e["ts"], e["id"])):
+        names[e["task_id"] or e["source_id"]] = (e["title"] or "").strip()
+    return [names[k] or "a business" for k, st in latest.items() if st in ("interested", "call_request")]
+
+
 def funnel(events: list[dict]) -> dict:
     """Distinct-business counts per stage. Replies are split into statuses that always add up."""
     sent = _ids(events, "offer_sent", lambda e: e["status"] == "sent")
@@ -272,7 +281,11 @@ def funnel(events: list[dict]) -> dict:
     by = {s: 0 for s, _ in REPLY_WORDS}
     for s in replies.values():
         by[s] += 1
-    return {"found": len(_ids(events, "biz_found")), "qualified": len(_ids(events, "biz_qualified")),
+    qualified = _ids(events, "biz_qualified")
+    no_site = _ids(events, "biz_qualified", lambda e: (e["detail"] or {}).get("basis") == "no_website_verified")
+    return {"found": len(_ids(events, "biz_found")), "qualified": len(qualified),
+            "no_website": len(no_site), "weak_website": len(qualified - no_site),
+            "interested_names": _interested(events),
             "built": len(_ids(events, "site_built")), "checked": len(_ids(events, "site_checked")),
             "previews": len(_ids(events, "preview_published")), "sent": len(sent), "held": len(held - sent),
             "replied": len(replies), "reply_status": by,
@@ -315,6 +328,8 @@ def _outreach_lines(name: str, f: dict, awaiting: Optional[int], replies_state: 
     if f["found"] or f["qualified"]:
         spoken.append(f"researched {f['found']} businesses and qualified {f['qualified']}" if f["found"]
                       else f"qualified {f['qualified']} businesses")
+    if f["qualified"]:
+        spoken.append(f"{f['no_website']} had no website" + (f" and {f['weak_website']} had a weak one" if f["weak_website"] else ""))
     if f["built"] or f["previews"]:
         spoken.append(f"built {f['built']} website concepts, {f['previews']} with a live preview")
     if f["sent"]:
@@ -322,6 +337,8 @@ def _outreach_lines(name: str, f: dict, awaiting: Optional[int], replies_state: 
     if f["held"]:
         spoken.append(f"held {_plural(f['held'], 'send')} because delivery wasn't confirmed")
     lines = [f"  {name}"]
+    if f["qualified"]:
+        lines.append(f"    no website {f['no_website']} · weak website {f['weak_website']}")
     lines.append(f"    found {f['found']} · qualified {f['qualified']} · built {f['built']} · "
                  f"quality-checked {f['checked']} · preview published {f['previews']}")
     lines.append(f"    offers sent {f['sent']}" + (f" · held (unconfirmed) {f['held']}" if f["held"] else ""))
@@ -330,8 +347,12 @@ def _outreach_lines(name: str, f: dict, awaiting: Optional[int], replies_state: 
         bits = [f"{r[k]} {label}" for k, label in REPLY_WORDS if r[k]]
         lines.append(f"    replies {f['replied']}" + (": " + ", ".join(bits) if bits else "")
                      + (f" · still waiting on {awaiting}" if awaiting is not None else ""))
+        if f["interested_names"]:
+            lines.append("    INTERESTED: " + ", ".join(f["interested_names"][:8]))
         if f["replied"]:
             spoken.append(f"got {_plural(f['replied'], 'reply')}")
+        if f["interested_names"]:
+            spoken.append("interested: " + ", ".join(f["interested_names"][:5]))
     else:
         lines.append(f"    replies: {replies_state} (reply checking {replies_state}; not counted as zero)")
     if f["paid"]:

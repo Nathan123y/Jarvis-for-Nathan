@@ -664,7 +664,7 @@ class ReplyFlowTests(unittest.TestCase):
         self.replies(r)
         statuses = sorted(e["status"] for e in r.events.events(kinds=("reply_received",)))
         self.assertEqual(statuses, ["call_request", "interested"])
-        self.assertEqual(r.events.sync_state("gmail")["state"], "ok")
+        self.assertEqual(r.events.sync_state("gmail", now=r.now[0])["state"], "ok")
         self.replies(r)                                               # re-reading adds nothing
         self.assertEqual(len(r.events.events(kinds=("reply_received",))), 2)
 
@@ -796,6 +796,68 @@ class ControlTests(unittest.TestCase):
         r = Rig(self, [biz(1)], mode="draft", ident={"sender_name": "Sam", "postal_address": ""})
         self.assertIn("postal address", control.review(r.env, "c1"))
         self.assertIn("Still needed", control.status(r.env, "c1"))
+
+
+class StartNowTests(unittest.TestCase):
+    def test_start_needs_authorization_and_never_grants_it(self):
+        from worker.campaign import control
+        r = Rig(self, [biz(1)], mode="draft")
+        out = control.start(r.env, r.worker.db, by="t")
+        self.assertTrue(out.startswith("NEEDS_AUTH: "))
+        self.assertEqual(pol.authorization(r.store, "c1", r.now[0])["state"], "none")
+        self.assertEqual(r.worker.db.list(), [])                       # nothing queued
+
+    def test_start_runs_discovery_now_and_resumes_a_paused_campaign(self):
+        from worker.campaign import control
+        r = Rig(self, [biz(1), biz(2)])
+        control.pause(r.env, "c1", by="t")
+        out = control.start(r.env, r.worker.db, "c1", by="t")
+        self.assertIn("Started", out)
+        self.assertIn("within about ten minutes", out)              # Tuesday 10am: inside the window
+        self.assertEqual(r.store.campaign("c1")["status"], "active")
+        r.drain()
+        self.assertEqual(len(r.businesses()), 2)
+        r.enqueue("campaign_send", key="next-ten-minute-check"); r.drain()   # the 10-minute send check picks the offers up
+        self.assertEqual(len(r.mailer.sent), 2)
+
+    def test_start_twice_does_not_queue_twice_and_outside_hours_says_so(self):
+        from worker.campaign import control
+        r = Rig(self, [biz(1)])
+        r.now[0] = TUE_8PM
+        out = control.start(r.env, r.worker.db, "c1", by="t")
+        self.assertIn("outside sending hours", out)
+        control.start(r.env, r.worker.db, "c1", by="t")
+        self.assertEqual(len([j for j in r.worker.db.list() if j["kind"] == "campaign_discover"]), 1)
+        r.drain()
+        self.assertEqual(r.mailer.sent, [])                            # the policy still holds the send window
+
+    def test_a_stopped_campaign_cannot_be_started(self):
+        from worker.campaign import control
+        r = Rig(self, [biz(1)])
+        control.stop(r.env, "c1", by="t")
+        self.assertTrue(control.start(r.env, r.worker.db, "c1", by="t").startswith("NEEDS_AUTH: "))
+
+
+class BriefingDetailTests(unittest.TestCase):
+    def test_briefing_counts_no_website_and_names_who_is_interested(self):
+        from core import away
+        r = Rig(self, [biz(1), biz(2, website="http://old.biz2.test")],
+                pages={"http://old.biz2.test": A.FetchResult(url="http://old.biz2.test", status=200, html="<html><body>hi</body></html>")}
+                if hasattr(A, "FetchResult") else None)
+        r.discover()
+        r.enqueue("campaign_send", key="s"); r.drain()
+        r.mailer.add_reply(f"t{r.mailer.sent[0]['message_id']}", "Yes I'm interested, what's the next step?", sender="owner1@biz1.test", mid="a")
+        r.enqueue("campaign_replies", key="rr"); r.drain()
+        events = r.events.events()
+        f = away.funnel(events)
+        self.assertEqual(f["no_website"] + f["weak_website"], f["qualified"])
+        self.assertGreaterEqual(f["no_website"], 1)
+        text, lines = away._outreach_lines("c", f, 0, "ok")
+        self.assertIn("had no website", text)
+        self.assertIn("no website", "\n".join(lines))
+        if f["interested_names"]:
+            self.assertIn("INTERESTED", "\n".join(lines))
+            self.assertIn("interested:", text)
 
 
 class SalesImportTests(unittest.TestCase):

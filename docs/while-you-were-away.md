@@ -38,3 +38,7 @@ A Mac that sleeps pauses the campaign. For true 24/7: run the same worker on an 
 
 ## Costs
 New spending: $0. Free services used: OpenStreetMap Overpass (polite, one query at a time), GitHub Pages, your Gmail, Playwright.
+
+## Start it by voice, and the briefing
+- Say **"Jarvis, start selling websites"** (or "run the website campaign now"). If the campaign is already authorized it resumes if paused, and finds, builds and pitches right away instead of waiting for tomorrow's run; emails still only go out in the sending hours, within the daily limit. If it is not authorized yet, Jarvis asks you once to approve it. Terminal equivalent: `python3 -m worker campaign start`. "Pause the website campaign" pauses it.
+- The "while you were away" briefing now says how many businesses had no website (and how many a weak one), how many concepts were built and previewed, how many offers were sent, and who replied, naming the businesses that are interested or asked for a call. Counts come only from recorded events; if reply checking is down it says so rather than reporting zero.

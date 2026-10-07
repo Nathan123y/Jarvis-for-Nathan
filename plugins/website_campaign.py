@@ -2,6 +2,7 @@
 
   status    where it stands (counts by stage, held items, what is still needed)
   review    the campaign review: area, offer, sender, limits, stop conditions, sample messages
+  start     "start selling websites": run now (find, build, pitch) without waiting for tomorrow's run
   enable    the ONE-TIME authorization (asks you yes/no once). After it, no per-email approval.
   pause / resume / stop (stop revokes the authorization) / mode (research or draft)
   dryrun    three made-up businesses end to end; nothing is sent or published
@@ -18,14 +19,16 @@ PLUGIN = {
         "Control the autonomous local-business website campaign (finds San Jose/Bay Area businesses with poor or "
         "no websites, builds concept previews, and emails offers from the spam Gmail). Use for 'how is the website "
         "campaign going', 'show me the campaign review', 'turn on the website campaign', 'pause/resume/stop the "
-        "campaign', 'run the dry run'. Actions: status, review, enable (asks the user to confirm once), pause, "
-        "resume, stop, mode (value research|draft), dryrun. Say only what the tool returns. Never claim anything "
+        "campaign', 'run the dry run', 'start selling websites', 'run the website campaign now'. Actions: "
+        "status, review, start (run now; use for 'start selling websites'), enable (asks the user to confirm once), "
+        "pause (use for 'pause/stop selling websites for now'), resume, stop (revokes authorization), "
+        "mode (value research|draft), dryrun. Say only what the tool returns. Never claim anything "
         "was sent unless the status says so."
     ),
     "parameters": {
         "type": "OBJECT",
         "properties": {
-            "action": {"type": "STRING", "enum": ["status", "review", "enable", "pause", "resume", "stop", "mode", "dryrun"]},
+            "action": {"type": "STRING", "enum": ["status", "review", "start", "enable", "pause", "resume", "stop", "mode", "dryrun"]},
             "value": {"type": "STRING", "description": "For mode: research or draft"},
         },
         "required": ["action"],
@@ -49,6 +52,20 @@ def _env_and_db():
     from worker.campaign import pipeline
     from worker.runtime import default_dir
     return pipeline.default_env(), jobs.JobDB(default_dir() / "jobs.db")
+
+
+def _worker_note() -> str:
+    """Honest warning when the background worker isn't running (nothing happens without it)."""
+    try:
+        import time
+        from core.events import Store
+        from worker.runtime import default_dir
+        hb = Store(default_dir().parent / "events.db").get("worker_heartbeat")
+        if isinstance(hb, (int, float)) and time.time() - hb < 300:
+            return ""
+    except Exception:
+        pass
+    return " The background worker doesn't look like it's running, so nothing will happen until it is (python3 -m worker install)."
 
 
 def run(parameters: dict, player=None, session_memory=None) -> str:
@@ -77,6 +94,11 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
                 player.show_content("WEBSITE CAMPAIGN REVIEW", text[:3800])
             tail = text.split("BEFORE IT CAN START:")[-1].strip() if "BEFORE IT CAN START:" in text else ""
             return "The campaign review is on screen." + (f" Before it can start: {tail}" if tail else "")
+        if action == "start":
+            out = control.start(env, db, by="voice")
+            if not out.startswith("NEEDS_AUTH: "):
+                return out + _worker_note()
+            action = "enable"          # not authorized yet: ask once, then the authorization itself starts the run
         if action == "enable":
             missing = control.readiness(env, check_gmail=True)
             if missing:
