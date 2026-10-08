@@ -973,3 +973,44 @@ class NetworkTests(unittest.TestCase):
         r.discover()
         jobs = r.worker.db.list()
         self.assertIn("certificate verify failed", " ".join(str(j.get("last_error")) for j in jobs))
+
+
+class DiscoverResilienceTests(unittest.TestCase):
+    def test_a_busy_search_service_is_asked_again(self):
+        import urllib.error
+        calls, slept = [], []
+
+        def fetch(url, body):
+            calls.append(1)
+            if len(calls) < 3:
+                raise urllib.error.HTTPError(url, 429, "Too Many Requests", {}, None)
+            return {"elements": []}
+        prov = D.OverpassProvider(fetch=fetch, sleep=slept.append)
+        self.assertEqual(prov.search("san-jose", ["plumber"]), [])
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(slept[-2:], [20.0, 60.0])
+
+    def test_a_certificate_failure_is_not_retried(self):
+        import ssl, urllib.error
+        calls = []
+
+        def fetch(url, body):
+            calls.append(1)
+            raise urllib.error.URLError(ssl.SSLCertVerificationError("bad"))
+        prov = D.OverpassProvider(fetch=fetch, sleep=lambda s: None)
+        with self.assertRaises(urllib.error.URLError):
+            prov.search("san-jose", ["plumber"])
+        self.assertEqual(len(calls), 1)
+
+    def test_one_failing_area_does_not_lose_the_others(self):
+        r = Rig(self, [biz(1), biz(2)])
+        good = r.env.provider
+
+        class Flaky:
+            def search(self, area, cats):
+                if area != "san-jose":
+                    raise RuntimeError("busy")
+                return good.search(area, cats)
+        r.env.provider = Flaky()
+        r.discover()
+        self.assertEqual(len(r.businesses()), 2)
