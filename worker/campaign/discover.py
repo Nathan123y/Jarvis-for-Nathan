@@ -180,12 +180,22 @@ class FixtureProvider:
 
 
 def select_candidates(found: list[dict], deduper: Deduper, limit: int) -> list[dict]:
-    """New businesses only, best leads first: a listed email (so there's a published contact) and no
-    listed website come first; ones with a site are kept too because the site may be poor."""
+    """New businesses only, the ones we can actually write to first.
+
+    A business with no listed website and no listed email has nowhere to find a published contact (the
+    audit reads the address off its own website), so it is a dead end for email and goes last. Order:
+    a listed email (then no listed website first, the clearest need), then a listed website (the audit
+    looks for a published email there and for problems), then the rest."""
     fresh = []
     for b in found:
         if deduper.is_new(b):
             deduper.add(b)
             fresh.append(b)
-    fresh.sort(key=lambda b: (not clean_email(b.get("email", "")), bool(b.get("website")), b["name"].lower()))
+
+    def tier(b):
+        has_email, has_site = bool(clean_email(b.get("email", ""))), bool(b.get("website"))
+        if has_email:
+            return 0 if not has_site else 1
+        return 2 if has_site else 3
+    fresh.sort(key=lambda b: (tier(b), b["name"].lower()))
     return fresh[:limit]
