@@ -62,7 +62,8 @@ class DayRunner:
                  log: Callable[[str], None] = print, clock: Callable[[], float] = time.monotonic,
                  analyst: Optional[Callable[[str], dict]] = None,
                  sleep: Callable[[float], None] = time.sleep,
-                 after_day: Optional[Callable[[str], None]] = None):
+                 after_day: Optional[Callable[[str], None]] = None,
+                 never_sit_out: bool = False):
         """`after_day`, if given, is called once with the trading day after its result is recorded
         (on its own thread, errors ignored): the nightly learning review uses it.
         `analyst`, if given, is called with a trading day ("YYYY-MM-DD") and returns that day's
@@ -70,6 +71,7 @@ class DayRunner:
         `cfg.symbols` exactly as before."""
         self.broker, self.journal, self.cfg = broker, journal, cfg
         self.analyst = analyst
+        self.never_sit_out = never_sit_out
         self.after_day = after_day
         self._log, self._clock, self._sleep = log, clock, sleep
         self._last_plan_try = -1e9
@@ -168,6 +170,13 @@ class DayRunner:
                 seen.add(symbol)
                 picks.append({**pick, "symbol": symbol, "conviction": clamp_conviction(pick.get("conviction"))})
         stand = plan.get("stand_aside") is True or not picks
+        if stand and self.never_sit_out:
+            # The analyst chose to sit the day out. Trade the standard rule on the usual funds at the smallest size instead.
+            picks = [{"symbol": sym, "conviction": 1,
+                      "why": "the analyst chose to sit out; trading the standard rule at the smallest size instead"}
+                     for sym in self.cfg.symbols if sym in allowed]
+            if picks:
+                return {**plan, "day": day, "picks": picks, "stand_aside": False, "analyst_sat_out": True}
         return {**plan, "day": day, "picks": [] if stand else picks, "stand_aside": stand}
 
     def _saved_plan(self, today: dict) -> Optional[dict]:
@@ -497,10 +506,16 @@ class DayRunner:
             if plan is None:
                 gave_up = (self._tries(today) >= PLAN_ATTEMPTS
                            or seconds >= self.cfg.last_entry_minute * 60)
-                return "no_plan_standing_aside" if gave_up else "waiting_for_plan"
-            watch = [p["symbol"] for p in plan.get("picks") or []]
-            if plan.get("stand_aside") or not watch:
-                return "plan_says_stand_aside"
+                if not gave_up:
+                    return "waiting_for_plan"
+                if not self.never_sit_out:
+                    return "no_plan_standing_aside"
+                self._note_once(today, "no_plan_trading_the_standard_rule")
+                plan = None                                 # no analyst plan: watch the usual funds below
+            if plan is not None:
+                watch = [p["symbol"] for p in plan.get("picks") or []]
+                if plan.get("stand_aside") or not watch:
+                    return "plan_says_stand_aside"
         undecided = [s for s in watch if s not in today["decided"]]
         if not undecided:
             return "done_for_entries"

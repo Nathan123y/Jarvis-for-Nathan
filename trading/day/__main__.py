@@ -239,7 +239,8 @@ def cmd_run(args) -> int:
     cfg = learn.effective_cfg(cfg)
     runner = DayRunner(broker, journal, cfg=cfg, log=_stamp,
                        analyst=(lambda day: make_plan(broker, day)) if use_analyst else None,
-                       after_day=lambda day: learn.nightly(broker, journal, day, log=_stamp))
+                       after_day=lambda day: learn.nightly(broker, journal, day, log=_stamp),
+                       never_sit_out=not getattr(args, "allow_sit_out", False))
     left = "flat"
     try:
         if args.once:
@@ -255,7 +256,9 @@ def cmd_run(args) -> int:
                    f"watch from a fixed list of {len(UNIVERSE)} funds and large stocks, and sizes each pick by its "
                    "confidence.")
             _stamp("A pick is still only bought if the opening-range breakout fires, with that rule's stop. "
-                   "If no plan can be made, it trades nothing that day.")
+                   + ("If the analyst sits a day out, or no plan can be made, it trades the standard rule on SPY and QQQ at the smallest size instead."
+                      if not getattr(args, "allow_sit_out", False) else
+                      "If the analyst sits a day out, or no plan can be made, it trades nothing that day."))
             _stamp(f"Up to {MAX_PICKS} picks a day, so if every stop were hit in one day it could lose up to about "
                    f"{MAX_PICKS * cfg.risk_per_trade * 100:.2g}% of the account (the {cfg.daily_loss_halt * 100:g}% "
                    "daily-loss halt sells everything sooner if the account is down that much).")
@@ -522,6 +525,9 @@ def main(argv=None) -> int:
                            help="let the pre-market analyst choose what to trade each day (AI reading of "
                                 "prices and news; the breakout rule still decides entries and stops)"
                                 if name in ("run", "autostart") else "also check what the analyst needs")
+        if name == "run":
+            p.add_argument("--allow-sit-out", action="store_true",
+                           help="let the analyst sit a day out and trade nothing (by default it trades the standard rule on SPY and QQQ at the smallest size instead)")
         if name == "learn":
             p.add_argument("action", choices=("status", "run", "mode", "apply", "reject", "revert"))
             p.add_argument("value", nargs="?")

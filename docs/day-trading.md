@@ -294,3 +294,7 @@ python3 -m trading.day learn apply         # accept a proposal (applies from the
 python3 -m trading.day learn reject
 python3 -m trading.day learn revert        # back to the previous settings
 ```
+
+### The analyst no longer sits a day out
+
+By default the trader now trades every weekday. If the pre-market analyst says "stand aside" (or no plan can be made), it trades the standard opening-range rule on SPY and QQQ at the smallest size (conviction 1) instead of doing nothing. The breakout rule and its stops still decide every entry. To get the old behaviour back, start it with `python3 -m trading.day run --analyst --allow-sit-out`. The start-up job picks the new default up on its own; no reinstall is needed.
