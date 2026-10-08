@@ -45,6 +45,9 @@ REPLY_WORDS = (("interested", "interested"), ("call_request", "asked for a call"
 NEEDS_YOU_REPLIES = ("call_request", "interested", "question", "complaint", "unclear")
 ATTENTION_KINDS = ("reply_received", "decision_needed", "job_failed", "job_paused",
                    "connection_missing", "campaign_stopped")
+# The outreach stages, used for the running totals ("how is the website business doing?").
+CAMPAIGN_KINDS = ("biz_found", "biz_qualified", "site_built", "site_checked", "preview_published",
+                  "offer_sent", "reply_received", "sale_paid", "delivered")
 
 
 # ── time ─────────────────────────────────────────────────────────────────────
@@ -91,8 +94,13 @@ def _usd(cents) -> str:
     return f"${cents / 100:,.2f}"
 
 
+_PLURALS = {"business": "businesses", "reply": "replies", "sale": "sales", "owner": "owners",
+            "item": "items", "offer": "offers", "send": "sends", "trade": "trades",
+            "simulated trade": "simulated trades", "paid sale": "paid sales"}
+
+
 def _plural(n: int, word: str) -> str:
-    return f"{n} {word}{'' if n == 1 else 's'}"
+    return f"{n} {word}" if n == 1 else f"{n} {_PLURALS.get(word, word + 's')}"
 
 
 # ── Mac presence: locked? idle? (read-only, no GUI scripting) ────────────────
@@ -362,6 +370,28 @@ def _outreach_lines(name: str, f: dict, awaiting: Optional[int], replies_state: 
     return ("; ".join(spoken), lines)
 
 
+def totals_text(totals: dict) -> tuple[str, list[str]]:
+    """(one spoken sentence, panel lines) for the campaign's running totals, all time."""
+    if not totals:
+        return "", []
+    spoken, lines = [], []
+    for cid, f in sorted(totals.items()):
+        name = cid.replace("-", " ")
+        replied, waiting = f["replied"], max(0, f["sent"] - f["replied"])
+        spoken.append(
+            f"On {name} so far: {_plural(f['found'], 'business')} found, {f['built']} websites built, "
+            f"{_plural(f['sent'], 'business')} pitched, and "
+            + (f"{_plural(replied, 'reply')} back" if replied else "no replies yet")
+            + (f" ({waiting} still to answer)" if waiting else ""))
+        lines.append(f"  {name}: found {f['found']} / qualified {f['qualified']} / built {f['built']} / "
+                     f"previews {f['previews']} / pitched {f['sent']} / replied {replied} / waiting {waiting}")
+        r = f["reply_status"]
+        bits = [f"{r[k]} {label}" for k, label in REPLY_WORDS if r[k]]
+        if bits:
+            lines.append("    of those: " + ", ".join(bits))
+    return (". ".join(spoken), lines)
+
+
 def _business_lines(evs: list[dict], end: float) -> tuple[list[str], list[str]]:
     """(panel lines, names sent to) naming each business the campaign worked on, newest first."""
     biz: dict = {}
@@ -386,7 +416,7 @@ def _business_lines(evs: list[dict], end: float) -> tuple[list[str], list[str]]:
     rows = [b for b in biz.values() if b["stage"] in ("preview live", "offer sent", "site built") or b["sent"]]
     rows.sort(key=lambda b: -(b["sent"] or 0))
     lines, sent_names = [], []
-    for b in rows[:10]:
+    for b in rows[:6]:
         bits = [_q(b["name"], 50)]
         if b["sent"]:
             bits.append(f"offer sent {clock(b['sent'], end)}")
@@ -405,7 +435,7 @@ def _business_lines(evs: list[dict], end: float) -> tuple[list[str], list[str]]:
 
 def compose(events: list[dict], open_items: list[dict], syncs: dict, upcoming: Optional[list],
             window: tuple[float, float], awaiting: dict, *, speak_details: bool = True,
-            explicit: bool = True) -> dict:
+            explicit: bool = True, totals: Optional[dict] = None) -> dict:
     """Facts for the voice, the on-screen panel, and the counts they came from."""
     start, end = window
     span = f"{clock(start, end)} to {clock(end, end)} Pacific ({duration(end - start)})"
@@ -432,8 +462,8 @@ def compose(events: list[dict], open_items: list[dict], syncs: dict, upcoming: O
         if biz_lines:
             lines += ["    Websites and businesses:"] + biz_lines
         if sent_names:
-            sentence += ("; " if sentence else "") + "pitched " + ", ".join(sent_names[:4]) + \
-                        (f" and {len(sent_names) - 4} more" if len(sent_names) > 4 else "")
+            sentence += ("; " if sentence else "") + "pitched " + ", ".join(sent_names[:3]) + \
+                        (f" and {len(sent_names) - 3} more" if len(sent_names) > 3 else "")
         if sentence:
             spoken.append(sentence[0].upper() + sentence[1:])
         if rstate != "ok" and f["sent"]:
@@ -441,6 +471,11 @@ def compose(events: list[dict], open_items: list[dict], syncs: dict, upcoming: O
         panel_body.extend(lines)
     if panel_body:
         panel += ["OUTREACH"] + panel_body + [""]
+
+    totals_spoken, totals_lines = totals_text(totals or {})
+    if totals_lines:
+        counts["totals"] = totals
+        panel += ["THE WEBSITE BUSINESS SO FAR (all time)"] + totals_lines + [""]
 
     sales = sales_summary(events)
     if sales:
@@ -506,20 +541,22 @@ def compose(events: list[dict], open_items: list[dict], syncs: dict, upcoming: O
 
     # Unprompted briefings (launch, return) need NEW evidence. Carried-over open items, stale-source
     # notes and deadlines are only added to one that has it; "What did I miss?" shows everything.
+    if totals_spoken and spoken:
+        spoken.append(totals_spoken)      # there is news: the running totals give it context
     has_news = bool(spoken) and (explicit or bool(events))
-    if not panel_body and not sales and not trade and not need and not upcoming and not caveats:
+    if not panel_body and not totals_lines and not sales and not trade and not need and not upcoming and not caveats:
         panel += ["Nothing new while you were away."]
     text_panel = "\n".join(panel).strip()[:3800]
     if not speak_details:
         return {"spoken": "", "panel": text_panel, "counts": counts, "empty": not has_news,
-                "private_hold": has_news}
+                "private_hold": has_news, "totals_spoken": totals_spoken}
     if has_news:
         lead = f"While you were away, from {clock(start, end)} to now"
         spoken_text = lead + ": " + ". ".join(spoken) + "."
     else:
         spoken_text = ""
     return {"spoken": spoken_text, "panel": text_panel, "counts": counts, "empty": not has_news,
-            "private_hold": False}
+            "private_hold": False, "totals_spoken": totals_spoken}
 
 
 def upcoming(tasks, canvas_items, today: str, horizon_days: int = 2) -> Optional[list]:
@@ -592,6 +629,12 @@ def prepare(store: Store, now: Optional[float] = None, *, upcoming: Optional[lis
         start = min(start, events[0]["ts"]) if since is None else start
     open_items = store.open_items(ATTENTION_KINDS, now=now)
     syncs = {k: {**v, "known": _known(store, k)} for k, v in sync_snapshot(store, now).items()}
+    all_campaign = store.events(kinds=CAMPAIGN_KINDS, until=now)
+    totals: dict = {}
+    for e in all_campaign:
+        if e["campaign_id"]:
+            totals.setdefault(e["campaign_id"], []).append(e)
+    totals = {cid: funnel(evs) for cid, evs in totals.items()}
     awaiting = {}
     for cid in {e["campaign_id"] for e in events if e["campaign_id"]}:
         allx = [e for e in store.events(kinds=("offer_sent", "reply_received"), until=now)
@@ -600,7 +643,7 @@ def prepare(store: Store, now: Optional[float] = None, *, upcoming: Optional[lis
         awaiting[cid] = len(sent - set(_reply_status_by_business(allx)))
     # Past events the user saw before are not replayed as "new": only open actions carry over.
     result = compose(events, open_items, syncs, upcoming, (start, now), awaiting, speak_details=speak_details,
-                     explicit=explicit)
+                     explicit=explicit, totals=totals)
     result["through_id"] = max([after_id] + [e["id"] for e in events])
     result["window"] = (start, now)
     result["id"] = (store.save_briefing(window_start=start, window_end=now, through_id=result["through_id"],

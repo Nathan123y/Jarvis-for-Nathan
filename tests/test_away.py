@@ -204,6 +204,28 @@ class ComposeTests(unittest.TestCase):
         self.store.mark_handled([self.store.open_items(("reply_received",), now=self.now)[0]["id"]])
         self.assertTrue(self.prep()["empty"])
 
+    def test_the_running_totals_are_always_on_screen_and_read_with_any_news(self):
+        full_funnel(self.store, 3)
+        for i in range(2):
+            ev(self.store, "offer_sent", f"s{i}", task_id=f"biz{i}", status="sent", ts=T0 + 100 + i,
+               evidence={"message_id": f"m{i}"})
+        ev(self.store, "reply_received", "r0", task_id="biz0", status="interested", ts=T0 + 200, title="Joe")
+        first = self.prep()
+        self.assertIn("THE WEBSITE BUSINESS SO FAR", first["panel"])
+        self.assertIn("found 3", first["panel"])
+        self.assertIn("pitched 2", first["panel"])
+        self.assertIn("3 businesses found", first["spoken"])
+        self.assertIn("2 businesses pitched", first["spoken"])
+        self.assertIn("1 reply back", first["spoken"])
+        self.assertIn("1 still to answer", first["spoken"])
+        # Delivered: the totals stay on screen, but old counts alone are not announced as news again.
+        self.store.mark_delivered(first["id"], "voice")
+        self.store.mark_handled([e["id"] for e in self.store.open_items(("reply_received",), now=self.now)])
+        second = self.prep()
+        self.assertTrue(second["empty"])
+        self.assertIn("THE WEBSITE BUSINESS SO FAR", second["panel"])
+        self.assertIn("3 businesses found", second["totals_spoken"])
+
     def test_new_events_after_delivery_only(self):
         full_funnel(self.store, 1)
         first = self.prep()
@@ -505,6 +527,22 @@ class PluginTests(unittest.TestCase):
                 mock.patch.object(away, "idle_seconds", return_value=5.0):
             self._reply(2)
             self.assertEqual(self.wa.announce_replies(say, None, lambda: True), 0)
+
+    def test_quiet_window_and_nothing_new_still_gives_the_totals(self):
+        self.assertEqual(self.wa.QUIET_AFTER_LAUNCH_S, 120.0)
+        self.wa._quiet_until = 0.0
+        self.wa.quiet_for(120, now=1000.0)
+        self.assertEqual(self.wa._quiet_until, 1120.0)
+        self.wa.quiet_for(5, now=1000.0)
+        self.assertEqual(self.wa._quiet_until, 1120.0)          # never shortened
+        self.seed()
+        first = self.wa._prepare(speak_details=True)
+        self.store.mark_delivered(first["id"], "voice")
+        self.store.mark_handled([e["id"] for e in self.store.open_items(away.ATTENTION_KINDS)])
+        with mock.patch.object(away, "screen_state", return_value="unlocked"):
+            out = self.wa.run({"action": "missed"}, self.player)
+        self.assertIn("Nothing new", out)
+        self.assertIn("so far", out)
 
     def test_status_reports_unavailable_sources_and_missing_worker(self):
         text = self.wa.run({"action": "status"}, self.player)
