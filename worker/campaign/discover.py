@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import re
 import time
+import ssl
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Callable, Iterable, Optional
@@ -164,7 +166,18 @@ class OverpassProvider:
         if self._last and wait > 0:
             self._sleep(wait)
         body = urllib.parse.urlencode({"data": overpass_query(area, categories, limit)}).encode()
-        payload = self._fetch(OVERPASS_URL, body)
+        for go, pause in enumerate((20.0, 60.0, 0.0)):                 # the free service is busy at times: wait and ask again
+            try:
+                payload = self._fetch(OVERPASS_URL, body)
+                break
+            except urllib.error.HTTPError as exc:
+                if exc.code not in (429, 502, 503, 504) or not pause:
+                    raise
+                self._sleep(pause)
+            except (TimeoutError, OSError) as exc:                      # a slow answer or a dropped connection
+                if isinstance(exc, urllib.error.URLError) and isinstance(getattr(exc, "reason", None), ssl.SSLError) or not pause:
+                    raise
+                self._sleep(pause)
         self._last = self._clock()
         return parse_overpass(payload, area, self._clock())
 

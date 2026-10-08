@@ -124,13 +124,16 @@ def h_discover(ctx, job, env: Env) -> dict:
     cats = [x for x in p.categories if x in discover.CATEGORY_TAGS] or list(discover.CATEGORY_TAGS)[:6]
     dedupe = discover.Deduper.from_store(env.store)
     found: list = []
+    errors: list = []
     for area in [p.area, *p.nearby_areas]:
         if ctx.should_stop():
             return ctx.partial({"found": len(found)})
         try:
             found += env.provider.search(area, cats)
         except Exception as exc:
-            raise RuntimeError(f"business search failed for {area}: {net.why(exc)}") from exc
+            errors.append(f"{area}: {net.why(exc)}")                    # one busy area must not throw away the others
+    if errors and not found:
+        raise RuntimeError("business search failed: " + "; ".join(errors)[:300])
     already = _qualified_count(env, cid)
     room = max(0, p.batch_size - already)
     new = discover.select_candidates(found, dedupe, limit=max(room * 4, 0))
@@ -147,8 +150,8 @@ def h_discover(ctx, job, env: Env) -> dict:
                                                       "retrieved_at": b["data"].get("retrieved_at")})
         ctx.db.enqueue("campaign_audit", {"business_id": bid}, campaign_id=cid, unique_key=f"audit:{bid}",
                        max_attempts=2, timeout_s=240)
-    env.store.audit(cid, "worker", "discovered", {"candidates": len(found), "new": made, "room": room})
-    return {"candidates": len(found), "new": made}
+    env.store.audit(cid, "worker", "discovered", {"candidates": len(found), "new": made, "room": room, "errors": errors})
+    return {"candidates": len(found), "new": made, "areas_failed": errors}
 
 
 # ── audit + qualify + research ───────────────────────────────────────────────
