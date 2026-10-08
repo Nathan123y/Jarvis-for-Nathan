@@ -82,11 +82,15 @@ def _active(env: Env, cid: str, ctx) -> tuple[Optional[dict], Optional[Policy], 
 
 
 def _qualified_count(env: Env, cid: str) -> int:
-    return sum(1 for b in env.store.businesses(cid) if b["status"] == "ok" and b["stage"] not in ("found", "verified", "audited"))
+    """Businesses qualified and still on their way out (not yet sent): the work in flight. Ones already
+    sent no longer take up room, so discovery keeps looking while few reachable leads are waiting."""
+    return sum(1 for b in env.store.businesses(cid)
+               if b["status"] == "ok" and b["stage"] not in ("found", "verified", "audited", "sent"))
 
 
 FREEMAIL = discover.FREE_MAIL
 ROLE_PREFIXES = ("abuse", "postmaster", "noreply", "no-reply", "donotreply", "privacy", "legal", "webmaster", "mailer-daemon", "security")
+DISCOVER_EVERY_S = 4 * 3600
 RECHECK_AFTER = 30 * 60            # an uncertain send is only looked up once Gmail's index has had time to catch up
 
 
@@ -151,7 +155,7 @@ def h_discover(ctx, job, env: Env) -> dict:
         ctx.db.enqueue("campaign_audit", {"business_id": bid}, campaign_id=cid, unique_key=f"audit:{bid}",
                        max_attempts=2, timeout_s=240)
     env.store.audit(cid, "worker", "discovered", {"candidates": len(found), "new": made, "room": room, "errors": errors})
-    return {"candidates": len(found), "new": made, "areas_failed": errors}
+    return {"candidates": len(found), "new": made, "areas_failed": errors, "nothing_new": made == 0 and not errors}
 
 
 # ── audit + qualify + research ───────────────────────────────────────────────
@@ -652,6 +656,7 @@ def seed_schedules(db, env: Optional[Env] = None) -> None:
 
 
 def schedule_campaign(db, cid: str) -> None:
-    """Daily discovery for one campaign. Safe to call again (the schedule is keyed by name)."""
-    db.schedule(f"discover:{cid}", "campaign_discover", 86400, payload={"campaign_id": cid}, campaign_id=cid,
+    """Discovery for one campaign, every 4 hours: most listings have no published email, so it keeps
+    looking. Safe to call again (the schedule is keyed by name)."""
+    db.schedule(f"discover:{cid}", "campaign_discover", DISCOVER_EVERY_S, payload={"campaign_id": cid}, campaign_id=cid,
                 catchup="skip_expired", max_lateness_s=6 * 3600)

@@ -1041,6 +1041,16 @@ class DiscoverResilienceTests(unittest.TestCase):
             prov.search("san-jose", ["plumber"])
         self.assertEqual(len(calls), 1)
 
+    def test_sent_businesses_do_not_use_up_discovery_room_and_it_runs_often(self):
+        from worker.campaign import pipeline as P
+        r = Rig(self, [biz(1)])
+        r.discover()
+        bid = r.businesses()[0]["id"]
+        r.store.update_business(bid, stage="sent", status="ok")
+        self.assertEqual(P._qualified_count(r.env, "c1"), 0)
+        self.assertEqual(P.DISCOVER_EVERY_S, 4 * 3600)
+        self.assertEqual(D.OverpassProvider.search.__defaults__[-1], 1000)
+
     def test_one_failing_area_does_not_lose_the_others(self):
         r = Rig(self, [biz(1), biz(2)])
         good = r.env.provider

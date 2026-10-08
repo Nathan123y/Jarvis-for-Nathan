@@ -106,7 +106,7 @@ class Deduper:
 
 
 # ── providers ────────────────────────────────────────────────────────────────
-def overpass_query(area: str, categories: Iterable[str], limit: int = 300) -> str:
+def overpass_query(area: str, categories: Iterable[str], limit: int = 1000) -> str:
     s, w, n, e = AREAS[area]
     seen, parts = set(), []
     for c in categories:
@@ -161,7 +161,7 @@ class OverpassProvider:
         with urllib.request.urlopen(req, timeout=90, context=net.ssl_context()) as r:
             return json.loads(r.read(8_000_000).decode("utf-8", "replace"))
 
-    def search(self, area: str, categories: list[str], limit: int = 300) -> list[dict]:
+    def search(self, area: str, categories: list[str], limit: int = 1000) -> list[dict]:
         wait = PAUSE_SECONDS - (self._clock() - self._last)
         if self._last and wait > 0:
             self._sleep(wait)
