@@ -362,6 +362,47 @@ def _outreach_lines(name: str, f: dict, awaiting: Optional[int], replies_state: 
     return ("; ".join(spoken), lines)
 
 
+def _business_lines(evs: list[dict], end: float) -> tuple[list[str], list[str]]:
+    """(panel lines, names sent to) naming each business the campaign worked on, newest first."""
+    biz: dict = {}
+    for e in sorted(evs, key=lambda e: (e["ts"], e["id"])):
+        key = e["task_id"] or e["source_id"]
+        b = biz.setdefault(key, {"name": "", "stage": "", "url": "", "sent": None, "held": False, "reply": ""})
+        b["name"] = (e["title"] or b["name"] or "a business").strip()
+        if e["kind"] == "biz_qualified":
+            b["stage"] = b["stage"] or "qualified"
+        elif e["kind"] == "site_built":
+            b["stage"] = "site built"
+        elif e["kind"] == "preview_published":
+            b["stage"] = "preview live"
+            b["url"] = str((e["detail"] or {}).get("url") or b["url"])
+        elif e["kind"] == "offer_sent":
+            if e["status"] == "sent":
+                b["sent"], b["stage"] = e["ts"], "offer sent"
+            else:
+                b["held"] = True
+        elif e["kind"] == "reply_received":
+            b["reply"] = dict(REPLY_WORDS).get(e["status"], "replied")
+    rows = [b for b in biz.values() if b["stage"] in ("preview live", "offer sent", "site built") or b["sent"]]
+    rows.sort(key=lambda b: -(b["sent"] or 0))
+    lines, sent_names = [], []
+    for b in rows[:10]:
+        bits = [_q(b["name"], 50)]
+        if b["sent"]:
+            bits.append(f"offer sent {clock(b['sent'], end)}")
+            sent_names.append(_q(b["name"], 40))
+        elif b["held"]:
+            bits.append("offer held (delivery unconfirmed)")
+        else:
+            bits.append(b["stage"])
+        if b["reply"]:
+            bits.append(f"reply: {b['reply']}")
+        lines.append("    - " + " · ".join(bits))
+        if b["url"]:
+            lines.append(f"      preview: {b['url']}")
+    return lines, sent_names
+
+
 def compose(events: list[dict], open_items: list[dict], syncs: dict, upcoming: Optional[list],
             window: tuple[float, float], awaiting: dict, *, speak_details: bool = True,
             explicit: bool = True) -> dict:
@@ -387,6 +428,12 @@ def compose(events: list[dict], open_items: list[dict], syncs: dict, upcoming: O
         # The legacy promotion path records replies by hand, so its own record is the reply source.
         rstate = "ok" if cid == "product-promotion" else replies_state
         sentence, lines = _outreach_lines(cid.replace("-", " "), f, awaiting.get(cid) if rstate == "ok" else None, rstate)
+        biz_lines, sent_names = _business_lines(evs, end)
+        if biz_lines:
+            lines += ["    Websites and businesses:"] + biz_lines
+        if sent_names:
+            sentence += ("; " if sentence else "") + "pitched " + ", ".join(sent_names[:4]) + \
+                        (f" and {len(sent_names) - 4} more" if len(sent_names) > 4 else "")
         if sentence:
             spoken.append(sentence[0].upper() + sentence[1:])
         if rstate != "ok" and f["sent"]:

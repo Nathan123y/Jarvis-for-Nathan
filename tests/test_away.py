@@ -444,6 +444,33 @@ class PluginTests(unittest.TestCase):
         with mock.patch.object(away, "screen_state", return_value="locked"):
             self.assertEqual(self.wa._deliver_return(None, None, lambda: True), "locked")
 
+    def test_shown_but_not_spoken_stays_pending_until_the_voice_is_free(self):
+        self.seed()
+        self.wa._boot_last_active = None
+        self.wa._shown_through = -1
+        said, shown = [], []
+        with mock.patch.object(away, "screen_state", return_value="unlocked"):
+            out = self.wa._deliver_return(lambda t: said.append(t) or True, lambda t, p: shown.append(p), lambda: False)
+            self.assertEqual(out, "undelivered")                       # on screen, voice busy: NOT delivered
+            self.assertEqual(self.store.delivered_through()[0], 0)
+            out = self.wa._deliver_return(lambda t: said.append(t) or True, lambda t, p: shown.append(p), lambda: False)
+            self.assertEqual(len(shown), 1)                            # not re-shown on every retry
+            out = self.wa._deliver_return(lambda t: said.append(t) or True, lambda t, p: shown.append(p), lambda: True)
+        self.assertEqual(out, "done")
+        self.assertEqual(len(said), 1)
+
+    def test_panel_and_speech_name_the_businesses_and_previews(self):
+        now = time.time()
+        for kind, status, detail in (("biz_qualified", "ok", {}), ("site_built", "ok", {}),
+                                     ("preview_published", "live", {"url": "https://x.github.io/jarvis-websites/abc/"}),
+                                     ("offer_sent", "sent", {})):
+            self.store.record(kind, source="worker", source_id=f"{kind}:c:1", ts=now - 100, task_id="1",
+                              campaign_id="c", status=status, title="Joe's Plumbing", detail=detail, private=True)
+        r = away.prepare(self.store, now=now, explicit=True, save=False, refresh=False)
+        self.assertIn("Joe's Plumbing", r["panel"])
+        self.assertIn("https://x.github.io/jarvis-websites/abc/", r["panel"])
+        self.assertIn("pitched Joe's Plumbing", r["spoken"])
+
     def test_status_reports_unavailable_sources_and_missing_worker(self):
         text = self.wa.run({"action": "status"}, self.player)
         self.assertIn("not running or never started", text)
