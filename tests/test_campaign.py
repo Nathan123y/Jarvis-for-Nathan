@@ -180,6 +180,15 @@ class DiscoveryTests(unittest.TestCase):
         found = [biz(1, email="", website="http://x.test"), biz(2, website="http://y.test"), biz(3)]
         self.assertEqual([b["source_id"] for b in D.select_candidates(found, d, 3)], ["n/3", "n/2", "n/1"])
 
+    def test_businesses_with_no_way_to_find_a_contact_go_last(self):
+        d = D.Deduper()
+        found = [biz(1, email="", website=""), biz(2, email="", website="http://y.test"), biz(3, email="a@b.test", website="")]
+        order = [b["source_id"] for b in D.select_candidates(found, d, 3)]
+        self.assertEqual(order, ["n/3", "n/2", "n/1"])          # listed email, then a website to read one from, then the dead end
+        d2 = D.Deduper()
+        many = [biz(i, email="", website="") for i in range(1, 6)] + [biz(9, email="", website="http://z.test")]
+        self.assertEqual(D.select_candidates(many, d2, 2)[0]["source_id"], "n/9")      # a small batch is not used up on dead ends
+
 
 class AuditTests(unittest.TestCase):
     GOOD = ("<html><head><meta name='viewport' content='width=device-width'></head><body><h1>Hi</h1>"
