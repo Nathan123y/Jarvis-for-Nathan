@@ -2095,6 +2095,10 @@ class JarvisLive:
                 away_result = await asyncio.wait_for(asyncio.shield(away_job), timeout=6.0)
             except Exception as e:
                 print(f"[JARVIS] While-away briefing skipped: {e!r}")
+                try:
+                    _away_plugin._hold = True      # too slow to build now: the watcher gives it shortly
+                except Exception:
+                    pass
         if self._startup_user_spoke or not self.session:
             print("[JARVIS] Startup briefing skipped: user spoke first.")
             return

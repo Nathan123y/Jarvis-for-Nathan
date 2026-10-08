@@ -77,6 +77,7 @@ def _prepare(speak_details: bool, refresh: bool = True, explicit: bool = True, s
                         explicit=explicit, save=save)
 
 
+_shown_through = -1  # the briefing already put on screen while it waits for the voice
 _hold = False        # a briefing is waiting for the Mac to be unlocked
 
 
@@ -147,32 +148,51 @@ def delivered(result: dict, how: str) -> None:
 def _deliver_return(say, show, can_speak) -> str:
     """"done", "empty" (nothing to say), "locked" (private: nothing shown or said yet) or "undelivered"
     (nothing could reach the user right now, so it stays pending)."""
-    global _hold
+    global _hold, _shown_through
     if away.screen_state() != "unlocked":
         _hold = True
         return "locked"
-    result = _prepare(speak_details=True, explicit=False)
+    result = _prepare(speak_details=True, explicit=False, save=False)
     if result["empty"]:
         _hold = False
         return "empty"
     shown = spoke = False
     if show:
-        try:
-            show("WHILE YOU WERE AWAY", result["panel"])
-            shown = True
-        except Exception:
-            pass
-    if result["spoken"] and say and can_speak():
+        if result["through_id"] == _shown_through:
+            shown = True                      # already on screen; only the voice is still owed
+        else:
+            try:
+                show("WHILE YOU WERE AWAY", result["panel"])
+                shown = True
+                _shown_through = result["through_id"]
+            except Exception:
+                pass
+    want_voice = bool(result["spoken"] and say)
+    if want_voice and can_speak():
         try:
             spoke = say(_instruction(result)) is not False
         except Exception:
             spoke = False
+    if want_voice and not spoke:
+        _hold = True                          # the voice wasn't free: keep it pending, don't call it delivered
+        return "undelivered"
     if not (shown or spoke):
         _hold = True
         return "undelivered"
     _hold = False
+    result["id"] = _save_final(result)
     delivered(result, "voice" if spoke else "screen")
     return "done"
+
+
+def _save_final(result: dict) -> int:
+    """Record the briefing that actually reached the user (the retries above don't save one each)."""
+    try:
+        return store().save_briefing(window_start=result["window"][0], window_end=result["window"][1],
+                                     through_id=result["through_id"], spoken=result["spoken"],
+                                     panel=result["panel"], counts=result["counts"])
+    except Exception:
+        return 0
 
 
 def _watch_loop(say, show, can_speak) -> None:
