@@ -882,6 +882,20 @@ class StartNowTests(unittest.TestCase):
         self.assertTrue(control.start(r.env, r.worker.db, "c1", by="t").startswith("NEEDS_AUTH: "))
 
 
+class QueueViewTests(unittest.TestCase):
+    def test_queue_shows_each_email_with_its_preview(self):
+        from worker.campaign import control
+        r = Rig(self, [biz(1)])
+        self.assertIn("No emails", control.queue(r.env, r.worker.db, "c1"))
+        r.now[0] = TUE_8PM                                          # outside the window: queued, not sent
+        r.discover()
+        out = control.queue(r.env, r.worker.db, "c1")
+        self.assertIn("[QUEUED]", out)
+        self.assertIn("preview:", out)
+        self.assertIn("subject:", out)
+        self.assertIn("1 waiting to send", out)
+
+
 class RecheckTests(unittest.TestCase):
     def test_sites_rejected_as_blocked_are_looked_at_again(self):
         from worker.campaign import control
