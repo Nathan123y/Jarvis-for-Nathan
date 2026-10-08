@@ -47,16 +47,22 @@ class Page:
     seconds: float = 0.0
 
 
-def _public_host(host: str) -> bool:
+def _host_problem(host: str) -> str:
+    """"" when the host is fine to fetch; "private" when it points at a non-public address (never fetched);
+    "dns" when the name does not resolve at all (the fetch then fails and the site counts as unreachable)."""
     try:
         infos = socket.getaddrinfo(host, None)
     except OSError:
-        return False
+        return "dns"
     for info in infos:
         ip = ipaddress.ip_address(info[4][0].split("%")[0])
         if not ip.is_global or ip.is_multicast:
-            return False
-    return bool(infos)
+            return "private"
+    return "" if infos else "dns"
+
+
+def _public_host(host: str) -> bool:
+    return _host_problem(host) != "private"
 
 
 class _Redirects(urllib.request.HTTPRedirectHandler):

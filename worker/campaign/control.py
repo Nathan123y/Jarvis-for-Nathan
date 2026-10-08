@@ -136,6 +136,21 @@ def prepare(env: "pipeline.Env", db, cid: str = DEFAULT_ID, *, by: str) -> str:
             "Check status later; when you like the drafts, run enable and they are queued then. The Mac has to stay awake for the worker.")
 
 
+def recheck(env: "pipeline.Env", db, cid: str = DEFAULT_ID, *, by: str) -> str:
+    """Put businesses back in line that were thrown out because their site could not be looked up
+    ("not a public address" before the fix that tells a dead domain from a private one)."""
+    ensure(env.store, cid)
+    now, n = env.clock(), 0
+    for b in env.store.businesses(cid, status="rejected"):
+        if "blocked: not a public http(s) address" in (b.get("hold_reason") or ""):
+            env.store.update_business(b["id"], stage="found", status="ok", hold_reason="", now=now)
+            db.enqueue("campaign_audit", {"business_id": b["id"]}, campaign_id=cid, unique_key=f"audit:{b['id']}:re{int(now)}",
+                       max_attempts=2, timeout_s=240)
+            n += 1
+    env.store.audit(cid, by, "recheck", {"count": n}, now)
+    return f"Put {n} businesses back in line to be looked at again." if n else "Nothing to look at again."
+
+
 def stop(env: "pipeline.Env", cid: str = DEFAULT_ID, *, by: str, reason: str = "stopped by you") -> str:
     ensure(env.store, cid)
     pol.revoke(env.store, cid, by=by, reason=reason, now=env.clock())
