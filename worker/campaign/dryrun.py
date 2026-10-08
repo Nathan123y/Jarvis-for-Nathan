@@ -72,7 +72,8 @@ def run(base: Path, *, clock: Optional[Callable[[], float]] = None, visual: bool
     store.set_campaign(CID, clock(), mode="draft", status="active")
     env = pipeline.Env(store=store, provider=discover.FixtureProvider(FIXTURES), fetcher=FakeFetcher(PAGES),
                        host=FakeHost(public=True, base="https://previews.example.test/dryrun"), mailer=NoSendMailer(),
-                       identity=lambda: dict(IDENTITY), workdir=base, clock=clock, sleep=lambda s: None, pace=0)
+                       identity=lambda: dict(IDENTITY), workdir=base, clock=clock, sleep=lambda s: None, pace=0,
+                       mail_domain=lambda e: "")
     worker = Worker(wdir, events=EventStore(base / "events.db"), handlers=pipeline.handlers(env), tick=0.01, clock=clock)
     worker.db.enqueue("campaign_discover", {"campaign_id": CID}, campaign_id=CID, unique_key="dry:discover")
     for _ in range(200):                                    # bounded: every step is a queued job

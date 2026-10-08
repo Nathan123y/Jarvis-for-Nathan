@@ -53,7 +53,7 @@ class Rig:
         self.ident = IDENT if ident is None else ident
         self.env = P.Env(store=self.store, provider=D.FixtureProvider(businesses), fetcher=FakeFetcher(pages or {}), host=self.host,
                          mailer=self.mailer, identity=lambda: dict(self.ident), workdir=self.base, clock=clock,
-                         sleep=lambda s: None, pace=0)
+                         sleep=lambda s: None, pace=0, mail_domain=lambda e: "")
         self.worker = Worker(self.base / "worker", events=EventStore(self.base / "events.db"), handlers=P.handlers(self.env),
                              tick=0.01, clock=clock)
         test.addCleanup(self.worker.keep_awake.stop)
@@ -1001,6 +1001,30 @@ class NetworkTests(unittest.TestCase):
         err = urllib.error.URLError(ssl.SSLCertVerificationError("unable to get local issuer certificate"))
         self.assertIn("SSLCertVerificationError", net.why(err))
         self.assertIn("local issuer", net.why(err))
+
+    def test_email_domain_check(self):
+        import socket
+        from worker.campaign import net
+
+        def gone(h, p):
+            raise socket.gaierror(socket.EAI_NONAME, "not found")
+
+        def flaky(h, p):
+            raise socket.gaierror(socket.EAI_AGAIN, "try again")
+        self.assertEqual(net.email_domain_problem("a@trim-dog.com", gone), "missing")
+        self.assertEqual(net.email_domain_problem("a@trim-dog.com", flaky), "unknown")
+        self.assertEqual(net.email_domain_problem("a@ok.com", lambda h, p: [("x",)]), "")
+        self.assertEqual(net.email_domain_problem("nonsense", gone), "missing")
+
+    def test_an_address_on_a_domain_that_does_not_exist_is_held_not_pitched(self):
+        r = Rig(self, [biz(1)])
+        r.env.mail_domain = lambda e: "missing"
+        r.discover()
+        rows = r.businesses()
+        self.assertTrue(rows)
+        self.assertNotIn("qualified", {b["stage"] for b in rows})
+        held = [b for b in rows if "doesn't exist" in b["hold_reason"]]
+        self.assertTrue(held or all(b["status"] != "ok" for b in rows))
 
     def test_a_failed_search_reports_the_reason(self):
         import urllib.error
