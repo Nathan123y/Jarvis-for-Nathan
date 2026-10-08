@@ -39,6 +39,7 @@ class Env:
     clock: Callable[[], float] = time.time
     sleep: Callable[[float], None] = time.sleep
     pace: float = 30.0                         # seconds between two sends
+    mail_domain: Callable[[str], str] = net.email_domain_problem   # "" / "missing" / "unknown" for an address
     designer: Optional[Callable[[str], Optional[str]]] = None   # asks an AI model for a page; None = template designs only
 
 
@@ -240,6 +241,10 @@ def h_audit(ctx, job, env: Env) -> dict:
         return {"held": "no published contact email"}
     if env.store.is_suppressed(*suppression_keys(email, site_url)):
         return reject("contact is on the do-not-contact list")
+    if env.mail_domain(email) == "missing":
+        env.store.update_business(bid, stage="audited", status="held", data=base, now=now,
+                                  hold_reason=f"its email address can't receive mail: the domain {email.rsplit('@', 1)[-1]} doesn't exist")
+        return {"held": "email domain does not exist"}
     if env.store.email_in_use(email, exclude_id=bid):
         return reject("another listing is already being pitched at this contact address")
     if _qualified_count(env, cid) >= p.batch_size:
@@ -486,6 +491,8 @@ def h_send(ctx, job, env: Env) -> dict:
                 reasons.append("it was queued before the latest authorization; review it again")
             if env.store.is_suppressed(*suppression_keys(pl.get("to", ""), (biz or {}).get("website", ""))):
                 reasons.append("recipient is suppressed")
+            if env.mail_domain(pl.get("to", "")) == "missing":
+                reasons.append("the recipient's email domain doesn't exist, so it would bounce")
             if biz:
                 if env.store.email_in_use(pl.get("to", ""), exclude_id=bid, stages=("sent",)):
                     reasons.append("another business at this address was already emailed")
