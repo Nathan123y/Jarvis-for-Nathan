@@ -136,6 +136,23 @@ def prepare(env: "pipeline.Env", db, cid: str = DEFAULT_ID, *, by: str) -> str:
             "Check status later; when you like the drafts, run enable and they are queued then. The Mac has to stay awake for the worker.")
 
 
+def queue(env: "pipeline.Env", db, cid: str = DEFAULT_ID) -> str:
+    """The emails waiting to go out (and any already handled), with the preview each one links to."""
+    rows = db.outbox_list(campaign_id=cid, limit=100)
+    if not rows:
+        return "No emails are queued or sent."
+    out = []
+    for r in rows:
+        pl = r["payload"]
+        biz = env.store.business(pl.get("business_id")) if pl.get("business_id") else None
+        out += [f"[{r['state'].upper()}] {biz['name'] if biz else '?'}  ->  {pl.get('to')}",
+                f"  preview: {(biz or {}).get('data', {}).get('preview_url', '(none)')}",
+                f"  subject: {pl.get('subject')}", ""] + ["    " + ln for ln in str(pl.get("body", "")).splitlines()] + ["", "-" * 60]
+    waiting = sum(1 for r in rows if r["state"] == "queued")
+    out.append(f"{waiting} waiting to send. To stop them without losing them: python3 -m worker campaign mode draft")
+    return "\n".join(out)
+
+
 def recheck(env: "pipeline.Env", db, cid: str = DEFAULT_ID, *, by: str) -> str:
     """Put businesses back in line that were thrown out because their site could not be looked up
     ("not a public address" before the fix that tells a dead domain from a private one)."""
