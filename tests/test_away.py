@@ -471,6 +471,41 @@ class PluginTests(unittest.TestCase):
         self.assertIn("https://x.github.io/jarvis-websites/abc/", r["panel"])
         self.assertIn("pitched Joe's Plumbing", r["spoken"])
 
+    def _reply(self, n, status="interested", title="Joe's Plumbing"):
+        self.store.record("reply_received", source="gmail", source_id=f"reply:{n}", ts=time.time(), task_id=str(n),
+                          campaign_id="c", status=status, title=title, detail={"snippet": "yes please"}, private=True)
+
+    def test_new_replies_are_announced_once_when_you_are_here(self):
+        self._reply(1)
+        said, shown = [], []
+        say = lambda t: said.append(t) or True
+        show = lambda t, p: shown.append(p)
+        with mock.patch.object(away, "screen_state", return_value="unlocked"), \
+                mock.patch.object(away, "idle_seconds", return_value=5.0):
+            self.assertEqual(self.wa.announce_replies(say, show, lambda: True), 1)
+            self.assertIn("Joe's Plumbing interested", said[0])
+            self.assertIn("REPLY_ALERT", said[0])
+            self.assertEqual(self.wa.announce_replies(say, show, lambda: True), 0)   # not twice
+            self._reply(2, "call_request", "Ann's Salon")
+            self.assertEqual(self.wa.announce_replies(say, show, lambda: True), 1)
+        self.assertIn("asked for a call", said[1])
+
+    def test_replies_wait_when_away_locked_or_voice_busy(self):
+        self._reply(1)
+        said = []
+        say = lambda t: said.append(t) or True
+        with mock.patch.object(away, "screen_state", return_value="unlocked"):
+            with mock.patch.object(away, "idle_seconds", return_value=4000.0):
+                self.assertEqual(self.wa.announce_replies(say, None, lambda: True), 0)   # you're away
+            with mock.patch.object(away, "idle_seconds", return_value=5.0):
+                self.assertEqual(self.wa.announce_replies(say, None, lambda: False), 0)  # voice busy
+                self.assertEqual(said, [])
+                self.assertEqual(self.wa.announce_replies(say, None, lambda: True), 1)   # later it is told
+        with mock.patch.object(away, "screen_state", return_value="locked"), \
+                mock.patch.object(away, "idle_seconds", return_value=5.0):
+            self._reply(2)
+            self.assertEqual(self.wa.announce_replies(say, None, lambda: True), 0)
+
     def test_status_reports_unavailable_sources_and_missing_worker(self):
         text = self.wa.run({"action": "status"}, self.player)
         self.assertIn("not running or never started", text)
