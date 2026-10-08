@@ -681,6 +681,32 @@ class TradingOnThePlanTests(RunnerCase):
         self.assertEqual(sorted(self.bought(broker)), ["QQQ", "SPY"])
 
 
+class NeverSitOutTests(RunnerCase):
+    def test_when_the_analyst_sits_the_day_out_the_standard_rule_is_traded_at_the_smallest_size(self):
+        broker = AnalystBroker()
+        runner = self.runner(broker, FakeAnalyst(plan_for(stand_aside=True)), never_sit_out=True)
+        self.assertNotEqual(runner.step(), "plan_says_stand_aside")
+        self.assertTrue(self.bought(broker))                                   # SPY (or QQQ) broke out and was bought
+        self.assertTrue(set(self.bought(broker)) <= {"SPY", "QQQ"})
+        plan = self.journal.state()["today"]["plan"]
+        self.assertFalse(plan["stand_aside"])
+        self.assertTrue(plan["analyst_sat_out"])
+        self.assertEqual({p["conviction"] for p in plan["picks"]}, {1})
+
+    def test_the_old_behaviour_is_still_available(self):
+        broker = AnalystBroker()
+        runner = self.runner(broker, FakeAnalyst(plan_for(stand_aside=True)))
+        self.assertEqual(runner.step(), "plan_says_stand_aside")
+        self.assertEqual(broker.entry_orders, [])
+
+    def test_with_no_plan_at_all_the_standard_rule_is_still_traded(self):
+        broker = AnalystBroker().at(14, 5)                                     # past the last buy time for a new plan
+        fake = FakeAnalyst(plan=plan_for(("NVDA", 5)))
+        label = self.runner(broker, fake, never_sit_out=True).step()
+        self.assertNotEqual(label, "no_plan_standing_aside")
+        self.assertEqual(fake.calls, [])
+
+
 class WhenThereIsNoPlanTests(RunnerCase):
     def test_a_failing_analyst_is_retried_several_times_then_the_day_is_sat_out(self):
         broker = AnalystBroker()
