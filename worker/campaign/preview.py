@@ -28,6 +28,8 @@ import urllib.request
 from pathlib import Path
 from typing import Callable, Optional
 
+from worker.campaign import net
+
 ROBOTS = "User-agent: *\nDisallow: /\n"
 README = ("Independent website concept previews. Unlisted, not indexed. "
           "To remove one, reply to the email that contained its link.\n")
@@ -159,7 +161,7 @@ class GitPagesHost:
     def _http(url: str) -> tuple[int, str]:
         req = urllib.request.Request(url, headers={"User-Agent": "JarvisPreviewCheck/1.0"})
         try:
-            with urllib.request.urlopen(req, timeout=20) as r:
+            with urllib.request.urlopen(req, timeout=20, context=net.ssl_context()) as r:
                 return r.status, r.read(400_000).decode("utf-8", "replace")
         except urllib.error.HTTPError as exc:
             return exc.code, ""

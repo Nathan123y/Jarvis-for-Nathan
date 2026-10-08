@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Callable, Optional
 
+from worker.campaign import net
 from worker.campaign.discover import FREE_MAIL, USER_AGENT as _BASE_UA, clean_email, digits, host_of
 
 USER_AGENT = "JarvisSiteAudit/1.0 (personal project; one polite request at a time)"
@@ -76,7 +77,7 @@ class HttpFetcher:
     """Real network fetcher. Tests use FakeFetcher instead."""
 
     def __init__(self):
-        self._opener = urllib.request.build_opener(_Redirects)
+        self._opener = urllib.request.build_opener(_Redirects, urllib.request.HTTPSHandler(context=net.ssl_context()))
         self._robots: dict[str, Optional[urllib.robotparser.RobotFileParser]] = {}
 
     def allowed_by_robots(self, url: str) -> bool:

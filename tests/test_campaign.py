@@ -942,3 +942,25 @@ class PluginTests(unittest.TestCase):
                 self.assertIn("Can't enable yet", w.run({"action": "enable"}))
                 self.assertEqual(pol.authorization(r.store, "c1", r.now[0])["state"], "none")
                 self.assertIn("Unknown", w.run({"action": "bogus"}))
+
+
+class NetworkTests(unittest.TestCase):
+    def test_requests_use_a_certificate_bundle_and_failures_say_why(self):
+        import ssl, urllib.error
+        from worker.campaign import net
+        self.assertIsInstance(net.ssl_context(), ssl.SSLContext)
+        self.assertEqual(net.ssl_context().verify_mode, ssl.CERT_REQUIRED)
+        err = urllib.error.URLError(ssl.SSLCertVerificationError("unable to get local issuer certificate"))
+        self.assertIn("SSLCertVerificationError", net.why(err))
+        self.assertIn("local issuer", net.why(err))
+
+    def test_a_failed_search_reports_the_reason(self):
+        import urllib.error
+        r = Rig(self, [biz(1)])
+        class Boom:
+            def search(self, *a, **k):
+                raise urllib.error.URLError("certificate verify failed")
+        r.env.provider = Boom()
+        r.discover()
+        jobs = r.worker.db.list()
+        self.assertIn("certificate verify failed", " ".join(str(j.get("last_error")) for j in jobs))

@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from core.events import Store as EventStore
-from worker.campaign import audit as auditmod, build, check, design as designmod, discover, mail as mailmod, messages, policy as pol, preview, replies
+from worker.campaign import audit as auditmod, build, check, design as designmod, discover, mail as mailmod, messages, net, policy as pol, preview, replies
 from worker.campaign.policy import Policy
 from worker.campaign.store import CampaignStore
 from worker.runtime import Deferred, Fatal, NeedsSetup
@@ -130,7 +130,7 @@ def h_discover(ctx, job, env: Env) -> dict:
         try:
             found += env.provider.search(area, cats)
         except Exception as exc:
-            raise RuntimeError(f"business search failed for {area}: {type(exc).__name__}") from exc
+            raise RuntimeError(f"business search failed for {area}: {net.why(exc)}") from exc
     already = _qualified_count(env, cid)
     room = max(0, p.batch_size - already)
     new = discover.select_candidates(found, dedupe, limit=max(room * 4, 0))
