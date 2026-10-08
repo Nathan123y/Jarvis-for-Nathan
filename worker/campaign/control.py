@@ -179,9 +179,19 @@ def status(env: "pipeline.Env", cid: str = DEFAULT_ID, db=None) -> str:
              f"Authorization: {auth['state']}" + (f" ({auth['reason']})" if auth["reason"] else ""),
              f"Offer: {pol.price_text(p)}; daily limit {p.daily_cap or 'none'}; batch {p.batch_size}",
              "Businesses by stage: " + (", ".join(f"{k} {v}" for k, v in stages.items()) or "none yet")]
-    held = [b for b in env.store.businesses(cid) if b["status"] in ("held", "backlog")][:5]
+    allb = env.store.businesses(cid)
+    why: dict = {}
+    for b in allb:
+        if b["status"] in ("held", "backlog", "rejected"):
+            key = (b["status"], (b.get("hold_reason") or "no reason recorded")[:90], "has a website" if b.get("website") else "no website")
+            why[key] = why.get(key, 0) + 1
+    if why:
+        lines.append("Why businesses are not moving forward:")
+        for (st, reason, site), n in sorted(why.items(), key=lambda kv: -kv[1])[:8]:
+            lines.append(f"  {n:>3}  {st}: {reason} ({site})")
+    held = [b for b in allb if b["status"] in ("held", "backlog")][:3]
     for b in held:
-        lines.append(f"  held: {b['name']}: {b['hold_reason']}")
+        lines.append(f"  e.g. {b['name']}: {b['hold_reason']}")
     missing = readiness(env)
     if missing:
         lines.append("Still needed: " + "; ".join(missing))
