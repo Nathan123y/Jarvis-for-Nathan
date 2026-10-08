@@ -232,6 +232,18 @@ class AuditTests(unittest.TestCase):
         for u in ("http://127.0.0.1/", "http://localhost/", "http://10.0.0.5/", "http://169.254.169.254/", "file:///etc/passwd", "ftp://x.test/"):
             self.assertFalse(A._allowed_url(u), u)
 
+    def test_a_domain_that_does_not_resolve_is_unreachable_not_blocked(self):
+        import socket
+        from unittest import mock as _m
+        with _m.patch.object(A.socket, "getaddrinfo", side_effect=socket.gaierror("no such host")):
+            self.assertEqual(A._host_problem("gone.example"), "dns")
+            self.assertTrue(A._allowed_url("https://gone.example/"))        # it is then really fetched, fails, and counts as unreachable
+        with _m.patch.object(A.socket, "getaddrinfo", return_value=[(2, 1, 6, "", ("10.1.2.3", 0))]):
+            self.assertEqual(A._host_problem("lan.example"), "private")
+            self.assertFalse(A._allowed_url("https://lan.example/"))
+        with _m.patch.object(A.socket, "getaddrinfo", return_value=[(2, 1, 6, "", ("93.184.216.34", 0))]):
+            self.assertEqual(A._host_problem("ok.example"), "")
+
 
 class RobotsTests(unittest.TestCase):
     def fetcher(self, status, body, ctype="text/plain"):
@@ -868,6 +880,19 @@ class StartNowTests(unittest.TestCase):
         r = Rig(self, [biz(1)])
         control.stop(r.env, "c1", by="t")
         self.assertTrue(control.start(r.env, r.worker.db, "c1", by="t").startswith("NEEDS_AUTH: "))
+
+
+class RecheckTests(unittest.TestCase):
+    def test_sites_rejected_as_blocked_are_looked_at_again(self):
+        from worker.campaign import control
+        r = Rig(self, [biz(1)])
+        r.discover()
+        (b,) = r.businesses()
+        r.store.update_business(b["id"], stage="found", status="rejected",
+                                hold_reason="its site asks not to be audited by automated tools (blocked: not a public http(s) address)", now=r.now[0])
+        self.assertIn("Put 1", control.recheck(r.env, r.worker.db, "c1", by="t"))
+        self.assertEqual(r.store.business(b["id"])["status"], "ok")
+        self.assertIn("Nothing", control.recheck(r.env, r.worker.db, "c1", by="t"))
 
 
 class PrepareTests(unittest.TestCase):
