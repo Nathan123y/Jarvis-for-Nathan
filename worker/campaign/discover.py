@@ -14,6 +14,7 @@ import urllib.parse
 import urllib.request
 from typing import Callable, Iterable, Optional
 
+from worker.campaign import net
 from worker.campaign.policy import AREAS
 
 USER_AGENT = "JarvisLocalSiteConcepts/1.0 (personal project; polite single-request client)"
@@ -155,7 +156,7 @@ class OverpassProvider:
     def _http(url: str, body: bytes) -> dict:
         req = urllib.request.Request(url, data=body, headers={"User-Agent": USER_AGENT,
                                      "Content-Type": "application/x-www-form-urlencoded"})
-        with urllib.request.urlopen(req, timeout=90) as r:
+        with urllib.request.urlopen(req, timeout=90, context=net.ssl_context()) as r:
             return json.loads(r.read(8_000_000).decode("utf-8", "replace"))
 
     def search(self, area: str, categories: list[str], limit: int = 300) -> list[dict]:
