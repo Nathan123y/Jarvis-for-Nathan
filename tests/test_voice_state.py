@@ -16,7 +16,7 @@ def player_class(names):
     body = [n for n in owner.body if getattr(n, 'name', None) in names]
     stub = ast.ClassDef(name='Player', bases=[], keywords=[], body=body, decorator_list=[])
     ns = dict(asyncio=asyncio, threading=threading, time=time,
-              runtime_state=runtime_state, can_auto_sleep=can_auto_sleep,
+              runtime_state=runtime_state, can_auto_sleep=can_auto_sleep, _TAIL_MARGIN=0.25,
               log_state_transition=lambda *a: None)
     exec(compile(ast.fix_missing_locations(ast.Module(body=[stub], type_ignores=[])), str(SOURCE), 'exec'), ns)
     return ns['Player']
@@ -63,6 +63,21 @@ class StateTests(unittest.TestCase):
         p = self.make_player(False)
         p._set_ui_state('LISTENING')
         self.assertEqual(self.states, ['SLEEPING'])
+
+    def test_finishing_a_sentence_restarts_the_silence_window(self):
+        # A long answer must not be followed instantly by auto-sleep or a
+        # proactive remark: the user has to be given time to reply to it.
+        p = self.make_player()
+        p._speaking_lock = threading.Lock()
+        p._last_user_speech = time.monotonic() - 600
+        p._out_level = 1.0
+        p._out_latency = 0.1
+        p._tail_until = 0.0
+        p.set_speaking(True)
+        self.assertLess(p._last_user_speech, time.monotonic() - 500)   # unchanged while talking
+        p.set_speaking(False, 'turn_complete')
+        self.assertGreater(p._last_user_speech, time.monotonic() - 5)  # window starts now
+        self.assertGreater(p._tail_until, time.monotonic())            # echo guard still armed
 
     def test_sleep_is_deferred_for_work_or_queued_speech(self):
         self.assertTrue(can_auto_sleep(speaking=False, pending_tools=0, queued_audio=False))

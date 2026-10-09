@@ -963,6 +963,12 @@ class JarvisLive:
             # still needs it to recognise our own voice. It is dropped when the
             # tail expires. What the guard learned about the room always stays.
             self._out_level = 0.0
+            # Jarvis just said something, so the conversation is live: give the
+            # user the full silence window to answer from HERE, not from their
+            # last words. Without this, a long answer (the "while you were away"
+            # briefing above all) could be followed immediately by the auto-sleep
+            # or a proactive remark, and a reply to it would go unheard.
+            self._last_user_speech = time.monotonic()
         if value:
             self._set_ui_state("SPEAKING", reason or "audio_start")
         elif not self.ui.muted:
