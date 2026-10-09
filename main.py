@@ -87,6 +87,7 @@ from core                      import confirm as confirm_gate
 from core                      import audio_devices
 from core.action_loader        import discover_actions
 from core.echo                 import EchoGuard
+from core                      import unprompted
 from core.playback_timing      import playback_idle, parse_output_latency
 from core.perf_trace          import (
     HeartbeatLag, log_audio_in_status, log_audio_write, log_lag,
@@ -962,6 +963,12 @@ class JarvisLive:
             # still needs it to recognise our own voice. It is dropped when the
             # tail expires. What the guard learned about the room always stays.
             self._out_level = 0.0
+            # Jarvis just said something, so the conversation is live: give the
+            # user the full silence window to answer from HERE, not from their
+            # last words. Without this, a long answer (the "while you were away"
+            # briefing above all) could be followed immediately by the auto-sleep
+            # or a proactive remark, and a reply to it would go unheard.
+            self._last_user_speech = time.monotonic()
         if value:
             self._set_ui_state("SPEAKING", reason or "audio_start")
         elif not self.ui.muted:
@@ -2227,6 +2234,26 @@ class JarvisLive:
             if late is not None:
                 log_lag("asyncio", late)
 
+    # ── Unprompted speech ───────────────────────────────────────────────────────
+
+    def _may_speak_unprompted(self) -> bool:
+        """Whether an unprompted remark can reach the user (see core/unprompted.py)."""
+        with self._speaking_lock:
+            speaking = self._is_speaking
+        return unprompted.may_speak(connected=bool(self.session), awake=bool(self._awake),
+                                    muted=bool(getattr(self.ui, "muted", False)), speaking=speaking)
+
+    async def _watch_mute(self) -> None:
+        """Unmuting counts as the user arriving: the silence clock starts again, so a
+        proactive remark does not fire the moment they come back."""
+        was = bool(getattr(self.ui, "muted", False))
+        while True:
+            await asyncio.sleep(2)
+            now_muted = bool(getattr(self.ui, "muted", False))
+            if unprompted.silence_restarts(was, now_muted):
+                was = now_muted
+                self._last_user_speech = time.monotonic()
+
     # ── System monitor ──────────────────────────────────────────────────────────
 
     async def _run_system_monitor(self) -> None:
@@ -2234,13 +2261,10 @@ class JarvisLive:
         while True:
             await asyncio.sleep(10)
             alert = await asyncio.to_thread(self._sys_monitor.check)
-            if not alert or not self.session or not self._awake:
+            if not alert or not self._may_speak_unprompted():
                 continue
-            # Don't interrupt an active conversation
-            with self._speaking_lock:
-                speaking = self._is_speaking
-            if speaking or (time.monotonic() - self._last_user_speech) < 10:
-                continue
+            if (time.monotonic() - self._last_user_speech) < 10:
+                continue            # don't interrupt an active conversation
             try:
                 await self.session.send_client_content(
                     turns={"role": "user", "parts": [{"text": alert}]},
@@ -2255,12 +2279,10 @@ class JarvisLive:
         """Check user-configured topics once per day; speak alerts when new headlines appear."""
         await asyncio.sleep(300)          # wait 5 min after startup before first check
         while True:
-            if self.session and self._awake:
-                # Don't interrupt if user spoke recently or JARVIS is mid-sentence
-                with self._speaking_lock:
-                    speaking = self._is_speaking
+            if self._may_speak_unprompted():
+                # Don't interrupt if the user spoke recently
                 recent_speech = (time.monotonic() - self._last_user_speech) < 30
-                if not speaking and not recent_speech:
+                if not recent_speech:
                     try:
                         alerts = await asyncio.to_thread(monitor_check_all)
                         memory = load_memory()
@@ -2293,12 +2315,7 @@ class JarvisLive:
         while True:
             await asyncio.sleep(60)   # evaluate once per minute
 
-            if not self.session or not self._awake:
-                continue
-
-            with self._speaking_lock:
-                speaking = self._is_speaking
-            if speaking:
+            if not self._may_speak_unprompted():
                 continue
 
             if not self._proactive.should_trigger(self._last_user_speech):
@@ -2490,6 +2507,7 @@ class JarvisLive:
                     tg.create_task(self._run_background_monitor())
                     tg.create_task(self._run_proactive_mode())
                     tg.create_task(self._run_sleep_watch())
+                    tg.create_task(self._watch_mute())
                     if self._dashboard:
                         tg.create_task(self._relay_phone_audio())
 
