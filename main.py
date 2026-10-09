@@ -88,6 +88,8 @@ from core                      import audio_devices
 from core.action_loader        import discover_actions
 from core.echo                 import EchoGuard
 from core                      import unprompted
+from core                      import liveness
+from core                      import unprompted
 from core.playback_timing      import playback_idle, parse_output_latency
 from core.perf_trace          import (
     HeartbeatLag, log_audio_in_status, log_audio_write, log_lag,
@@ -156,6 +158,7 @@ def _pcm_level(samples) -> float:
 # Extra time beyond the device's reported output latency before the microphone
 # is trusted again: covers room decay and the speaker's own settling.
 _TAIL_MARGIN = 0.25
+_SEND_TIMEOUT = 15.0   # seconds one mic send may take before the socket counts as dead
 
 _VIS_WIN = 1024        # ~43 ms analysis window at 24 kHz: enough for formants
 _VIS_HOP = 480         # 20 ms between frames, i.e. 50 shapes a second
@@ -591,6 +594,8 @@ class JarvisLive:
         # guessed; see _play_audio.
         self._out_latency          = 0.20    # seconds, replaced with the real value
         self._tail_until           = 0.0     # monotonic time the echo tail expires
+        self._last_server_msg      = 0.0     # monotonic: anything heard from the live service
+        self._last_mic_send        = 0.0     # monotonic: mic audio actually handed over
         # Wall-clock time at which the audio written next will begin to sound.
         # The mouth is scheduled against this, never against "now": batches are
         # handed to the device far faster than they play, so "now" ran the lips
@@ -1440,12 +1445,25 @@ class JarvisLive:
             # mic / phone PCM through the new `audio` field instead. Queue items
             # are {"data": <bytes>, "mime_type": <str>} from _listen_audio and
             # the phone relay.
-            await self.session.send_realtime_input(
-                audio=types.Blob(
-                    data=msg["data"],
-                    mime_type=msg.get("mime_type", "audio/pcm"),
+            # A send into a half-open socket can sit here for ever: the bytes are
+            # accepted and nobody answers. Every mic block after it is then dropped
+            # by _enqueue_audio, so Jarvis goes deaf while still looking healthy.
+            try:
+                await asyncio.wait_for(
+                    self.session.send_realtime_input(
+                        audio=types.Blob(
+                            data=msg["data"],
+                            mime_type=msg.get("mime_type", "audio/pcm"),
+                        )
+                    ),
+                    timeout=_SEND_TIMEOUT,
                 )
-            )
+                self._last_mic_send = time.monotonic()
+            except asyncio.TimeoutError:
+                print("[JARVIS] Microphone send stalled — rebuilding the session.")
+                self.ui.write_log("SYS: The microphone stopped reaching the live service — reconnecting...")
+                self.request_reconnect(keep_context=True, reason="microphone send stalled")
+                return
 
     async def _listen_audio(self):
         print("[JARVIS] 🎤 Mic started")
@@ -1676,6 +1694,9 @@ class JarvisLive:
         try:
             while True:
                 async for response in self.session.receive():
+                    # Proof the connection is alive. A session that goes completely
+                    # silent is the failure the liveness watch below looks for.
+                    self._last_server_msg = time.monotonic()
 
                     # ── Session resumption ───────────────────────────────────
                     # The server sends this periodically. `resumable` goes false
@@ -2254,6 +2275,22 @@ class JarvisLive:
                 was = now_muted
                 self._last_user_speech = time.monotonic()
 
+    async def _run_liveness_watch(self) -> None:
+        """Rebuild the session when we are streaming audio into a connection that has
+        stopped answering (see core/liveness.py). Nothing else notices this."""
+        while True:
+            await asyncio.sleep(10)
+            if not self.session:
+                continue
+            if liveness.should_reconnect(now=time.monotonic(),
+                                         last_server_msg=self._last_server_msg,
+                                         last_mic_send=self._last_mic_send):
+                quiet = time.monotonic() - self._last_server_msg
+                print(f"[JARVIS] Nothing from the live service for {quiet:.0f}s — reconnecting.")
+                self.ui.write_log("SYS: The live service stopped responding — reconnecting...")
+                self._last_server_msg = time.monotonic()   # don't fire again while it rebuilds
+                self.request_reconnect(keep_context=True, reason="no response from the live service")
+
     # ── System monitor ──────────────────────────────────────────────────────────
 
     async def _run_system_monitor(self) -> None:
@@ -2463,6 +2500,10 @@ class JarvisLive:
                     self.audio_in_queue   = asyncio.Queue()
                     self.out_queue        = asyncio.Queue(maxsize=32)  # ~2 s max at 16 kHz/1024 samples
                     self._turn_done_event = asyncio.Event()
+                    # A fresh connection: the liveness watch must judge this session,
+                    # never carry a dead one's timestamps into it.
+                    self._last_server_msg = time.monotonic()
+                    self._last_mic_send = 0.0
                     self._mic_ready = asyncio.Event()
 
                     # Reset transient state that must not carry over from a previous session
@@ -2508,6 +2549,7 @@ class JarvisLive:
                     tg.create_task(self._run_proactive_mode())
                     tg.create_task(self._run_sleep_watch())
                     tg.create_task(self._watch_mute())
+                    tg.create_task(self._run_liveness_watch())
                     if self._dashboard:
                         tg.create_task(self._relay_phone_audio())
 
