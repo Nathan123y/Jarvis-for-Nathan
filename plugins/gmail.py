@@ -139,13 +139,24 @@ def _service(account: str, *, allow_login: bool = False):
                 creds = None
         if creds and not creds.has_scopes(_SCOPES):
             creds = None
+        revoked = False
         if creds and not creds.valid and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
                 _write_token(creds, token)
-            except Exception:
+            except Exception as exc:
+                # invalid_grant: Google itself ended the sign-in. While the
+                # OAuth app is in Testing, Google does this 7 days after consent.
+                revoked = "invalid_grant" in str(exc)
                 creds = None
         if not creds or not creds.valid:
+            if not allow_login and revoked:
+                raise RuntimeError(
+                    f"Google ended the {account} Gmail sign-in. "
+                    f"Ask me to 'connect {account} Gmail' to sign in again. "
+                    "If this keeps happening about once a week, the Google Cloud "
+                    "OAuth app is still in Testing; publish it to production."
+                )
             if not allow_login:
                 raise RuntimeError(
                     f"{account.title()} Gmail is not connected. "
