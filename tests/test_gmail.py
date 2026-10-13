@@ -254,6 +254,34 @@ class GmailPluginTests(unittest.TestCase):
             if os.name == "posix":
                 self.assertEqual(paths["spam"].stat().st_mode & 0o777, 0o600)
 
+    def test_google_revoked_sign_in_says_so_without_opening_a_browser(self):
+        modules = {name: ModuleType(name) for name in (
+            "google.auth.transport.requests", "google.oauth2.credentials",
+            "google_auth_oauthlib.flow", "googleapiclient.discovery",
+        )}
+        credentials_class, flow_class = MagicMock(), MagicMock()
+        modules["google.auth.transport.requests"].Request = MagicMock()
+        modules["google.oauth2.credentials"].Credentials = credentials_class
+        modules["google_auth_oauthlib.flow"].InstalledAppFlow = flow_class
+        modules["googleapiclient.discovery"].build = MagicMock()
+        creds = credentials_class.from_authorized_user_file.return_value
+        creds.has_scopes.return_value = True
+        creds.valid, creds.expired, creds.refresh_token = False, True, "fake-refresh"
+        creds.refresh.side_effect = Exception(
+            "invalid_grant: Token has been expired or revoked.")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = {name: root / f"gmail_{name}_token.json" for name in gmail._ACCOUNTS}
+            paths["spam"].write_text("expired spam token", encoding="utf-8")
+            with patch.dict(sys.modules, modules), \
+                    patch.object(gmail, "_ACCOUNT_TOKENS", paths), \
+                    patch.object(gmail, "_LEGACY_TOKEN", root / "missing.json"):
+                with self.assertRaisesRegex(RuntimeError, "Google ended the spam Gmail sign-in"):
+                    gmail._service("spam")
+            flow_class.from_client_secrets_file.assert_not_called()
+            self.assertEqual(paths["spam"].read_text(), "expired spam token")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -26,6 +26,14 @@ def _method(name, namespace):
     return namespace["Player"]
 
 
+def _function(name, namespace):
+    module = ast.parse(SOURCE.read_text(encoding="utf-8"))
+    func = next(n for n in module.body
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name)
+    exec(compile(ast.Module(body=[func], type_ignores=[]), str(SOURCE), "exec"), namespace)
+    return namespace[name]
+
+
 class VoiceRecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_speaker_device_failure_raises_for_session_recovery(self):
         class BrokenSpeaker:
@@ -61,6 +69,7 @@ class VoiceRecoveryTests(unittest.IsolatedAsyncioTestCase):
             "_pcm_level": lambda samples: 0.0,
             "playback_idle": lambda *args: False,
         }
+        _function("_close_stream_off_loop", namespace)
         Player = _method("_play_audio", namespace)
         player = Player()
         player.audio_in_queue = asyncio.Queue()
