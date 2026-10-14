@@ -282,13 +282,21 @@ def _process_pdf(path: Path, action: str, params: dict, speak=None) -> str:
 
     if action in ("summarize", "extract_text", "translate_hint", "analyze", "reformat"):
         text = _extract_pdf_text()
+        _see_pages = (" Use action 'study' with this file_path to see the pages "
+                      "themselves, diagrams included.")
         if not text.strip():
-            return "Could not extract text from PDF (may be scanned/image-based)."
+            return "Could not extract text from PDF (may be scanned/image-based)." + _see_pages
 
         if action == "extract_text":
             out = _output_path(path, "text", ".txt")
             out.write_text(text, encoding="utf-8")
-            return f"Text extracted ({len(text)} chars). Saved: {out.name}"
+            result = f"Text extracted ({len(text)} chars). Saved: {out.name}"
+            if len(text.strip()) < 400:
+                # A homework sheet of circuit diagrams yields a header and little
+                # else; reading that text back helps no one.
+                result += " Very little text came out, so the pages are mostly images." + _see_pages
+            return result
+
 
         prompt_map = {
             "summarize":      f"Summarize this PDF document concisely:\n\n{text}",

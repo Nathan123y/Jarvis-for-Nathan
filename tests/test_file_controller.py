@@ -143,6 +143,23 @@ class FileControllerTests(unittest.TestCase):
             found = list(fc._bounded_walk(home, deadline=float("inf")))
         self.assertEqual([p.parent.name for p in found], ["Desktop"])
 
+    def test_locate_file_finds_a_guessed_path_by_name(self):
+        home = self.root / "home"
+        (home / "Downloads").mkdir(parents=True)
+        real = home / "Downloads" / "EE98 - FL26 - Homework 1.pdf"
+        real.write_bytes(b"%PDF")
+        with patch.object(Path, "home", return_value=home), patch.object(fc, "_OS", "Linux"), \
+                patch.dict("os.environ", {"HOME": str(home)}):
+            self.assertEqual(fc.locate_file("~/Downloads/EE98 - FL26 - Homework 1.pdf"), real)
+            self.assertEqual(fc.locate_file("/Users/nathan/Documents/EE98 - FL26 - Homework 1.pdf"), real)
+            self.assertIsNone(fc.locate_file("/Users/nathan/Documents/taxes.pdf"))
+
+    def test_content_search_accepts_text_given_as_name(self):
+        (self.outside / "hello.txt").write_text("hello world", encoding="utf-8")
+        result = fc.file_controller({"action": "search_contents",
+                                     "path": str(self.outside), "name": "world"})
+        self.assertIn("hello.txt", result)
+
 
 if __name__ == "__main__":
     unittest.main()

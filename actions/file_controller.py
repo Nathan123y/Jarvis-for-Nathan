@@ -754,6 +754,64 @@ def _spotlight(root: Path, words: list[str], joiner: str) -> list[Path]:
     return [Path(line) for line in result.stdout.splitlines()[:5000] if line]
 
 
+def _scored_matches(name: str, extension: str, search_path: Path) -> list[tuple[float, Path]]:
+    """Files under search_path scored against a spoken or typed name, best first."""
+    candidates: list[Path] = []
+
+    # Spotlight makes a home-wide macOS search fast. Names arrive by voice,
+    # so ask it for every word of the name rather than the exact string:
+    # "EE98FL26_Homework1.pdf" must find "EE98 - FL26 - Homework 1.pdf".
+    # The bounded walker is the portable fallback and also covers
+    # unindexed external drives.
+    words = _name_words(name)
+    if _OS == "Darwin" and words:
+        candidates = _spotlight(search_path, words, "&&")
+        if not candidates:
+            # A misheard word: take anything sharing a longer word, and let
+            # the scorer below decide what is close enough.
+            candidates = _spotlight(search_path, [w for w in words if len(w) >= 4], "||")
+
+    if not candidates:
+        deadline = time.monotonic() + _MAX_SEARCH_SECONDS
+        candidates = list(_bounded_walk(search_path, deadline))
+
+    scored = []
+    for item in candidates:
+        try:
+            if extension and item.suffix.casefold() != extension:
+                continue
+            score = _name_score(name, item.name) if name else 1.0
+            if score <= 0 or not item.is_file():
+                continue
+            if _LIBRARY in item.parents:
+                score -= 0.05   # app data and attachments, rarely what was meant
+
+            scored.append((score, item))
+        except (OSError, PermissionError):
+            continue
+
+    scored.sort(key=lambda pair: -pair[0])
+    return scored
+
+
+def locate_file(raw: str) -> Path | None:
+    """The file a model-supplied path most likely means.
+
+    Models guess paths: "~/Downloads/x.pdf", a made-up user folder, or a name
+    with the spacing changed. An existing path is used as is; otherwise the
+    file name is looked for across the home folder and taken only when it
+    matches unambiguously well."""
+    if not raw or not raw.strip():
+        return None
+    path = _resolve_path(raw)
+    if path.is_file():
+        return path
+    scored = _scored_matches(path.name, path.suffix.casefold(), Path.home())
+    if scored and scored[0][0] >= 0.9:
+        return scored[0][1]
+    return None
+
+
 def find_files(name: str = "", extension: str = "",
 
                path: str = "home", max_results: int = 20) -> str:
@@ -768,45 +826,12 @@ def find_files(name: str = "", extension: str = "",
         extension = extension.casefold()
         if extension and not extension.startswith("."):
             extension = "." + extension
-        candidates: list[Path] = []
-
-        # Spotlight makes a home-wide macOS search fast. Names arrive by voice,
-        # so ask it for every word of the name rather than the exact string:
-        # "EE98FL26_Homework1.pdf" must find "EE98 - FL26 - Homework 1.pdf".
-        # The bounded walker is the portable fallback and also covers
-        # unindexed external drives.
-        words = _name_words(name)
-        if _OS == "Darwin" and words:
-            candidates = _spotlight(search_path, words, "&&")
-            if not candidates:
-                # A misheard word: take anything sharing a longer word, and let
-                # the scorer below decide what is close enough.
-                candidates = _spotlight(search_path, [w for w in words if len(w) >= 4], "||")
-
-        if not candidates:
-            deadline = time.monotonic() + _MAX_SEARCH_SECONDS
-            candidates = list(_bounded_walk(search_path, deadline))
-
-        scored = []
-        for item in candidates:
-            try:
-                if extension and item.suffix.casefold() != extension:
-                    continue
-                score = _name_score(name, item.name) if name else 1.0
-                if score <= 0 or not item.is_file():
-                    continue
-                if _LIBRARY in item.parents:
-                    score -= 0.05   # app data and attachments, rarely what was meant
-
-                scored.append((score, item))
-            except (OSError, PermissionError):
-                continue
+        scored = _scored_matches(name, extension, search_path)
 
         if not scored:
             query = name or extension or "files"
             return f"No {query} found in {search_path.name}/"
 
-        scored.sort(key=lambda pair: -pair[0])
         best = scored[0][0]
         # Show close guesses only when there is nothing better.
         floor = 0.75 if best >= 0.8 else 0.0
@@ -1198,7 +1223,9 @@ def file_controller(
 
         elif action == "search_contents":
             return search_file_contents(
-                query=params.get("query", ""),
+                # The model sometimes puts the search text in "name".
+                query=params.get("query") or params.get("name") or "",
+
                 extension=params.get("extension", ""),
                 path=path,
                 max_results=int(params.get("max_results", 20)),
