@@ -1,4 +1,5 @@
 #desktop.py
+import ast
 import os
 import sys
 import json
@@ -43,7 +44,7 @@ def _build_sandbox() -> dict:
         "len": len, "str": str, "int": int, "float": float,
         "bool": bool, "list": list, "dict": dict, "tuple": tuple,
         "range": range, "enumerate": enumerate, "sorted": sorted,
-        "isinstance": isinstance, "hasattr": hasattr, "getattr": getattr,
+        "isinstance": isinstance, "hasattr": hasattr,
         "max": max, "min": min, "sum": sum, "abs": abs,
         "zip": zip, "map": map, "filter": filter,
     }
@@ -80,6 +81,29 @@ def _build_sandbox() -> dict:
     return sandbox
 
 
+# The prompt asks for no deletion, but Path is in the sandbox, so enforce it here.
+_BLOCKED_ATTRS = {"unlink", "rmdir", "rename", "replace", "chmod", "lchmod",
+                  "symlink_to", "hardlink_to", "rmtree", "move", "remove", "system"}
+_BLOCKED_NAMES = {"getattr", "exec", "eval", "compile", "open", "__import__", "globals", "vars"}
+
+
+def _unsafe_reason(code: str) -> str:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        return f"invalid code ({e.msg})"
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            return "imports"
+        if isinstance(node, ast.Attribute) and (
+                node.attr in _BLOCKED_ATTRS or node.attr.startswith("__")):
+            return f"'.{node.attr}'"
+        if isinstance(node, ast.Name) and (
+                node.id in _BLOCKED_NAMES or node.id.startswith("__")):
+            return f"'{node.id}'"
+    return ""
+
+
 def _execute_generated_code(code: str, player=None) -> str:
     if not code or code.strip() == "UNSAFE":
         return "This action cannot be performed safely."
@@ -88,6 +112,11 @@ def _execute_generated_code(code: str, player=None) -> str:
     if code.startswith("```"):
         lines = code.split("\n")
         code  = "\n".join(lines[1:-1]).strip()
+
+    reason = _unsafe_reason(code)
+    if reason:
+        print(f"[Desktop] Refused generated code ({reason}):\n{code[:300]}")
+        return f"I refused to run that: the generated code used {reason}, which isn't allowed."
 
     sandbox      = _build_sandbox()
     output_lines = []
@@ -179,7 +208,9 @@ def set_wallpaper(image_path: str) -> str:
                 f'tell application "System Events" to tell every desktop to '
                 f'set picture to POSIX file "{path}"'
             )
-            subprocess.run(["osascript", "-e", script], capture_output=True)
+            r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
+            if r.returncode != 0:
+                return f"Could not set wallpaper: {r.stderr.strip() or 'osascript failed'}"
             return f"Wallpaper set: {path.name}"
 
         else:
@@ -241,14 +272,13 @@ def set_wallpaper_from_url(url: str) -> str:
     try:
         import urllib.request
         suffix = Path(url.split("?")[0]).suffix or ".jpg"
-        tmp    = Path(tempfile.mktemp(suffix=suffix))
-        urllib.request.urlretrieve(url, str(tmp))
-        result = set_wallpaper(str(tmp))
-        try:
-            tmp.unlink()
-        except Exception:
-            pass
-        return result
+        # The OS reads the wallpaper from this path later (at login, on a new
+        # Space), so it has to stay on disk rather than in a deleted temp file.
+        folder = Path.home() / "Pictures" / "Jarvis Wallpapers"
+        folder.mkdir(parents=True, exist_ok=True)
+        dest = folder / f"wallpaper_{datetime.now():%Y%m%d_%H%M%S}{suffix}"
+        urllib.request.urlretrieve(url, str(dest))
+        return set_wallpaper(str(dest))
     except Exception as e:
         return f"Could not download wallpaper: {e}"
 

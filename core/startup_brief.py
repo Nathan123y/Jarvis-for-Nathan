@@ -111,8 +111,8 @@ def gather(timeout: float = GATHER_SECONDS) -> tuple[list, list | None, list | N
     def runner(name, fn):
         try:
             results[name] = fn()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[Brief] {name} section skipped: {e!r}")
 
     threads = [threading.Thread(target=runner, args=(n, fn), daemon=True, name=f"startup-brief-{n}")
                for n, fn in (("tasks", tasks), ("canvas", canvas))]

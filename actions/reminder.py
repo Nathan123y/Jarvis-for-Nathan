@@ -43,6 +43,42 @@ def _sanitise(text: str, max_len: int = 200) -> str:
             .strip()
     )[:max_len]
 
+def _mac_label(task_name: str) -> str:
+    return f"com.jarvis.reminder.{task_name}"
+
+
+def _mac_cleanup_block(task_name: str) -> str:
+    # launchd ignores the Year key, so a job left loaded would fire again on this
+    # date every year. Remove the plist, then the job itself — last, because
+    # `launchctl remove` stops this very process.
+    label = _mac_label(task_name)
+    plist = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+    return f"""
+try:
+    pathlib.Path({json.dumps(str(plist))}).unlink(missing_ok=True)
+    import subprocess
+    subprocess.run(["launchctl", "remove", {json.dumps(label)}], check=False)
+except Exception:
+    pass
+"""
+
+
+def _sweep_fired_mac_reminders(agents_dir: Path) -> None:
+    """Unload reminders that already fired: their script deleted itself, but
+    reminders set before the self-cleanup existed left their job loaded."""
+    for plist in agents_dir.glob("com.jarvis.reminder.*.plist"):
+        task_name = plist.stem.removeprefix("com.jarvis.reminder.")
+        if (_scripts_dir() / f"{task_name}.py").exists():
+            continue                       # still pending
+        try:
+            subprocess.run(["launchctl", "unload", str(plist)],
+                           capture_output=True, timeout=5)
+            plist.unlink(missing_ok=True)
+            print(f"[Reminder] Removed fired reminder job {plist.name}")
+        except Exception as e:
+            print(f"[Reminder] Could not remove {plist.name}: {e}")
+
+
 def _write_notify_script(task_name: str, message: str, os_name: str) -> Path:
     script_path = _scripts_dir() / f"{task_name}.py"
     msg_literal = json.dumps(message)  
@@ -98,7 +134,7 @@ except Exception:
 if not notified:
     try:
         import subprocess
-        script = 'display notification "{{}}" with title "J.A.R.V.I.S Reminder"'.format(
+        script = 'display notification "{{}}" with title "J.A.R.V.I.S Reminder" sound name "Glass"'.format(
             message.replace('"', '')
         )
         subprocess.run(["osascript", "-e", script], check=False)
@@ -138,7 +174,7 @@ try:
     pathlib.Path(__file__).unlink(missing_ok=True)
 except Exception:
     pass
-"""
+{_mac_cleanup_block(task_name) if os_name == "mac" else ""}"""
     script_path.write_text(script_body, encoding="utf-8")
     script_path.chmod(0o600)   # owner read/write only
     return script_path
@@ -203,8 +239,9 @@ def _schedule_mac(target_dt: datetime, task_name: str,
                   script_path: Path) -> str:
     agents_dir = Path.home() / "Library" / "LaunchAgents"
     agents_dir.mkdir(parents=True, exist_ok=True)
+    _sweep_fired_mac_reminders(agents_dir)
 
-    label     = f"com.jarvis.reminder.{task_name}"
+    label     = _mac_label(task_name)
     plist_path = agents_dir / f"{label}.plist"
 
     plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>

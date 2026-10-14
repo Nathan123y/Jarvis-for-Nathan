@@ -76,8 +76,14 @@ def _read_file(file_path: str) -> tuple[str, str]:
 
 
 def _save_file(path: Path, content: str) -> str:
+    if not content.strip():
+        return "Not saved: the model returned no code, so I left the file untouched."
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        # Model output replaces the whole file, so keep the previous version.
+        if path.is_file() and path.read_text(encoding="utf-8", errors="replace") != content:
+            backup = path.with_name(path.name + ".bak")
+            backup.write_bytes(path.read_bytes())
         path.write_text(content, encoding="utf-8")
         return f"Saved to: {path}"
     except Exception as e:
@@ -464,7 +470,6 @@ def _screen_debug_action(description, file_path, player, speak=None) -> str:
         from google.genai import types
 
         image_bytes  = screenshot_path.read_bytes()
-        image_base64 = _image_to_base64(screenshot_path)
 
         user_question = description or "What error or problem do you see on the screen? How can it be fixed?"
 
@@ -504,12 +509,15 @@ Be specific and actionable. If you see an error message, quote it exactly."""
         if file_path and file_content:
 
             code_match = re.search(r"```[a-zA-Z]*\n(.*?)```", analysis, re.DOTALL)
-            if code_match:
-                fixed_code = code_match.group(1).strip()
-                save_path  = Path(file_path)
-                _save_file(save_path, fixed_code)
-                analysis += f"\n\n✅ Fixed code has been saved to: {file_path}"
-                print(f"[Code] ✅ Fixed code saved: {file_path}")
+            fixed_code = code_match.group(1).strip() if code_match else ""
+            # The first code block is often just the corrected lines, not the
+            # whole file; writing that over the file would delete the rest.
+            if fixed_code and len(fixed_code.splitlines()) >= 0.6 * len(file_content.splitlines()):
+                status = _save_file(Path(file_path), fixed_code)
+                analysis += f"\n\n{status} (previous version kept as .bak)"
+                print(f"[Code] ✅ Fixed code: {status}")
+            elif fixed_code:
+                analysis += "\n\nThe fix above is a partial snippet, so I left the file unchanged."
 
         return analysis
 

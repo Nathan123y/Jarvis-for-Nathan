@@ -2235,8 +2235,8 @@ class JarvisLive:
         if brief_panel:
             try:
                 self.ui.show_content("WHILE YOU WERE AWAY" if away_result else "MISSION LOG", brief_panel)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[JARVIS] Could not show the startup brief panel: {e!r}")
 
         await asyncio.sleep(0.3)
         if not self.session:
