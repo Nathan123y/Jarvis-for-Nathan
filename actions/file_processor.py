@@ -85,6 +85,88 @@ def _output_path(src: Path, suffix: str, new_ext: str = None) -> Path:
     name = f"{src.stem}_{suffix}{ext}"
     return src.parent / name
 
+
+# ── Study: hand the pages themselves to the live conversation ────────────────
+# Homework is usually a scan, and the part that matters (a circuit, a graph, a
+# free-body diagram) is a picture either way. Text extraction returns almost
+# nothing from it, so for study the pages are rendered and attached to the
+# main session as images: the voice model sees exactly what the user sees and
+# keeps it in context for the whole back-and-forth.
+STUDY_ACTIONS = {"study", "tutor", "look", "read_pages", "show"}
+_STUDY_MAX_PAGES = 6
+_STUDY_WIDTH = 1400     # px; small subscripts and component labels stay legible
+
+
+def _parse_pages(spec, total: int) -> list[int]:
+    """'2' | '1-3' | '1,3,5' | '' → zero-based page indexes, capped."""
+    spec = str(spec or "").strip()
+    if not spec:
+        return list(range(min(total, _STUDY_MAX_PAGES)))
+    picked: list[int] = []
+    for part in re.split(r"[,\s]+", spec):
+        m = re.fullmatch(r"(\d+)\s*-\s*(\d+)", part)
+        if m:
+            lo, hi = sorted((int(m.group(1)), int(m.group(2))))
+            picked.extend(range(lo, hi + 1))
+        elif part.isdigit():
+            picked.append(int(part))
+    indexes = [p - 1 for p in dict.fromkeys(picked) if 1 <= p <= total]
+    return indexes[:_STUDY_MAX_PAGES]
+
+
+def _jpeg(img) -> bytes:
+    import io
+    img = img.convert("RGB")
+    if img.width > _STUDY_WIDTH:
+        img = img.resize((_STUDY_WIDTH, round(img.height * _STUDY_WIDTH / img.width)))
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=80)
+    return buf.getvalue()
+
+
+def render_for_study(file_path: str, pages="") -> tuple[list[bytes], str]:
+    """Render a PDF's pages (or an image) as JPEGs for the live session.
+
+    Returns (images, note). `note` says which pages were rendered and how many
+    the document has, so the model can offer the rest. Raises ValueError with a
+    sayable reason when the file cannot be shown.
+    """
+    path = Path(file_path)
+    if not path.is_file():
+        raise ValueError(f"File not found: {file_path}")
+    kind = _detect_type(path)
+
+    if kind == "image":
+        from PIL import Image
+        with Image.open(path) as img:
+            return [_jpeg(img)], f"{path.name} (image)"
+
+    if kind != "pdf":
+        raise ValueError(f"Study mode shows PDFs and images; {path.name} is {kind}.")
+
+    import pypdfium2 as pdfium
+    doc = pdfium.PdfDocument(str(path))
+    try:
+        total = len(doc)
+        indexes = _parse_pages(pages, total)
+        if not indexes:
+            raise ValueError(f"{path.name} has {total} page(s); none matched '{pages}'.")
+        images = []
+        for i in indexes:
+            page = doc[i]
+            scale = _STUDY_WIDTH / page.get_width()
+            images.append(_jpeg(page.render(scale=scale).to_pil()))
+    finally:
+        doc.close()
+
+    shown = ", ".join(str(i + 1) for i in indexes)
+    note = f"{path.name}: page(s) {shown} of {total}"
+    if len(indexes) < total:
+        note += (f". Pages not shown yet can be opened with "
+                 f"action='study', pages='<numbers>'")
+    return images, note
+
+
 def _process_image(path: Path, action: str, params: dict, speak=None) -> str:
     try:
         from PIL import Image
@@ -802,7 +884,14 @@ def file_processor(parameters: dict, player=None, speak=None) -> str:
     if player:
         player.write_log(log_msg)
 
+    if action in STUDY_ACTIONS:
+        # Study needs the live session to attach the pages; main.py handles it
+        # before this handler runs. Reaching here means some other caller.
+        return ("Study mode attaches pages to the voice conversation and is only "
+                "available there. Use 'summarize' or 'describe' instead.")
+
     if file_type == "unknown":
+
         try:
             content = path.read_text(encoding="utf-8", errors="ignore")[:10000]
             model   = _gemini_client()
@@ -844,7 +933,7 @@ def file_processor(parameters: dict, player=None, speak=None) -> str:
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "file_processor",
-    "description": "Processes any file that the user has uploaded or dropped onto the interface. Use this when the user refers to an uploaded file and wants an action on it. Supports: images (describe/ocr/resize/compress/convert), PDFs (summarize/extract_text/to_word), Word docs & text files (summarize/fix/reformat/translate), CSV/Excel (analyze/stats/filter/sort/convert), JSON/XML (validate/format/analyze), code files (explain/review/fix/optimize/run/document/test), audio (transcribe/trim/convert/info), video (trim/extract_audio/extract_frame/compress/transcribe/info), archives (list/extract), presentations (summarize/extract_text). ALWAYS call this tool when a file has been uploaded and the user gives a command about it. If the user's command is ambiguous, pick the most logical action for that file type.",
+    "description": "Processes any file that the user has uploaded or dropped onto the interface, or any file path found with file_controller. Use this when the user refers to a file and wants an action on it. To READ a PDF or image yourself (homework, worksheets, problem sets, diagrams, circuits, graphs, scanned pages, slides as PDF) use action='study': the pages are attached to this conversation as images so you can see every problem and diagram and tutor the user through them; prefer it over summarize whenever the user wants to work through, understand, or answer questions about the content. Supports: images (describe/ocr/resize/compress/convert), PDFs (summarize/extract_text/to_word), Word docs & text files (summarize/fix/reformat/translate), CSV/Excel (analyze/stats/filter/sort/convert), JSON/XML (validate/format/analyze), code files (explain/review/fix/optimize/run/document/test), audio (transcribe/trim/convert/info), video (trim/extract_audio/extract_frame/compress/transcribe/info), archives (list/extract), presentations (summarize/extract_text). ALWAYS call this tool when a file has been uploaded and the user gives a command about it. If the user's command is ambiguous, pick the most logical action for that file type.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
@@ -854,7 +943,11 @@ TOOL = {
             },
             "action": {
                 "type": "STRING",
-                "description": "What to do with the file. Examples by type:\nimage: describe | ocr | resize | compress | convert | info\npdf: summarize | extract_text | to_word | info\ndocx/txt: summarize | fix | reformat | translate_hint | word_count | to_bullet\ncsv/excel: analyze | stats | filter | sort | convert | info\njson: validate | format | analyze | to_csv\ncode: explain | review | fix | optimize | run | document | test\naudio: transcribe | trim | convert | info\nvideo: trim | extract_audio | extract_frame | compress | transcribe | info | convert\narchive: list | extract\npptx: summarize | extract_text | analyze"
+                "description": "What to do with the file. Examples by type:\nimage: study | describe | ocr | resize | compress | convert | info\npdf: study | summarize | extract_text | to_word | info\ndocx/txt: summarize | fix | reformat | translate_hint | word_count | to_bullet\ncsv/excel: analyze | stats | filter | sort | convert | info\njson: validate | format | analyze | to_csv\ncode: explain | review | fix | optimize | run | document | test\naudio: transcribe | trim | convert | info\nvideo: trim | extract_audio | extract_frame | compress | transcribe | info | convert\narchive: list | extract\npptx: summarize | extract_text | analyze"
+            },
+            "pages": {
+                "type": "STRING",
+                "description": "For action='study' on a PDF: which pages to show, e.g. '2', '1-3', '1,4'. Omit for the first 6."
             },
             "instruction": {
                 "type": "STRING",
