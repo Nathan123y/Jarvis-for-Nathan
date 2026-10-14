@@ -36,6 +36,8 @@ config/trading_day/
 # ── Personal data the assistant accumulates about you ─────────────────────────
 memory/long_term.json
 memory/*.db
+# Mission Control task list (your deadlines and notes)
+memory/mission_control.json
 # Runtime lock files (for example Mission Control's)
 memory/*.lock
 

@@ -81,7 +81,7 @@ class NutritionTests(unittest.TestCase):
         with patch.dict(sys.modules, {"cv2": types.ModuleType("cv2"),
                                       "numpy": numpy_stub}):
             spec = importlib.util.spec_from_file_location(
-                "calorie_test", Path(__file__).resolve().parents[1] / "plugins" / "calorie_counter (4).py")
+                "calorie_test", Path(__file__).resolve().parents[1] / "plugins" / "calorie_counter.py")
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
         class Camera:

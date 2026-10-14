@@ -661,7 +661,15 @@ class DashboardServer:
             if not _auth(req):
                 return JSONResponse({"error": "Unauthorized"}, status_code=401)
             count = len(self._device_sessions)
+            revoked_keys = {d["session_key"] for d in self._device_sessions.values()}
             self._device_sessions.clear()
+            # Also end the live sessions those devices already hold, or a revoked
+            # phone keeps full control until JARVIS restarts. The caller stays in.
+            caller = req.headers.get("authorization", "").removeprefix("Bearer ").strip()
+            for tok in [t for t, k in self._token_keys.items()
+                        if k in revoked_keys and t != caller]:
+                self._tokens.discard(tok)
+                self._token_keys.pop(tok, None)
             return JSONResponse({"ok": True, "revoked": count})
 
         @app.post("/api/command")
@@ -823,6 +831,9 @@ class DashboardServer:
             try:
                 while True:
                     data = await websocket.receive_json()
+                    if tok not in self._tokens:          # revoked mid-session
+                        await websocket.close(code=4001)
+                        break
                     if data.get("type") == "command":
                         enc = data.get("enc", "")
                         t   = self._decrypt(tok, enc) if enc else (data.get("text") or "").strip()

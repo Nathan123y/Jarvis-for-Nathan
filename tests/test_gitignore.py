@@ -21,6 +21,7 @@ MUST_BE_IGNORED = [
     "config/trading/journal.jsonl",
     "memory/long_term.json",
     "memory/mission_control.lock",
+    "memory/mission_control.json",
     ".env",
 ]
 
