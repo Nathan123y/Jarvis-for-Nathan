@@ -32,7 +32,13 @@ _MAX_RESULTS = 100
 _SKIP_DIRS = {
     ".git", ".svn", ".hg", "node_modules", "__pycache__", ".Trash",
     ".cache", "Caches", "DerivedData", ".venv", "venv",
+    # Google Drive / Dropbox / OneDrive and iCloud Drive. Listing or reading in
+    # here asks macOS to download from the cloud, which can block for minutes.
+    "CloudStorage", "Mobile Documents",
 }
+# A file that is only in iCloud (Desktop & Documents sync, "Optimise Mac
+# Storage"). Reading it starts a download and blocks until it finishes.
+_SF_DATALESS = 0x40000000
 _TEXT_EXTENSIONS = {
     ".txt", ".md", ".markdown", ".rst", ".log", ".csv", ".tsv", ".json",
     ".jsonl", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
@@ -276,12 +282,21 @@ def _format_size(b: int) -> str:
     return f"{b:.1f} TB"
 
 
+def _is_cloud_only(st: os.stat_result) -> bool:
+    return bool(getattr(st, "st_flags", 0) & _SF_DATALESS)
+
+
 def _bounded_walk(root: Path, deadline: float):
     """Yield files without following symlinks or crawling noisy build folders."""
+    home = Path.home()
     for current, dirs, files in os.walk(root, followlinks=False):
         if time.monotonic() > deadline:
             return
         dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
+        if Path(current) == home:
+            # ~/Library is app data, not the user's files, and holds the
+            # cloud-synced folders above.
+            dirs[:] = [d for d in dirs if d != "Library"]
         for filename in files:
             if time.monotonic() > deadline:
                 return
@@ -745,7 +760,10 @@ def search_file_contents(query: str, path: str = "home",
 
     for item in _bounded_walk(root, deadline):
         try:
-            if _is_sensitive(item) or item.stat().st_size > _MAX_SEARCH_FILE:
+            if _is_sensitive(item):
+                continue
+            st = item.stat()
+            if st.st_size > _MAX_SEARCH_FILE or _is_cloud_only(st):
                 continue
             if extension and item.suffix.casefold() != extension:
                 continue
