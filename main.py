@@ -89,6 +89,8 @@ from core                      import confirm as confirm_gate
 from core                      import audio_devices
 from core.action_loader        import discover_actions
 from core.echo                 import EchoGuard
+from core.audio_streams        import KeptStream
+
 from core                      import unprompted
 from core.playback_timing      import playback_idle, parse_output_latency
 from core.perf_trace          import (
@@ -148,24 +150,6 @@ CHUNK_SIZE          = 1024
 _LEVEL_FLOOR = 60.0
 _LEVEL_FULL  = 2600.0
 
-
-async def _close_stream_off_loop(stream) -> None:
-    """Stop and close a sounddevice stream without blocking the event loop.
-
-    Runs on session rotation, when the task is usually being cancelled. The
-    close is shielded so a second cancellation cannot leave the device open;
-    the worker thread finishes the close either way."""
-    def _close():
-        try:
-            stream.stop()
-        finally:
-            stream.close()
-    try:
-        await asyncio.shield(asyncio.to_thread(_close))
-    except asyncio.CancelledError:
-        raise
-    except Exception as e:
-        print(f"[JARVIS] ⚠️  Audio stream close: {e}")
 
 
 def _pcm_level(samples) -> float:
@@ -667,6 +651,11 @@ class JarvisLive:
         self._dashboard     = None
         self._briefing_sent    = False          # morning briefing fires once per process
         self._mic_ready: asyncio.Event | None = None
+        # The microphone and speaker stay open across session rotations; see
+        # core/audio_streams.py for why reopening them every time was fatal.
+        self._kept_mic = KeptStream()
+        self._kept_spk = KeptStream()
+
         self._startup_brief_pending = False
         self._startup_voice_blocks = 0
         self._startup_user_spoke = False
@@ -1620,37 +1609,43 @@ class JarvisLive:
             # in a worker thread. They block for 0.5 s per session rotation and
             # up to 12 s at launch, and on the event loop that froze both
             # directions of the voice: Jarvis stuttered and the user went unheard.
+            #
+            # A stream already open on the same device is reused: the callback
+            # reads everything session-specific from self at call time.
             _mic_name = get_input_device()
-            _mic_dev  = await asyncio.to_thread(audio_devices.resolve, _mic_name, "input")
-            if _mic_dev is not None:
-                print(f"[JARVIS] 🎤 Input device: {_mic_name}")
-            try:
-                _mic_stream = await asyncio.to_thread(_open_mic, _mic_dev)
-            except Exception as _e:
-                # A device the picker listed but the driver will not open right
-                # now — exclusive mode, a webcam already in use, a virtual mic
-                # whose source went away. Chosen hardware failing must never
-                # mean the assistant cannot hear at all.
-                if _mic_dev is None:
-                    raise
-                print(f"[JARVIS] ⚠️  Mic '{_mic_name}' failed: {_e} — using default")
-                self.ui.write_log(
-                    f"SYS: Microphone '{_mic_name}' unavailable — using system default."
-                )
-                _mic_stream = await asyncio.to_thread(_open_mic, None)
-
-            try:
+            if not self._kept_mic.reusable(_mic_name):
+                await self._kept_mic.close()
+                _mic_dev  = await asyncio.to_thread(audio_devices.resolve, _mic_name, "input")
+                if _mic_dev is not None:
+                    print(f"[JARVIS] 🎤 Input device: {_mic_name}")
+                try:
+                    _mic_stream = await asyncio.to_thread(_open_mic, _mic_dev)
+                except Exception as _e:
+                    # A device the picker listed but the driver will not open right
+                    # now — exclusive mode, a webcam already in use, a virtual mic
+                    # whose source went away. Chosen hardware failing must never
+                    # mean the assistant cannot hear at all.
+                    if _mic_dev is None:
+                        raise
+                    print(f"[JARVIS] ⚠️  Mic '{_mic_name}' failed: {_e} — using default")
+                    self.ui.write_log(
+                        f"SYS: Microphone '{_mic_name}' unavailable — using system default."
+                    )
+                    _mic_stream = await asyncio.to_thread(_open_mic, None)
+                self._kept_mic.keep(_mic_stream, _mic_name)
                 await asyncio.to_thread(_mic_stream.start)
                 print("[JARVIS] 🎤 Mic stream open")
-                if self._mic_ready is not None:
-                    loop.call_soon_threadsafe(self._mic_ready.set)
-                while True:
-                    await asyncio.sleep(0.1)
-            finally:
-                await _close_stream_off_loop(_mic_stream)
+
+            if self._mic_ready is not None:
+                loop.call_soon_threadsafe(self._mic_ready.set)
+            while True:
+                await asyncio.sleep(0.1)
+
         except Exception as e:
             print(f"[JARVIS] ❌ Mic: {e}")
+            await self._kept_mic.close()
             raise
+
 
     async def _study_file(self, args: dict, loop) -> str:
         """Render a PDF or image and queue its pages for the live session."""
@@ -1964,36 +1959,46 @@ class JarvisLive:
             return st
 
         # Opened in a worker thread for the same reason as the mic: CoreAudio
-        # can block here, and the event loop carries the live voice.
-        try:
-            stream = await asyncio.to_thread(_open_spk, _spk_dev)
-        except Exception as _e:
-            # A chosen output that the host API accepts by name but refuses to
-            # open (exclusive mode, wrong sample rate, device asleep) must not
-            # cost the user their voice. Fall back to the default and say so.
-            if _spk_dev is None:
-                raise
-            print(f"[JARVIS] ⚠️  Output device '{_spk_name}' failed: {_e} — using default")
-            self.ui.write_log(f"SYS: Speaker '{_spk_name}' unavailable — using system default.")
-            stream = await asyncio.to_thread(_open_spk, None)
+        # can block here, and the event loop carries the live voice. Like the
+        # mic, an open stream on the same device and settings is reused.
+        _spk_key = (_spk_name, _spk_latency)
+        if self._kept_spk.reusable(_spk_key):
+            stream, speaker_executor = self._kept_spk.stream, self._kept_spk.extra
+        else:
+            await self._kept_spk.close()
+            try:
+                stream = await asyncio.to_thread(_open_spk, _spk_dev)
+            except Exception as _e:
+                # A chosen output that the host API accepts by name but refuses to
+                # open (exclusive mode, wrong sample rate, device asleep) must not
+                # cost the user their voice. Fall back to the default and say so.
+                if _spk_dev is None:
+                    raise
+                print(f"[JARVIS] ⚠️  Output device '{_spk_name}' failed: {_e} — using default")
+                self.ui.write_log(f"SYS: Speaker '{_spk_name}' unavailable — using system default.")
+                stream = await asyncio.to_thread(_open_spk, None)
 
-        # Ask the device how far behind the speakers actually are, rather than
-        # assuming. This is what the echo tail is sized from, so a machine with a
-        # large audio buffer gets a correspondingly longer guard — and one with a
-        # tiny buffer is not penalised with a delay it does not need.
-        try:
-            lat = float(getattr(stream, "latency", 0.0) or 0.0)
-            if 0.0 < lat < 1.0:
-                self._out_latency = lat
-            print(f"[JARVIS] 🔊 Output latency {self._out_latency*1000:.0f} ms "
-                  f"→ echo tail {(self._out_latency + _TAIL_MARGIN)*1000:.0f} ms")
-        except Exception:
-            pass
+            # Ask the device how far behind the speakers actually are, rather than
+            # assuming. This is what the echo tail is sized from, so a machine with a
+            # large audio buffer gets a correspondingly longer guard — and one with a
+            # tiny buffer is not penalised with a delay it does not need.
+            try:
+                lat = float(getattr(stream, "latency", 0.0) or 0.0)
+                if 0.0 < lat < 1.0:
+                    self._out_latency = lat
+                print(f"[JARVIS] 🔊 Output latency {self._out_latency*1000:.0f} ms "
+                      f"→ echo tail {(self._out_latency + _TAIL_MARGIN)*1000:.0f} ms")
+            except Exception:
+                pass
 
-        # Isolate CoreAudio writes from tools that run in asyncio's shared
-        # executor (Contacts and Messages may take several seconds to answer).
-        # A busy automation worker must not hold up the next speaker buffer.
-        speaker_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jarvis-speaker")
+            # Isolate CoreAudio writes from tools that run in asyncio's shared
+            # executor (Contacts and Messages may take several seconds to answer).
+            # A busy automation worker must not hold up the next speaker buffer.
+            # It lives as long as the stream, so a write still finishing from the
+            # last session is simply queued ahead of the next one.
+            speaker_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="jarvis-speaker")
+            self._kept_spk.keep(stream, _spk_key, speaker_executor)
+
         playback_primed = False
         last_underflow_log = 0.0
         last_audio_at = 0.0
@@ -2131,11 +2136,11 @@ class JarvisLive:
                     raise   # session shutdown; a device failure must reconnect instead
         except Exception as e:
             print(f"[JARVIS] ❌ Play: {e}")
+            await self._kept_spk.close()
             raise
         finally:
             self.set_speaking(False)
-            speaker_executor.shutdown(wait=False, cancel_futures=True)
-            await _close_stream_off_loop(stream)
+
 
     # ── Morning briefing ────────────────────────────────────────────────────────
 
