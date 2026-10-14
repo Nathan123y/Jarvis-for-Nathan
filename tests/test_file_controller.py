@@ -96,6 +96,53 @@ class FileControllerTests(unittest.TestCase):
         })
         self.assertIn("hello.txt", result)
 
+    def test_find_ignores_spacing_dashes_and_case(self):
+        (self.outside / "EE98 - FL26 - Homework 1.pdf").write_bytes(b"%PDF")
+        with patch.object(fc, "_OS", "Linux"):
+            result = fc.find_files("EE98FL26_Homework1.pdf", path=str(self.outside))
+        self.assertIn("Found 1 file", result)
+        self.assertIn("EE98 - FL26 - Homework 1.pdf", result)
+
+    def test_find_matches_numbers_whole_and_spoken(self):
+        (self.outside / "EE98 - FL26 - Homework 1.pdf").write_bytes(b"%PDF")
+        (self.outside / "EE98 - FL26 - Homework 2.pdf").write_bytes(b"%PDF")
+        with patch.object(fc, "_OS", "Linux"):
+            result = fc.find_files("ee 98 homework two", path=str(self.outside))
+        self.assertIn("Homework 2.pdf", result)
+        self.assertNotIn("Homework 1.pdf", result)
+
+    def test_find_offers_closest_names_when_nothing_matches(self):
+        (self.outside / "Homework 2 - Nathan.pdf").write_bytes(b"%PDF")
+        with patch.object(fc, "_OS", "Linux"):
+            result = fc.find_files("Homwork 2 Nathan", path=str(self.outside))
+        self.assertIn("No exact match", result)
+        self.assertIn("Homework 2 - Nathan.pdf", result)
+
+    def test_find_without_path_searches_home(self):
+        with patch.object(fc, "find_files", return_value="ok") as find:
+            fc.file_controller({"action": "find", "name": "x"})
+        self.assertEqual(find.call_args.kwargs["path"], "home")
+
+    def test_content_search_skips_cloud_only_files(self):
+        # The cloud copy is told apart by size; reading it on a real Mac would
+        # start an iCloud download and block.
+        (self.outside / "local.txt").write_text("needle", encoding="utf-8")
+        (self.outside / "cloud.txt").write_text("needle needle", encoding="utf-8")
+        with patch.object(fc, "_is_cloud_only", lambda st: st.st_size == 13):
+            result = fc.search_file_contents("needle", str(self.outside))
+        self.assertIn("local.txt", result)
+        self.assertNotIn("cloud.txt", result)
+
+    def test_walk_from_home_skips_library(self):
+        home = self.root / "home"
+        (home / "Library" / "CloudStorage").mkdir(parents=True)
+        (home / "Library" / "notes.txt").write_text("x", encoding="utf-8")
+        (home / "Desktop").mkdir()
+        (home / "Desktop" / "notes.txt").write_text("x", encoding="utf-8")
+        with patch.object(Path, "home", return_value=home):
+            found = list(fc._bounded_walk(home, deadline=float("inf")))
+        self.assertEqual([p.parent.name for p in found], ["Desktop"])
+
 
 if __name__ == "__main__":
     unittest.main()
