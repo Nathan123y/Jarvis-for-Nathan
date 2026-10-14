@@ -2,6 +2,7 @@ import subprocess
 import sys
 import json
 import re
+import shutil
 import time
 from pathlib import Path
 
@@ -275,16 +276,26 @@ def _install_dependencies(dependencies: list[str], project_dir: Path) -> str:
         return f"Install error (non-fatal): {e}"
 
 def _open_vscode(project_dir: Path) -> bool:
-    vscode_candidates = [
-        "code",
-        rf"C:\Users\{Path.home().name}\AppData\Local\Programs\Microsoft VS Code\bin\code.cmd",
-        r"C:\Program Files\Microsoft VS Code\bin\code.cmd",
-    ]
-    for cmd in vscode_candidates:
+    # On macOS/Linux, shell=True with a list runs only "code" and drops the folder,
+    # and the shell itself always starts, so a missing `code` still looked like success.
+    if sys.platform == "darwin":
+        candidates = [["code", str(project_dir)],
+                      ["open", "-a", "Visual Studio Code", str(project_dir)]]
+    elif sys.platform == "win32":
+        candidates = [[cmd, str(project_dir)] for cmd in (
+            "code",
+            rf"C:\Users\{Path.home().name}\AppData\Local\Programs\Microsoft VS Code\bin\code.cmd",
+            r"C:\Program Files\Microsoft VS Code\bin\code.cmd",
+        )]
+    else:
+        candidates = [["code", str(project_dir)]]
+    for argv in candidates:
+        if argv[0] != "open" and not shutil.which(argv[0]):
+            continue
         try:
             subprocess.Popen(
-                [cmd, str(project_dir)],
-                shell=True,
+                argv,
+                shell=sys.platform == "win32",
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
             )
