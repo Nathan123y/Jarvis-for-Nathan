@@ -181,3 +181,24 @@ class RotationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StallSamplerTests(unittest.TestCase):
+    def test_a_stall_records_where_the_thread_was_stuck(self):
+        import time
+
+        def busy_for_a_while():
+            time.sleep(0.2)
+
+        beat = HeartbeatLag(interval=0.05, threshold=0.04, sample=True)
+        beat.tick(time.monotonic())
+        busy_for_a_while()
+        self.assertIsNotNone(beat.tick(time.monotonic()))
+        where = beat.take_where() or []
+        self.assertTrue(any("busy_for_a_while" in frame for frame in where), where)
+        self.assertIsNone(beat.take_where())
+
+    def test_where_is_written_with_the_lag(self):
+        with patch.object(perf_trace, "_write") as write:
+            perf_trace.log_lag("gui", 0.12, where=["ui.py:paint:10"])
+        self.assertEqual(write.call_args.args[0]["where"], ["ui.py:paint:10"])

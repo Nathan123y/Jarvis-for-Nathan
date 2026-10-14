@@ -5918,7 +5918,7 @@ class JarvisUI:
         # from starting, hence the guard.
         try:
             from core.perf_trace import HeartbeatLag
-            self._gui_beat = HeartbeatLag(interval=0.1, threshold=0.08)
+            self._gui_beat = HeartbeatLag(interval=0.1, threshold=0.08, sample=True)
             self._gui_beat_timer = QTimer(self._win)
             self._gui_beat_timer.timeout.connect(self._gui_heartbeat)
             self._gui_beat_timer.start(100)
@@ -5933,7 +5933,8 @@ class JarvisUI:
                 win = self._win
                 # Visible or not matters: a stall that only happens while the
                 # window is hidden or covered is macOS throttling, not Jarvis.
-                log_lag("gui", late, visible=bool(win.isVisible() and not win.isMinimized()))
+                log_lag("gui", late, visible=bool(win.isVisible() and not win.isMinimized()),
+                        where=self._gui_beat.take_where())
         except Exception:
             pass
 

@@ -2346,12 +2346,12 @@ class JarvisLive:
         to be woken every 50 ms and logs a wake-up that arrives 40 ms or more
         late, with no content. It writes nothing while the loop is healthy.
         """
-        beat = HeartbeatLag(interval=0.05, threshold=0.04)
+        beat = HeartbeatLag(interval=0.05, threshold=0.04, sample=True)
         while True:
             await asyncio.sleep(0.05)
             late = beat.tick(time.monotonic())
             if late is not None:
-                log_lag("asyncio", late)
+                log_lag("asyncio", late, where=beat.take_where())
 
     # ── Unprompted speech ───────────────────────────────────────────────────────
 

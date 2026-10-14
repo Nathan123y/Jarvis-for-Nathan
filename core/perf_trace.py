@@ -266,20 +266,87 @@ class HeartbeatLag:
     the Qt thread", whatever the something is. It carries no content.
     """
 
-    def __init__(self, interval: float, threshold: float):
+    def __init__(self, interval: float, threshold: float, sample: bool = False):
         self.interval = float(interval)
         self.threshold = float(threshold)
         self._last: float | None = None
+        # With sample=True a background thread notes where the watched thread
+        # is stuck while a stall is still happening, so the record can say
+        # what blocked it. Code locations only, never content.
+        self._sample = bool(sample)
+        self._ident: int | None = None
+        self._where: list[str] | None = None
 
     def tick(self, now: float) -> float | None:
+        if self._sample and self._ident is None:
+            self._ident = threading.get_ident()
+            _start_sampler(self)
         last, self._last = self._last, float(now)
         if last is None:
             return None
         overshoot = (self._last - last) - self.interval
-        return overshoot if overshoot >= self.threshold else None
+        if overshoot >= self.threshold:
+            return overshoot
+        self._where = None          # an on-time tick: anything captured is stale
+        return None
+
+    def take_where(self) -> list[str] | None:
+        where, self._where = self._where, None
+        return where
 
 
-def log_lag(source: str, overshoot_s: float, visible: bool | None = None) -> None:
+_PROJECT_DIR = Path(__file__).resolve().parent.parent
+_SAMPLED: list[HeartbeatLag] = []
+_SAMPLER_STARTED = False
+
+
+def _stack_of(ident: int, limit: int = 8) -> list[str] | None:
+    """Innermost frames of one thread as "file:function:line", keeping Jarvis's
+    own code plus the single library frame it was waiting in."""
+    frame = sys._current_frames().get(ident)
+    if frame is None:
+        return None
+    out: list[str] = []
+    while frame is not None and len(out) < limit:
+        code = frame.f_code
+        path = Path(code.co_filename)
+        try:
+            label = path.resolve().relative_to(_PROJECT_DIR).as_posix()
+        except (ValueError, OSError):
+            label = None if out else path.name      # innermost library frame only
+        if label:
+            out.append(f"{label}:{code.co_name}:{frame.f_lineno}")
+        frame = frame.f_back
+    return out
+
+
+def _sampler_loop() -> None:
+    while True:
+        time.sleep(0.02)
+        now = time.monotonic()
+        for beat in list(_SAMPLED):
+            last = beat._last
+            if (last is None or beat._ident is None or beat._where is not None
+                    or now - last < beat.interval + beat.threshold * 0.75):
+                continue
+            try:
+                beat._where = _stack_of(beat._ident)
+            except Exception:
+                pass
+
+
+def _start_sampler(beat: HeartbeatLag) -> None:
+    global _SAMPLER_STARTED
+    with _LOCK:
+        _SAMPLED.append(beat)
+        if _SAMPLER_STARTED:
+            return
+        _SAMPLER_STARTED = True
+    threading.Thread(target=_sampler_loop, name="jarvis-stall-sampler", daemon=True).start()
+
+
+def log_lag(source: str, overshoot_s: float, visible: bool | None = None,
+            where: list[str] | None = None) -> None:
     """Record one scheduling stall. `source` is "asyncio" or "gui".
 
     `visible` (GUI only) says whether the window could be seen. A stall that
@@ -290,6 +357,8 @@ def log_lag(source: str, overshoot_s: float, visible: bool | None = None) -> Non
               "ms": round(float(overshoot_s) * 1000, 1)}
     if visible is not None:
         record["visible"] = bool(visible)
+    if where:
+        record["where"] = list(where)[:8]
     _write(record)
 
 
