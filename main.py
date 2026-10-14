@@ -107,6 +107,12 @@ from core.wake_word            import (
 # again (wake-word mode only).
 WAKE_SLEEP_TIMEOUT = 120.0   # seconds (2 minutes)
 
+# Longest a tool may hold up the conversation. The model cannot speak again
+# until every tool in its batch has answered, so a tool that hangs (a file
+# search touching cloud-only iCloud files, say) leaves Jarvis silent. Only
+# tools with no legitimately long work are listed.
+_TOOL_TIME_LIMITS = {"file_controller": 30.0}
+
 def get_base_dir():
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent
@@ -1385,7 +1391,18 @@ class JarvisLive:
                     args["file_path"] = self.ui.current_file
                 _ctx = {"player": self.ui, "speak": self.speak,
                         "response": None, "session_memory": None}
-                r = await loop.run_in_executor(None, lambda: self._action_registry.run(name, args, _ctx))
+                job = loop.run_in_executor(None, lambda: self._action_registry.run(name, args, _ctx))
+                limit = _TOOL_TIME_LIMITS.get(name)
+                try:
+                    r = await asyncio.wait_for(job, timeout=limit) if limit else await job
+                except asyncio.TimeoutError:
+                    # The worker thread cannot be stopped, but the conversation
+                    # must not wait on it: the model gets no answer until this
+                    # returns, so a stuck read would leave Jarvis silent.
+                    print(f"[JARVIS] ⏱️  {name} still running after {limit:.0f}s — answering without it")
+                    r = (f"This took longer than {limit:.0f} seconds and was abandoned. "
+                         f"Tell the user it is taking too long and suggest a narrower "
+                         f"folder or a different approach. Do not retry the same call.")
                 result = r or "Done."
                 # web_search: mirror results to the on-screen content panel
                 if (name == "web_search" and r
