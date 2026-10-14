@@ -123,6 +123,9 @@ def summarize_run(run: list[dict]) -> dict:
         "flaps": dict(flaps),
         "sleeping_entered": {reason: n for (to, reason), n in entered.items() if to == "SLEEPING"},
         "reconnects": [(r.get("reason"), r.get("ms", 0.0)) for r in run if r.get("kind") == "reconnect"],
+        # Where each thread was stuck, innermost frames first (newer logs only).
+        "stall_causes": dict(Counter(f"{r['source']}: " + " < ".join(r["where"][:2])
+                                     for r in lags if r.get("where")).most_common(5)),
     }
 
 
@@ -170,6 +173,8 @@ def render(summary: dict) -> str:
         f"    came straight back to SPEAKING within {FLAP_WINDOW_S:.0f}s (flicker): {_labels(summary['flaps'])}",
         f"    entered SLEEPING via: {_labels(summary['sleeping_entered'])}",
     ]
+    for cause, n in summary.get("stall_causes", {}).items():
+        lines.append(f"    stalled in {cause} x{n}")
     if summary["reconnects"]:
         lines.append("  Reconnects: " + ", ".join(f"{why} ({ms / 1000:.1f}s)" for why, ms in summary["reconnects"]))
     else:

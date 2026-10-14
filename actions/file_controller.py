@@ -619,8 +619,9 @@ def rename_file(path: str, name: str = "", new_name: str = "") -> str:
 
 def read_file(path: str, name: str = "", max_chars: int = 12000) -> str:
     try:
-        base   = _resolve_path(path)
-        target = (base / name) if name else base
+        target, ambiguous = _target(path, name)
+        if ambiguous:
+            return ambiguous
         if not _is_readable_path(target):
             return f"Access denied: {target}"
         try:
@@ -812,6 +813,24 @@ def locate_file(raw: str) -> Path | None:
     return None
 
 
+def _target(path: str, name: str = "") -> tuple[Path, str]:
+    """The exact path when it exists; otherwise the one file in the home folder
+    the name clearly means. Returns (path, "") or (best guess, a note listing
+    the candidates when the name is ambiguous)."""
+    base = _resolve_path(path)
+    target = (base / name) if name else base
+    if target.exists() or not target.name:
+        return target, ""
+    scored = _scored_matches(target.name, "", Path.home())
+    good = [(score, item) for score, item in scored if score >= 0.8]
+    if len(good) == 1 or (good and good[0][0] - good[1][0] >= 0.1):
+        return good[0][1], ""
+    if good:
+        options = "\n".join(f"📄 {item}" for _, item in good[:5])
+        return target, f"Several files match '{target.name}':\n{options}\nUse the full path of the one meant."
+    return target, ""
+
+
 def find_files(name: str = "", extension: str = "",
 
                path: str = "home", max_results: int = 20) -> str:
@@ -968,8 +987,9 @@ def get_recent_files(path: str = "home", count: int = 20) -> str:
 
 
 def open_path(path: str, name: str = "", reveal: bool = False) -> str:
-    base = _resolve_path(path)
-    target = (base / name) if name else base
+    target, ambiguous = _target(path, name)
+    if ambiguous:
+        return ambiguous
     if not _is_readable_path(target) or not target.exists():
         return f"Path not found or inaccessible: {target}"
     try:
@@ -987,6 +1007,59 @@ def open_path(path: str, name: str = "", reveal: bool = False) -> str:
         return f"{'Revealed in Finder' if reveal and _OS == 'Darwin' else 'Opened'}: {target}"
     except Exception as e:
         return f"Could not open path: {e}"
+
+
+_CLOSE_SCRIPT = """
+on run argv
+    tell application "System Events"
+        repeat with needle in argv
+            repeat with proc in (every application process whose background only is false)
+                try
+                    repeat with w in (every window of proc)
+                        if (name of w) contains (needle as text) then
+                            set procName to name of proc
+                            set frontmost of proc to true
+                            perform action "AXRaise" of w
+                            delay 0.25
+                            keystroke "w" using command down
+                            return procName
+                        end if
+                    end repeat
+                end try
+            end repeat
+        end repeat
+    end tell
+    return ""
+end run
+"""
+
+
+def close_file(path: str = "", name: str = "") -> str:
+    """Close the window (or tab) showing a file, in whichever app has it open.
+    The file does not need to exist any more; the name is what is matched."""
+    label = Path(name or path).name.strip()
+    if not label or label.lower() in {"desktop", "downloads", "documents", "home"}:
+        return "Tell me which file to close."
+    if _OS != "Darwin":
+        return "Closing a file's window is only supported on macOS."
+    # Window titles show "Report.pdf" in some apps and "Report" in others.
+    needles = [label] + ([Path(label).stem] if len(Path(label).stem) >= 3
+                         and Path(label).stem != label else [])
+    try:
+        result = subprocess.run(["osascript", "-", *needles], input=_CLOSE_SCRIPT,
+                                capture_output=True, text=True, timeout=10)
+    except subprocess.TimeoutExpired:
+        return "Closing timed out; the app may be busy."
+    app = result.stdout.strip()
+    if result.returncode != 0:
+        err = result.stderr.strip()
+        if "assistive" in err.lower() or "not allowed" in err.lower():
+            return ("macOS blocked it: allow Jarvis under System Settings → Privacy & "
+                    "Security → Accessibility, then try again.")
+        return f"Could not close {label}: {err or 'osascript failed'}"
+    if not app:
+        return f"No open window shows {label}."
+    return f"Closed {label} in {app}. If it had unsaved changes, {app} is asking whether to save."
 
 
 def get_largest_files(path: str = "downloads", count: int = 10) -> str:
@@ -1126,8 +1199,9 @@ def organize_desktop() -> str:
 
 def get_file_info(path: str, name: str = "") -> str:
     try:
-        base   = _resolve_path(path)
-        target = (base / name) if name else base
+        target, ambiguous = _target(path, name)
+        if ambiguous:
+            return ambiguous
         if not _is_readable_path(target):
             return f"Access denied: {target}"
         if not target.exists():
@@ -1255,6 +1329,9 @@ def file_controller(
         elif action == "reveal":
             return open_path(path, name=name, reveal=True)
 
+        elif action == "close":
+            return close_file(params.get("path", ""), name=name)
+
         else:
             return f"Unknown action: '{action}'"
 
@@ -1266,12 +1343,14 @@ def file_controller(
 TOOL = {
     "name": "file_controller",
     "description": (
-        "Browses and searches the Mac, reads common documents, opens or reveals files, "
+        "Browses and searches the Mac, reads common documents, opens, closes or reveals files, "
         "and safely manages user files. To locate a file by name use action='find' with "
         "no path (searches the whole home folder) and the name as heard; matching ignores "
         "spaces, dashes, underscores and case, and returns the closest names when nothing "
         "matches exactly. Search once, then use the full path it returns: to read or study "
-        "a PDF or image, pass that path to file_processor. "
+        "a PDF or image, pass that path to file_processor. read, open and info also accept "
+        "just a file name and find the file themselves. action='close' closes the window "
+        "or tab showing a file in whatever app has it open. "
         "Read-only actions can inspect any macOS location "
 
         "allowed by Full Disk Access. Changes are limited to the home folder and mounted "
@@ -1282,7 +1361,7 @@ TOOL = {
         "properties": {
             "action": {
                 "type": "STRING",
-                "description": "list | tree | find | search_contents | recent | read | info | open | reveal | create_file | create_folder | write | copy | move | rename | delete | largest | disk_usage | organize_desktop"
+                "description": "list | tree | find | search_contents | recent | read | info | open | close | reveal | create_file | create_folder | write | copy | move | rename | delete | largest | disk_usage | organize_desktop"
             },
             "path": {
                 "type": "STRING",
