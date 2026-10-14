@@ -5832,7 +5832,12 @@ class MainWindow(QMainWindow):
             threading.Thread(target=self.on_text_command, args=(txt,), daemon=True).start()
 
     def _apply_state(self, state: str):
+        # The session reconnects every few minutes while muted; that must not
+        # replace MUTED with INITIALISING and look like the mic came back on.
+        if self._muted and state in ("INITIALISING", "LISTENING"):
+            state = "MUTED"
         self.hud.state    = state
+
         self.hud.speaking = (state == "SPEAKING")
         self._reply_status.setText(f"◉  {state.replace('_', ' ').upper()}")
 

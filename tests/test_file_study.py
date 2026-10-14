@@ -18,7 +18,8 @@ def _study_methods(render):
     methods = [n for n in owner.body if isinstance(n, ast.AsyncFunctionDef) and n.name in wanted]
     stub = ast.ClassDef(name="Study", bases=[], keywords=[], body=methods, decorator_list=[])
     code = ast.fix_missing_locations(ast.Module(body=[stub], type_ignores=[]))
-    namespace = {"render_for_study": render, "_STUDY_GUIDE": "GUIDE"}
+    namespace = {"render_for_study": render, "_STUDY_GUIDE": "GUIDE",
+                 "locate_file": lambda p: Path(p)}
     exec(compile(code, str(source), "exec"), namespace)
     return namespace["Study"]
 
@@ -77,6 +78,10 @@ class StudyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "none matched"):
             fp.render_for_study(str(self._pdf(2)), "5")
 
+    def test_image_only_pdf_text_extraction_points_to_study(self):
+        result = fp.file_processor({"action": "extract_text", "file_path": str(self._pdf(1))})
+        self.assertIn("study", result)
+
     def test_tool_declares_study_and_pages(self):
         props = fp.TOOL["parameters"]["properties"]
         self.assertIn("pages", props)
@@ -115,6 +120,29 @@ class StudyWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(sent[0]["turn_complete"])
         await jarvis._flush_pending_document()
         self.assertEqual(len(sent), 1, "the pages are sent once")
+
+    async def test_the_studied_file_is_remembered_for_the_next_problem(self):
+        seen = []
+        def render(path, pages):
+            seen.append((path, pages))
+            return [b"p"], "hw.pdf"
+        jarvis, sent = self.jarvis(render)
+        await jarvis._study_file({"file_path": "/x/hw.pdf"}, asyncio.get_running_loop())
+        result = await jarvis._study_file({"pages": "2"}, asyncio.get_running_loop())
+        self.assertIn("[DOCUMENT_ATTACHED]", result)
+        self.assertEqual(seen, [("/x/hw.pdf", ""), ("/x/hw.pdf", "2")])
+
+    async def test_a_path_that_cannot_be_found_says_how_to_find_it(self):
+        jarvis, sent = self.jarvis(lambda p, pg: self.fail("nothing to render"))
+        Study = type(jarvis)
+        Study._study_file.__globals__["locate_file"] = lambda p: None
+        try:
+            result = await jarvis._study_file({"file_path": "/Users/nathan/x.pdf"},
+                                              asyncio.get_running_loop())
+        finally:
+            Study._study_file.__globals__["locate_file"] = lambda p: Path(p)
+        self.assertIn("File not found", result)
+        self.assertIn("file_controller", result)
 
     async def test_no_file_or_a_render_error_is_said_not_sent(self):
         jarvis, sent = self.jarvis(lambda p, pg: self.fail("nothing to render"))

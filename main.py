@@ -71,6 +71,8 @@ from memory.memory_manager import (
 # system_status).
 from actions.screen_processor  import _capture_camera, _capture_screen
 from actions.file_processor    import STUDY_ACTIONS, render_for_study
+from actions.file_controller   import locate_file
+
 
 from actions.system_monitor    import SystemMonitor, get_system_status
 from actions.proactive         import ProactiveEngine
@@ -1649,16 +1651,27 @@ class JarvisLive:
 
     async def _study_file(self, args: dict, loop) -> str:
         """Render a PDF or image and queue its pages for the live session."""
-        path = args.get("file_path") or self.ui.current_file
+        # Without a path, keep working on the file already being studied: "now
+        # problem 2" should not need the homework found all over again.
+        path = (args.get("file_path") or self.ui.current_file
+                or getattr(self, "_last_study_path", None))
         if not path:
             return ("No file is loaded. Ask the user to drop it on the interface, "
                     "or find it with file_controller and pass its full path.")
+
+        def _render():
+            found = locate_file(str(path))
+            if found is None:
+                raise ValueError(f"File not found: {path}. Find it with "
+                                 "file_controller action find and pass the full path it returns.")
+            return str(found), *render_for_study(str(found), args.get("pages", ""))
         try:
-            images, note = await loop.run_in_executor(
-                None, lambda: render_for_study(path, args.get("pages", "")))
+            found, images, note = await loop.run_in_executor(None, _render)
         except Exception as e:
             return f"Could not open that file to read: {e}"
+        self._last_study_path = found
         self._pending_document = (images, note, str(args.get("instruction") or ""))
+
         print(f"[Study] 📄 {note} — {sum(map(len, images)):,} bytes")
         return (f"[DOCUMENT_ATTACHED] {note}. The page images arrive right after this "
                 f"result, in this same exchange. Do not answer until you can see them.")
