@@ -1,7 +1,9 @@
 import os
 import shutil
 import platform
+import difflib
 import heapq
+
 import re
 import subprocess
 import time
@@ -39,6 +41,8 @@ _SKIP_DIRS = {
 # A file that is only in iCloud (Desktop & Documents sync, "Optimise Mac
 # Storage"). Reading it starts a download and blocks until it finishes.
 _SF_DATALESS = 0x40000000
+_LIBRARY = Path.home() / "Library"
+
 _TEXT_EXTENSIONS = {
     ".txt", ".md", ".markdown", ".rst", ".log", ".csv", ".tsv", ".json",
     ".jsonl", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
@@ -683,7 +687,75 @@ def write_file(path: str, name: str = "", content: str = "",
         return f"Could not write file: {e}"
 
 
+_NUMBER_WORDS = {w: str(i) for i, w in enumerate(
+    "zero one two three four five six seven eight nine ten eleven twelve".split())}
+
+
+def _name_words(text: str) -> list[str]:
+
+    """'EE98FL26_Homework1.pdf' and 'EE98 - FL26 - Homework 1.pdf' both give
+    ['ee', '98', 'fl', '26', 'homework', '1', 'pdf']. Spoken numbers count
+    as digits: 'homework two' is 'homework 2'."""
+    return [_NUMBER_WORDS.get(w, w) for w in re.findall(r"[a-z]+|\d+", text.casefold())]
+
+
+
+def _name_key(text: str) -> str:
+    return "".join(_name_words(text))
+
+
+def _name_score(query: str, filename: str) -> float:
+    """How well a spoken or typed name matches a file name, 0 to 1.
+
+    Spaces, dashes, underscores and case never matter. Below the token tier
+    it is a plain similarity, which catches a misheard letter or digit.
+    """
+    if query.casefold() == filename.casefold():
+        return 1.0
+    q_key, f_key = _name_key(query), _name_key(filename)
+    if not q_key:
+        return 0.0
+    if q_key in f_key:
+        return 0.95
+    # Compare without the extension, so "homework1" still finds the PDF.
+    q_stem, f_stem = _name_key(Path(query).stem), _name_key(Path(filename).stem)
+    if q_stem and q_stem in f_key:
+        return 0.9
+    # Word by word. Numbers must match whole ("2" is not in "26"), or a
+    # request for homework 2 would turn up homework 1 from "FL26".
+    f_words = set(_name_words(filename))
+    words = _name_words(Path(query).stem) or _name_words(query)
+    hits = [(w in f_words) if w.isdigit() else (w in f_key) for w in words]
+    digits_ok = all(hit for w, hit in zip(words, hits) if w.isdigit())
+    ratio = difflib.SequenceMatcher(None, q_stem or q_key, f_stem or f_key).ratio()
+    if all(hits):
+        return 0.8
+    # Most of the words: "circuits homework 2" for "EE98 - Homework 2.pdf".
+    found = sum(hits) / len(hits)
+    partial = 0.35 + 0.3 * found + 0.1 * ratio if found >= 0.5 and digits_ok else 0.0
+    return max(partial, ratio * 0.75 if ratio >= 0.6 else 0.0)
+
+
+
+
+def _spotlight(root: Path, words: list[str], joiner: str) -> list[Path]:
+    if not words:
+        return []
+    query = f" {joiner} ".join(f'kMDItemFSName == "*{w}*"cd' for w in words)
+    try:
+        result = subprocess.run(
+            ["mdfind", "-onlyin", str(root), query],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0:
+        return []
+    return [Path(line) for line in result.stdout.splitlines()[:5000] if line]
+
+
 def find_files(name: str = "", extension: str = "",
+
                path: str = "home", max_results: int = 20) -> str:
     try:
         search_path = _resolve_path(path)
@@ -698,42 +770,62 @@ def find_files(name: str = "", extension: str = "",
             extension = "." + extension
         candidates: list[Path] = []
 
-        # Spotlight makes a home-wide macOS search fast. The bounded walker is
-        # the portable fallback and also covers unindexed external drives.
-        if _OS == "Darwin" and name:
-            escaped = name.replace("\\", "\\\\").replace('"', '\\"')
-            query = f'kMDItemFSName == "*{escaped}*"cd'
-            result = subprocess.run(
-                ["mdfind", "-onlyin", str(search_path), query],
-                capture_output=True, text=True, timeout=10, check=False,
-            )
-            if result.returncode == 0:
-                candidates = [Path(line) for line in result.stdout.splitlines() if line]
+        # Spotlight makes a home-wide macOS search fast. Names arrive by voice,
+        # so ask it for every word of the name rather than the exact string:
+        # "EE98FL26_Homework1.pdf" must find "EE98 - FL26 - Homework 1.pdf".
+        # The bounded walker is the portable fallback and also covers
+        # unindexed external drives.
+        words = _name_words(name)
+        if _OS == "Darwin" and words:
+            candidates = _spotlight(search_path, words, "&&")
+            if not candidates:
+                # A misheard word: take anything sharing a longer word, and let
+                # the scorer below decide what is close enough.
+                candidates = _spotlight(search_path, [w for w in words if len(w) >= 4], "||")
 
         if not candidates:
             deadline = time.monotonic() + _MAX_SEARCH_SECONDS
             candidates = list(_bounded_walk(search_path, deadline))
 
-        results = []
+        scored = []
         for item in candidates:
             try:
-                if not item.is_file():
-                    continue
                 if extension and item.suffix.casefold() != extension:
                     continue
-                if name and name.casefold() not in item.name.casefold():
+                score = _name_score(name, item.name) if name else 1.0
+                if score <= 0 or not item.is_file():
                     continue
-                results.append(f"📄 {item.name} ({_format_size(item.stat().st_size)}) — {item.parent}")
-                if len(results) >= limit:
-                    break
+                if _LIBRARY in item.parents:
+                    score -= 0.05   # app data and attachments, rarely what was meant
+
+                scored.append((score, item))
             except (OSError, PermissionError):
                 continue
 
-        if not results:
+        if not scored:
             query = name or extension or "files"
             return f"No {query} found in {search_path.name}/"
 
-        return f"Found {len(results)} file(s):\n" + "\n".join(results)
+        scored.sort(key=lambda pair: -pair[0])
+        best = scored[0][0]
+        # Show close guesses only when there is nothing better.
+        floor = 0.75 if best >= 0.8 else 0.0
+        shown = limit if best >= 0.8 else min(limit, 5)
+        results = []
+        for score, item in scored:
+            if score < floor or len(results) >= shown:
+
+                break
+            try:
+                size = _format_size(item.stat().st_size)
+            except OSError:
+                continue
+            results.append(f"📄 {item.name} ({size}) — {item}")
+
+        header = (f"Found {len(results)} file(s)" if best >= 0.8 else
+                  f"No exact match for '{name}'. Closest {len(results)} file name(s)")
+        return f"{header}:\n" + "\n".join(results)
+
 
     except Exception as e:
         return f"Search error: {e}"
@@ -1094,10 +1186,13 @@ def file_controller(
             )
 
         elif action == "find":
+            # Without a folder, look everywhere the user keeps files, not just
+            # the Desktop: "find my homework" means anywhere.
             return find_files(
                 name=name or params.get("name", ""),
                 extension=params.get("extension", ""),
-                path=path,
+                path=params.get("path") or "home",
+
                 max_results=min(int(params.get("max_results", 20)), 50),
             )
 
@@ -1145,7 +1240,13 @@ TOOL = {
     "name": "file_controller",
     "description": (
         "Browses and searches the Mac, reads common documents, opens or reveals files, "
-        "and safely manages user files. Read-only actions can inspect any macOS location "
+        "and safely manages user files. To locate a file by name use action='find' with "
+        "no path (searches the whole home folder) and the name as heard; matching ignores "
+        "spaces, dashes, underscores and case, and returns the closest names when nothing "
+        "matches exactly. Search once, then use the full path it returns: to read or study "
+        "a PDF or image, pass that path to file_processor. "
+        "Read-only actions can inspect any macOS location "
+
         "allowed by Full Disk Access. Changes are limited to the home folder and mounted "
         "external drives; credentials are never returned to the model."
     ),

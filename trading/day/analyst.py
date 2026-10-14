@@ -341,7 +341,7 @@ def _gemini_model(prompt: str) -> str:
     except PlanError:
         pass
     # The first rung (a short Live turn) gave nothing usable: ask the regular text model directly.
-    again = gemini.text(prompt, tier="gemini-2.5-flash", timeout_ms=MODEL_TIMEOUT_MS)
+    again = gemini.text(prompt, tier=gemini.TEXT_MODEL, timeout_ms=MODEL_TIMEOUT_MS)
     if not (again or reply):
         raise PlanError("the model did not answer")
     return again or reply

@@ -5167,8 +5167,12 @@ class MainWindow(QMainWindow):
                 f"[FILE_UPLOADED] path={path} | name={p.name} | "
                 f"type={p.suffix.lstrip('.')} | size={size} | "
                 f"Briefly tell the user you can see the file '{p.name}' "
-                f"({size}) has been uploaded and ask what they'd like to do with it."
+                f"({size}) has been uploaded and ask what they'd like to do with it. "
+                f"If it is a PDF or image they want to read, discuss or work through "
+                f"(homework, problems, diagrams), call file_processor with action='study' "
+                f"so you can see the pages yourself."
             )
+
             threading.Thread(target=self.on_text_command, args=(msg,), daemon=True).start()
 
     def notify_phone_connected(self) -> None:

@@ -46,6 +46,9 @@ class VoiceReceiveTests(unittest.IsolatedAsyncioTestCase):
                 await release.wait()
                 return "done"
 
+            async def _flush_pending_document(self):
+                pass
+
             async def _flush_pending_vision(self):
                 return False
 

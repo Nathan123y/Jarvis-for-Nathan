@@ -10,7 +10,7 @@ from tools import upload_gumroad_catalog as uploader
 
 class UploadTests(unittest.TestCase):
     def setUp(self):
-        self.directory=tempfile.TemporaryDirectory();self.root=Path(self.directory.name)
+        self.directory=tempfile.TemporaryDirectory();self.root=Path(self.directory.name).resolve()  # /var is /private/var on macOS
         self.products=[dict(id=f'p{i}',name=f'Product {i}',price='12.00',description='Files',subtitle='Organizer',buyer_zip=f'{i}.zip',cover=f'{i}.png',preview=f'{i}.png',thumbnail=f'{i}.png') for i in range(15)]
         (self.root/'products.json').write_text(json.dumps(self.products))
         for p in self.products:

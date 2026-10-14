@@ -70,6 +70,8 @@ from memory.memory_manager import (
 # (screen_process, close_camera, save_memory, manage_monitor, shutdown_jarvis,
 # system_status).
 from actions.screen_processor  import _capture_camera, _capture_screen
+from actions.file_processor    import STUDY_ACTIONS, render_for_study
+
 from actions.system_monitor    import SystemMonitor, get_system_status
 from actions.proactive         import ProactiveEngine
 from actions.background_monitor import (
@@ -112,6 +114,19 @@ WAKE_SLEEP_TIMEOUT = 120.0   # seconds (2 minutes)
 # search touching cloud-only iCloud files, say) leaves Jarvis silent. Only
 # tools with no legitimately long work are listed.
 _TOOL_TIME_LIMITS = {"file_controller": 30.0}
+
+# Sent with the pages of a document opened for study (homework, worksheets).
+_STUDY_GUIDE = (
+    "These are the pages of a document the user opened. Read every problem, "
+    "figure and diagram closely: component values, labels, units, polarities, "
+    "current directions. Then be a patient tutor. Say in a sentence what is on "
+    "the pages and ask which problem to start with. Work through it together "
+    "one step at a time: ask what they think comes next, check their reasoning, "
+    "and give hints before answers. If they ask for the full solution, give it, "
+    "step by step. Keep each spoken turn short and say equations the way a "
+    "person would read them aloud."
+)
+
 
 def get_base_dir():
     if getattr(sys, "frozen", False):
@@ -594,6 +609,8 @@ class JarvisLive:
         self._speaking_lock       = threading.Lock()
         self._phone_active        = False   # True while phone mic is streaming; pauses PC mic
         self._pending_vision       = None    # (img_bytes, mime_type, question, angle) to inject after tool response
+        self._pending_document     = None    # (jpeg pages, note, question) from file_processor study
+
         self._vision_cam_active    = False   # True if camera was opened for vision → auto-close after response
         self._vision_close_pending = False   # True after vision injected; next turn_complete closes camera
         self._vision_last_time     = 0.0     # monotonic time of last screen_process call (cooldown guard)
@@ -1385,7 +1402,12 @@ class JarvisLive:
                     _os._exit(0)
                 asyncio.create_task(_do_shutdown())
 
+            elif (name == "file_processor"
+                  and str(args.get("action", "")).lower().strip() in STUDY_ACTIONS):
+                result = await self._study_file(args, loop)
+
             elif self._action_registry.has(name):
+
                 # file_processor: fall back to the currently-uploaded file when none is given
                 if name == "file_processor" and not args.get("file_path") and self.ui.current_file:
                     args["file_path"] = self.ui.current_file
@@ -1630,7 +1652,39 @@ class JarvisLive:
             print(f"[JARVIS] ❌ Mic: {e}")
             raise
 
+    async def _study_file(self, args: dict, loop) -> str:
+        """Render a PDF or image and queue its pages for the live session."""
+        path = args.get("file_path") or self.ui.current_file
+        if not path:
+            return ("No file is loaded. Ask the user to drop it on the interface, "
+                    "or find it with file_controller and pass its full path.")
+        try:
+            images, note = await loop.run_in_executor(
+                None, lambda: render_for_study(path, args.get("pages", "")))
+        except Exception as e:
+            return f"Could not open that file to read: {e}"
+        self._pending_document = (images, note, str(args.get("instruction") or ""))
+        print(f"[Study] 📄 {note} — {sum(map(len, images)):,} bytes")
+        return (f"[DOCUMENT_ATTACHED] {note}. The page images arrive right after this "
+                f"result, in this same exchange. Do not answer until you can see them.")
+
+    async def _flush_pending_document(self) -> None:
+        """Send study pages right after their tool response, like a screen capture."""
+        if not (self._pending_document and self.session):
+            return
+        import base64 as _b64
+        images, note, question = self._pending_document
+        self._pending_document = None
+        parts = [{"inline_data": {"mime_type": "image/jpeg",
+                                  "data": _b64.b64encode(img).decode("ascii")}}
+                 for img in images]
+        parts.append({"text": f"[IMAGE SOURCE: DOCUMENT — {note}]\n\n{_STUDY_GUIDE}"
+                              + (f"\n\nThe user asked: {question}" if question else "")})
+        await self.session.send_client_content(
+            turns={"role": "user", "parts": parts}, turn_complete=True)
+
     async def _flush_pending_vision(self) -> bool:
+
         """Send a captured frame immediately after its tool response.
 
         The frame is already in hand by the time `screen_process` returns — the
@@ -1704,7 +1758,9 @@ class JarvisLive:
                         print(f"[JARVIS] 📞 {fc.name}")
                         fn_responses.append(await self._execute_tool(fc))
                     await self.session.send_tool_response(function_responses=fn_responses)
+                    await self._flush_pending_document()
                     await self._flush_pending_vision()
+
             except Exception as exc:
                 print(f"[JARVIS] ❌ Tool response: {exc}")
                 traceback.print_exc()
@@ -2512,7 +2568,9 @@ class JarvisLive:
 
                     # Reset transient state that must not carry over from a previous session
                     self._pending_vision       = None
+                    self._pending_document     = None
                     self._vision_cam_active    = False
+
                     self._vision_close_pending = False
                     self._vision_busy          = False
                     self._vision_last_time     = 0.0
