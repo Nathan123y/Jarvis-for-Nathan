@@ -12,6 +12,8 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from core.audio_streams import KeptStream
+
 
 SOURCE = Path(__file__).resolve().parents[1] / "main.py"
 
@@ -69,9 +71,9 @@ class VoiceRecoveryTests(unittest.IsolatedAsyncioTestCase):
             "_pcm_level": lambda samples: 0.0,
             "playback_idle": lambda *args: False,
         }
-        _function("_close_stream_off_loop", namespace)
         Player = _method("_play_audio", namespace)
         player = Player()
+        player._kept_spk = KeptStream()
         player.audio_in_queue = asyncio.Queue()
         player.audio_in_queue.put_nowait(b"\x00\x00" * 4800)
         player._turn_done_event = asyncio.Event()
@@ -92,6 +94,7 @@ class VoiceRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(speaker.stopped)
         self.assertTrue(speaker.closed)
         self.assertFalse(player._is_speaking)
+        self.assertIsNone(player._kept_spk.stream, "a failed speaker is not reused")
 
     async def test_tool_state_does_not_override_active_speech(self):
         states = []
