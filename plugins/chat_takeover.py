@@ -14,7 +14,7 @@ as the text channel and discards the audio bytes — verified to be a
 verbatim copy of the reply, Turkish characters and punctuation intact.
 The session remembers the conversation, so the model itself tracks
 which messages it has already answered. If Live can't connect, the
-plugin silently falls back to stateless REST calls (gemini-2.5-flash)
+plugin silently falls back to stateless REST calls (gemini-3.5-flash)
 so the feature never dies.
 
 For Apple Messages on macOS, accessibility identifies the selected window,
@@ -95,7 +95,7 @@ PLUGIN = {
 # fallback if main.py isn't loaded (tests) — inside the app the model name is
 # read live from main.LIVE_MODEL, so upgrading main.py upgrades this plugin too
 _LIVE_MODEL       = "models/gemini-2.5-flash-native-audio-preview-12-2025"
-_REST_MODEL       = "gemini-2.5-flash"   # fallback engine only
+_REST_MODEL       = "gemini-3.5-flash"   # fallback engine only (2.5 retired Oct 2026)
 _POLL_SECONDS     = 4       # how often the screen is checked
 _DEFAULT_MINUTES  = 60       # auto-stop safety limit
 _PIXEL_DELTA      = 15       # per-pixel difference that counts as "changed"

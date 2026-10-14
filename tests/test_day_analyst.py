@@ -11,6 +11,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+from core import gemini
 from plugins import day_trading as plugin
 from trading.broker import BrokerError
 from trading.day import __main__ as cli
@@ -479,7 +480,7 @@ class DefaultModelTests(unittest.TestCase):
         with patch("core.gemini.api_key", return_value="k"), \
                 patch("core.gemini.text", side_effect=["Sorry, I cannot help with that.", reply()]) as text:
             self.assertEqual(analyst._gemini_model("prompt"), reply())
-        self.assertEqual([c.kwargs["tier"] for c in text.call_args_list], ["smart", "gemini-2.5-flash"])
+        self.assertEqual([c.kwargs["tier"] for c in text.call_args_list], ["smart", gemini.TEXT_MODEL])
 
     def test_an_answer_that_is_still_unusable_is_returned_for_the_parser_to_refuse(self):
         with patch("core.gemini.api_key", return_value="k"), patch("core.gemini.text", side_effect=["a", "b"]):
@@ -1160,6 +1161,19 @@ class AnalystCommandLineTests(CliCase):
 
 
 class CheckAnalystTests(CliCase):
+    def setUp(self):
+        super().setUp()
+        # `check` asks for prices up to the real today and drops anything over a
+        # week old; the fake's closes end on DAY. Pin today to DAY so these tests
+        # do not start failing a week after it.
+        class OnDay(date):
+            @classmethod
+            def today(cls):
+                return date.fromisoformat(DAY)
+        patcher = patch.object(cli, "date", OnDay)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     class Full(AnalystBroker):
         def minute_bars(self, symbols, start, end=None, feed="iex", **_):
             return {s: raw_bars(self.day, self.bars[s]) if s in self.bars else [] for s in symbols}

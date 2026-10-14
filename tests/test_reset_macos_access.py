@@ -11,7 +11,8 @@ from tools import reset_macos_access as repair
 class ResetMacAccessTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.app = Path(self.tmp.name) / "Jarvis.app"
+        # Resolved, as reset() resolves it: /var is /private/var on macOS.
+        self.app = Path(self.tmp.name).resolve() / "Jarvis.app"
         (self.app / "Contents" / "MacOS").mkdir(parents=True)
         (self.app / "Contents" / "MacOS" / "Jarvis").touch()
         with (self.app / "Contents" / "Info.plist").open("wb") as file:

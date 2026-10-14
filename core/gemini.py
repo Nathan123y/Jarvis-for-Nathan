@@ -113,13 +113,23 @@ SEARCH = "search"  # grounded search — REST only, see below
 #     on REST — see SEARCH.
 LIVE = "live"
 
+# The REST text models. The 2.5 generation was retired for this key in October
+# 2026 (404 "no longer available to new users") and every side call fell through
+# to the Live rung or failed outright. Measured 2026-10-13, one short prompt:
+#     gemini-3.5-flash         1.2s
+#     gemini-3.1-flash-lite    3.2s
+#     gemini-3.7-flash        14.2s, gemini-3.5-flash-lite 23s, 3.8-flash timed out
+#     gemini-flash-latest      503
+TEXT_MODEL = "gemini-3.5-flash"
+LITE_MODEL = "gemini-3.1-flash-lite"
+
 _LADDERS = {
-    FAST: (LIVE, "gemini-2.5-flash-lite", "gemini-2.5-flash"),
-    SMART: (LIVE, "gemini-2.5-flash", "gemini-2.5-flash-lite"),
+    FAST: (LIVE, LITE_MODEL, TEXT_MODEL),
+    SMART: (LIVE, TEXT_MODEL, LITE_MODEL),
     # Grounded search needs response.candidates[...].grounding_metadata, which a
     # Live turn does not produce. REST only, and it says so rather than silently
     # returning an answer with no sources behind it.
-    SEARCH: ("gemini-2.5-flash", "gemini-flash-latest", "gemini-2.5-flash-lite"),
+    SEARCH: (TEXT_MODEL, LITE_MODEL, "gemini-flash-latest"),
 }
 
 # The Live model to use for one-shot calls. main.py owns the real one; this is

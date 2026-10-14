@@ -3,6 +3,17 @@ import AVFoundation
 import Foundation
 import ScreenCaptureKit
 
+/// The home folder, honouring $HOME. macOS sets it to the real home when the
+/// app is opened normally; the install test points it at a temporary folder,
+/// and homeDirectoryForCurrentUser alone would ignore that and write the test
+/// run's log and menu-bar control files into the real ones.
+private func userHome() -> URL {
+    if let home = ProcessInfo.processInfo.environment["HOME"], !home.isEmpty {
+        return URL(fileURLWithPath: home, isDirectory: true)
+    }
+    return FileManager.default.homeDirectoryForCurrentUser
+}
+
 final class JarvisLauncher: NSObject, NSApplicationDelegate {
     private var child: Process?
     private var statusItem: NSStatusItem?
@@ -16,7 +27,7 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
-        let directory = FileManager.default.homeDirectoryForCurrentUser
+        let directory = userHome()
             .appendingPathComponent("Library/Application Support/Jarvis/MenuControl")
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
@@ -80,7 +91,7 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
             showError("Jarvis project or Python moved. Run the Jarvis installer again.")
             return
         }
-        let logDir = FileManager.default.homeDirectoryForCurrentUser
+        let logDir = userHome()
             .appendingPathComponent("Library/Logs/Jarvis")
         do {
             try FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)

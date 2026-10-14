@@ -19,7 +19,7 @@ class MacLauncherTests(unittest.TestCase):
 
     def test_relocation_keeps_checkout_and_refuses_existing_destination(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            root = Path(tmp).resolve()  # /var is /private/var on macOS
             repo = root / "Desktop" / "Jarvis-for-Nathan"
             repo.mkdir(parents=True)
             (repo / "main.py").write_text("pass\n")
@@ -34,7 +34,7 @@ class MacLauncherTests(unittest.TestCase):
 
     def test_installed_app_runs_existing_checkout_and_reinstall_keeps_it(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            root = Path(tmp).resolve()  # /var is /private/var on macOS
             repo = root / "Jarvis project"
             repo.mkdir()
             (repo / "main.py").write_text("print('launch from repo')\n")

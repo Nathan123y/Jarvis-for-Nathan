@@ -487,7 +487,7 @@ class LaunchdTests(unittest.TestCase):
         self.assertEqual(p["KeepAlive"], {"SuccessfulExit": False})
 
     def test_install_writes_loads_and_explains_limits(self):
-        lines = launchd.install(python="/py", repo=Path("/r"), log=Path("/r/w.log"), home=self.home, uid=501, launchctl=self.lc)
+        lines = launchd.install(python="/py", repo=Path("/r"), log=self.home / "logs" / "w.log", home=self.home, uid=501, launchctl=self.lc)
         data = plistlib.loads(launchd.plist_path(self.home).read_bytes())
         self.assertEqual(data["Label"], launchd.LABEL)
         self.assertIn(["bootstrap", "gui/501", str(launchd.plist_path(self.home))], self.calls)
