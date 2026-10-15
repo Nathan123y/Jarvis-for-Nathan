@@ -22,8 +22,9 @@ from trading.day.store import day_journal
 PLUGIN = {
     "name": "day_trading",
     "description": (
-        "Check on and control the automatic PRACTICE DAY trader: it buys SPY or QQQ on an "
-        "opening-range breakout, sells everything before the close each day, and uses fake money "
+        "Check on and control the automatic PRACTICE DAY trader: each morning it picks a few funds "
+        "or stocks, buys one only on an opening-range breakout, sells everything before the close "
+        "each day, and uses fake money "
         "in its own Alpaca paper account. Use for 'how is the day trader doing', 'start the "
         "practice day trader', 'stop the day trader', 'pause day trading', 'resume day trading', "
         "'what would the day trader have done yesterday', 'what is the analyst's plan for today' "
@@ -61,6 +62,45 @@ def _journal():
     return day_journal()
 
 
+_NO_TRADE = {"late": "none broke out before 2 pm", "no_breakout": "none broke out",
+             "stop_too_far": "the stop would have been too far away", "too_small": "the position would have been too small"}
+
+
+def _latest_session(journal) -> str:
+    """One sentence on the most recent session: what it bought and how that ended,
+    or why it bought nothing."""
+    events = [e for e in journal.events() if e.get("day") and
+              e.get("kind") in ("plan", "decision", "trade_result", "entry")]
+    if not events:
+        return ""
+    day = max(e["day"] for e in events)
+    today = [e for e in events if e["day"] == day]
+    from datetime import date
+    when = "Today" if day == date.today().isoformat() else f"On {date.fromisoformat(day):%A}"
+    results = [e for e in today if e["kind"] == "trade_result"]
+    if results:
+        parts = []
+        for r in results:
+            qty = int(r["qty"]) if float(r["qty"]).is_integer() else r["qty"]
+            parts.append(f"bought {qty} {r['symbol']} for ${r['bought']:,.0f} and sold for "
+                         f"${r['sold']:,.0f}, {'+' if r['pnl'] >= 0 else '-'}${abs(r['pnl']):,.2f}")
+        total = sum(r["pnl"] for r in results)
+        tail = f", {'+' if total >= 0 else '-'}${abs(total):,.2f} in all" if len(results) > 1 else ""
+        return f"{when} it " + "; ".join(parts) + tail + "."
+    entries = [e for e in today if e["kind"] == "entry"]
+    if entries:
+        return f"{when} it bought {', '.join(e['symbol'] for e in entries)} and still holds it."
+    decisions = [e for e in today if e["kind"] == "decision"]
+    plan = next((e for e in today if e["kind"] == "plan"), None)
+    if plan and plan.get("stand_aside"):
+        return f"{when} the analyst chose to sit the day out."
+    if decisions:
+        reasons = {_NO_TRADE.get(d.get("status"), d.get("status")) for d in decisions}
+        names = ", ".join(d["symbol"] for d in decisions)
+        return f"{when} it bought nothing: it watched {names} but {'; '.join(sorted(reasons))}."
+    return f"{when} it made a plan and is still watching."
+
+
 def _status() -> str:
     journal = _journal()
     state = {**journal.state(), "paused": journal.paused()}
@@ -76,6 +116,9 @@ def _status() -> str:
                 "practice day trader' and it will start during the next market session.")
     snapshots = reports.latest_per_day(journal.events("snapshot"))
     text = reports.spoken(reports.build(state, snapshots, journal.events("trade_result")))
+    latest = _latest_session(journal)
+    if latest:
+        text = latest + " " + text
     if journal.runner_pid() is None:
         text += " The day trader isn't running right now, so say 'start the practice day trader' to continue."
     return text
