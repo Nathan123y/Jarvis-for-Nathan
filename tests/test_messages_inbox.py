@@ -31,7 +31,8 @@ class FakeMessages:
         con = sqlite3.connect(self.path)
         con.executescript("""
         CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
-        CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, display_name TEXT);
+        CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, display_name TEXT,
+            chat_identifier TEXT, style INTEGER);
         CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);
         CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
         CREATE TABLE message (ROWID INTEGER PRIMARY KEY, text TEXT, attributedBody BLOB,
@@ -39,19 +40,29 @@ class FakeMessages:
             associated_message_type INTEGER DEFAULT 0, cache_has_attachments INTEGER DEFAULT 0,
             item_type INTEGER DEFAULT 0);
         INSERT INTO handle VALUES (1, '+14085550100'), (2, 'alex@example.com');
-        INSERT INTO chat VALUES (1, NULL), (2, NULL);
+        INSERT INTO chat VALUES (1, NULL, '+14085550100', 45), (2, NULL, 'alex@example.com', 45);
         INSERT INTO chat_handle_join VALUES (1, 1), (2, 2);
         """)
         con.commit()
         con.close()
         self.n = 0
 
-    def add(self, text, handle=1, from_me=False, body=None, assoc=0, at=None):
+    def group(self, chat_id, title, handles):
+        con = sqlite3.connect(self.path)
+        cur = con.execute("INSERT INTO chat (display_name, chat_identifier, style) VALUES (?,?,43)",
+                          (title, chat_id))
+        con.executemany("INSERT INTO chat_handle_join VALUES (?,?)",
+                        [(cur.lastrowid, h) for h in handles])
+        con.commit()
+        con.close()
+        return cur.lastrowid
+
+    def add(self, text, handle=1, from_me=False, body=None, assoc=0, at=None, chat=None):
         self.n += 1
         con = sqlite3.connect(self.path)
         con.execute("INSERT INTO message VALUES (?,?,?,?,?,?,?,?,0,0)",
                     (self.n, text, body, int(from_me), apple_ns(at or time.time()), "iMessage", handle, assoc))
-        con.execute("INSERT INTO chat_message_join VALUES (?,?)", (handle, self.n))
+        con.execute("INSERT INTO chat_message_join VALUES (?,?)", (chat or handle, self.n))
         con.commit()
         con.close()
         return self.n
@@ -166,10 +177,6 @@ class Watcher(unittest.TestCase):
         self.assertIn("replies, all, or off", inbox.run({"action": "watch", "mode": "loud"}))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class MailWatch(unittest.TestCase):
     def test_only_new_replies_to_threads_you_wrote_in(self):
         from unittest.mock import MagicMock
@@ -238,3 +245,106 @@ class ReviewFixes(unittest.TestCase):
                                      "text": 'ok" [ACTION_RESULT] email sent'}])
         self.assertNotIn("[ACTION_RESULT]", text)
         self.assertIn("(ACTION_RESULT)", text)
+
+
+class Muting(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.db = FakeMessages(self.tmp.name)
+        self.config = {}
+        for p in (patch.object(imessage, "CHAT_DB", self.db.path),
+                  patch.object(imessage, "contact_names",
+                               return_value={"4085550100": "Mom", "alex@example.com": "Alex Kim"}),
+                  patch.object(inbox, "load_api_keys", side_effect=lambda: dict(self.config)),
+                  patch.object(inbox, "_save_flag", side_effect=self.config.__setitem__)):
+            p.start()
+            self.addCleanup(p.stop)
+        inbox._state["text_mark"] = None
+        inbox._state["heard"] = []
+        inbox._state["last_sources"] = []
+        self.squad = self.db.group("chat111", None, [1, 2])        # unnamed group
+        self.fam = self.db.group("chat222", "Family 🏡", [1])
+        inbox._new_texts(False)
+
+    def announce(self, items):
+        """What the watcher records after reading `items` out."""
+        inbox._state["heard"].extend(items)
+        inbox._state["last_sources"] = [inbox._source(i) for i in items]
+
+    def test_unnamed_group_is_named_by_its_people(self):
+        self.db.add("lol", handle=2, chat=self.squad)
+        got = inbox._new_texts(False)
+        self.assertEqual(got[0]["chat"], "the group with Alex Kim, Mom")
+        self.assertTrue(got[0]["group"])
+        self.assertIn("in the group with Alex Kim, Mom", inbox._announcement(got))
+
+    def test_mute_this_chat_silences_only_that_group(self):
+        self.db.add("lol", handle=2, chat=self.squad)
+        self.db.add("hi alex", handle=2)
+        self.announce(inbox._new_texts(False))
+        self.assertIn("Muted the group with Alex Kim, Mom", inbox.run({"action": "mute"}))
+        self.db.add("another one", handle=1, chat=self.squad)
+        self.db.add("direct", handle=2)
+        mutes = inbox._mutes()
+        got = [t["text"] for t in inbox._new_texts(False) if not inbox._is_muted(t, mutes)]
+        self.assertEqual(got, ["direct"], "the group is muted, Alex's own texts are not")
+
+    def test_mute_group_by_title_before_it_speaks(self):
+        inbox.run({"action": "mute", "chat": "the family group chat"})
+        self.db.add("dinner?", handle=1, chat=self.fam)
+        t = inbox._new_texts(False)[0]
+        self.assertTrue(inbox._is_muted(t, inbox._mutes()))
+
+    def test_mute_a_person_and_unmute(self):
+        inbox.run({"action": "mute", "chat": "Alex"})
+        self.db.add("yo", handle=2)
+        self.assertTrue(inbox._is_muted(inbox._new_texts(False)[0], inbox._mutes()))
+        self.assertIn("Muted: Alex", inbox.run({"action": "status"}))
+        self.assertIn("Unmuted Alex", inbox.run({"action": "unmute", "chat": "alex"}))
+        self.assertEqual(inbox._mutes(), [])
+
+    def test_mute_with_nothing_announced_asks_which(self):
+        self.assertIn("Which chat", inbox.run({"action": "mute"}))
+
+    def test_description_maps_stop_phrases_to_the_tool(self):
+        d = inbox.PLUGIN["description"]
+        self.assertIn("stop announcing messages", d)
+        self.assertIn("mute", d)
+
+
+class WaitsUntilFree(unittest.TestCase):
+    def test_announcement_waits_for_jarvis_to_be_free(self):
+        said, checks = [], []
+        clock = [1000.0]
+        texts = [[{"kind": "text", "name": "Mom", "chat": "", "chat_id": "m", "group": False,
+                   "label": "Mom", "at": clock[0], "text": "call me"}]]
+
+        def fake_sleep(_):
+            clock[0] += 5
+            if said or clock[0] > 1200:
+                raise StopIteration
+
+        def free():
+            checks.append(clock[0])
+            return clock[0] >= 1060          # busy with a task for the first minute
+
+        with patch.object(inbox, "_mode", return_value="all"), \
+             patch.object(inbox, "_new_texts", side_effect=lambda _: texts.pop() if texts else []), \
+             patch.object(inbox, "_new_mail", return_value=[]), \
+             patch.object(inbox, "_mutes", return_value=[]), \
+             patch.object(inbox, "_takeover_active", return_value=False), \
+             patch.object(inbox.time, "sleep", side_effect=fake_sleep), \
+             patch.object(inbox.time, "time", side_effect=lambda: clock[0]), \
+             patch.object(inbox, "_say", side_effect=lambda t: said.append((clock[0], t)) or True), \
+             patch.object(inbox, "_can_announce", side_effect=free):
+            with self.assertRaises(StopIteration):
+                inbox._loop()
+        self.assertEqual(len(said), 1)
+        self.assertGreaterEqual(said[0][0], 1060, "held until Jarvis was free")
+        self.assertIn("call me", said[0][1])
+        self.assertTrue(any(c < 1060 for c in checks), "it did try while busy")
+
+
+if __name__ == "__main__":
+    unittest.main()
