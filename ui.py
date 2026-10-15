@@ -1132,7 +1132,9 @@ class NoteGraphPanel(QWidget):
                                    "connect my Obsidian vault\" and pick the vault "
                                    "folder; your notes will appear here.", None))
                 return
-            g = notegraph.build_graph(vault, on._notes(vault))
+            # List first, then read: the walk's own time limit must not be
+            # spent waiting on iCloud downloads.
+            g = notegraph.build_graph(vault, list(on._notes(vault)))
             key = (tuple(g["nodes"]), tuple(g["edges"]))
             # Same notes and links as last time: keep the layout, skip the work.
             pos = old_pos if key == old_key and old_pos else \
@@ -1150,6 +1152,12 @@ class NoteGraphPanel(QWidget):
             self._status = msg
         else:
             g, pos, key = data
+            if not g.get("complete", True):
+                # Some notes were still downloading from iCloud. Never swap a
+                # full graph for a fragment of it; try again shortly instead.
+                QTimer.singleShot(5000, self.refresh)
+                if len(self._nodes) >= len(g["nodes"]):
+                    return
             self._nodes, self._edges, self._pos = g["nodes"], g["edges"], pos
             self._paths = g.get("paths", [])
             self._layout_key = key

@@ -14,6 +14,8 @@ from pathlib import Path
 
 MAX_NODES = 300
 _MAX_READ = 200_000
+READ_SECONDS = 20.0      # all reads together; an iCloud vault downloads notes on first read
+_READ_WORKERS = 8
 _LINK = re.compile(r"\[\[([^\[\]\n]+?)\]\]")
 
 
@@ -31,21 +33,47 @@ def _key(name: str) -> str:
     return Path(name.replace("\\", "/")).name.lower().removesuffix(".md").strip()
 
 
-def build_graph(vault: Path, notes) -> dict:
-    """{'nodes': [title...], 'edges': [(i, j)...]} for the notes in `notes`.
+def _read(path) -> str | None:
+    try:
+        with open(path, "rb") as f:
+            return f.read(_MAX_READ).decode("utf-8", "ignore")
+    except OSError:
+        return None
+
+
+def _read_all(notes: list, seconds: float) -> tuple[list, bool]:
+    """Read every note in parallel, giving up on whatever is still unread after
+    `seconds`. In an iCloud vault the first read of a note can wait on a
+    download, so reading one by one let a few slow notes eat the whole budget.
+    Returns ([text or None per note], whether every read finished)."""
+    from concurrent.futures import ThreadPoolExecutor, wait
+    if not notes:
+        return [], True
+    pool = ThreadPoolExecutor(max_workers=min(_READ_WORKERS, len(notes)),
+                              thread_name_prefix="notegraph-read")
+    futures = [pool.submit(_read, p) for p in notes]
+    done, pending = wait(futures, timeout=seconds)
+    pool.shutdown(wait=False, cancel_futures=True)
+    return [f.result() if f in done else None for f in futures], not pending
+
+
+def build_graph(vault: Path, notes, read_seconds: float = READ_SECONDS) -> dict:
+    """{'nodes': [title...], 'edges': [(i, j)...], 'paths': [...], 'complete': bool}
+    for the notes in `notes`.
 
     `notes` is an iterable of paths inside `vault`. When there are more than
-    MAX_NODES notes, the most-connected ones are kept.
+    MAX_NODES notes, the most-connected ones are kept. `complete` is False when
+    some notes could not be read within `read_seconds`, so a caller can keep a
+    fuller graph it already has instead of showing a fragment.
     """
+    notes = list(notes)
+    contents, complete = _read_all(notes, read_seconds)
     titles: list[str] = []
     paths: list[str] = []
     texts: list[list[str]] = []
     index: dict[str, int] = {}
-    for path in notes:
-        try:
-            with open(path, "rb") as f:
-                text = f.read(_MAX_READ).decode("utf-8", "ignore")
-        except OSError:
+    for path, text in zip(notes, contents):
+        if text is None:
             continue
         k = path.stem.lower().strip()
         if k in index:           # same name in two folders: keep the first
@@ -70,7 +98,7 @@ def build_graph(vault: Path, notes) -> dict:
         titles = [titles[n] for n in keep]
         paths = [paths[n] for n in keep]
         edges = {(remap[a], remap[b]) for a, b in edges if a in remap and b in remap}
-    return {"nodes": titles, "edges": sorted(edges), "paths": paths}
+    return {"nodes": titles, "edges": sorted(edges), "paths": paths, "complete": complete}
 
 
 def layout(n: int, edges, iterations: int = 120, seed: int = 7) -> list[tuple[float, float]]:

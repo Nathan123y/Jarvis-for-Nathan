@@ -1,6 +1,8 @@
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from core import notegraph as ng
 from core.orb import orb_spin, orb_brightness, orb_scale, ORB_IMAGE
@@ -52,7 +54,7 @@ class BuildGraph(unittest.TestCase):
 
     def test_unreadable_note_is_skipped(self):
         g = ng.build_graph(self.root, [self.root / "gone.md"])
-        self.assertEqual(g, {"nodes": [], "edges": [], "paths": []})
+        self.assertEqual(g, {"nodes": [], "edges": [], "paths": [], "complete": True})
 
 
 class Layout(unittest.TestCase):
@@ -156,3 +158,42 @@ class Config(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ICloudReadTests(unittest.TestCase):
+    """An iCloud vault can stall on a note's first read while it downloads."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.notes = []
+        for i in range(8):
+            p = self.root / f"n{i}.md"
+            p.write_text(f"[[n{(i + 1) % 8}]]", encoding="utf-8")
+            self.notes.append(p)
+
+    def test_slow_reads_overlap_instead_of_queueing(self):
+        real = ng._read
+
+        def slow(path):
+            time.sleep(0.3)
+            return real(path)
+
+        with patch.object(ng, "_read", slow):
+            g = ng.build_graph(self.root, self.notes, read_seconds=1.5)
+        self.assertTrue(g["complete"])
+        self.assertEqual(len(g["nodes"]), 8)
+        self.assertEqual(len(g["edges"]), 8)
+
+    def test_a_note_still_downloading_marks_the_graph_incomplete(self):
+        real = ng._read
+        stuck = self.notes[3]
+
+        def maybe_stuck(path):
+            if path == stuck:
+                time.sleep(2)
+            return real(path)
+
+        with patch.object(ng, "_read", maybe_stuck):
+            g = ng.build_graph(self.root, self.notes, read_seconds=0.5)
+        self.assertFalse(g["complete"])
+        self.assertNotIn("n3", g["nodes"])
