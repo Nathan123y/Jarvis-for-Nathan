@@ -1937,9 +1937,6 @@ class JarvisLive:
         print("[JARVIS] 🔊 Play started")
 
         _spk_name = get_output_device()
-        _spk_dev  = await asyncio.to_thread(audio_devices.resolve, _spk_name, "output")
-        if _spk_dev is not None:
-            print(f"[JARVIS] 🔊 Output device: {_spk_name}")
 
         # Optional speaker buffer size. Unset (the default) passes nothing, so the
         # stream opens exactly as it always has. A larger device buffer is the
@@ -1979,6 +1976,13 @@ class JarvisLive:
             stream, speaker_executor = self._kept_spk.stream, self._kept_spk.extra
         else:
             await self._kept_spk.close()
+            # Resolve only when opening. resolve() test-opens and stops a stream
+            # on the device, and doing that beside the live speaker stream on
+            # every rotation deadlocked CoreAudio: Jarvis kept answering in text
+            # but never spoke again until restarted.
+            _spk_dev = await asyncio.to_thread(audio_devices.resolve, _spk_name, "output")
+            if _spk_dev is not None:
+                print(f"[JARVIS] 🔊 Output device: {_spk_name}")
             try:
                 stream = await asyncio.to_thread(_open_spk, _spk_dev)
             except Exception as _e:

@@ -83,6 +83,7 @@ class KeptStreamTests(unittest.IsolatedAsyncioTestCase):
 class SpeakerRotationTests(unittest.IsolatedAsyncioTestCase):
     async def test_speaker_is_opened_once_across_session_rotations(self):
         opened = []
+        resolved = []
 
         def open_speaker(**kwargs):
             opened.append(FakeStream())
@@ -91,7 +92,9 @@ class SpeakerRotationTests(unittest.IsolatedAsyncioTestCase):
         namespace = {
             "asyncio": asyncio, "time": time, "np": np,
             "ThreadPoolExecutor": ThreadPoolExecutor,
-            "audio_devices": SimpleNamespace(resolve=lambda *args: None),
+            # resolve() test-opens a stream on the device; next to the live
+            # speaker that deadlocked CoreAudio, so it must run only on open.
+            "audio_devices": SimpleNamespace(resolve=lambda *args: resolved.append(args)),
             "get_output_device": lambda: None,
             "get_output_latency": lambda: None,
             "parse_output_latency": lambda value: None,
@@ -123,6 +126,7 @@ class SpeakerRotationTests(unittest.IsolatedAsyncioTestCase):
                     await task
 
         self.assertEqual(len(opened), 1)
+        self.assertEqual(len(resolved), 1, "a reused speaker must not probe the device")
         self.assertFalse(opened[0].stopped, "rotation must not stop the speaker")
         await player._kept_spk.close()
 
