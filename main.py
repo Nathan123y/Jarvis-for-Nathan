@@ -706,7 +706,11 @@ class JarvisLive:
             from memory.config_manager import get_plugin_enabled as _gpe
             if self._plugin_registry.has("messages_inbox") and _gpe("messages_inbox"):
                 import plugins.messages_inbox as _inbox
-                _inbox.start(self.plugin_say)
+                # Hold announcements while Jarvis is talking, running a task, or
+                # the user spoke in the last few seconds, so a text never cuts in.
+                _inbox.start(self.plugin_say, can_announce=lambda: (
+                    not self._is_speaking and self._pending_tool_batches == 0
+                    and time.monotonic() - self._last_user_speech >= 6.0))
         except Exception as e:
             print(f"[Messages] watcher not started: {e!r}")
 

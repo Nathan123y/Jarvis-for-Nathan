@@ -40,8 +40,10 @@ class Text:
     text: str
     at: float            # Unix time
     from_me: bool
-    chat: str            # group name, or "" for one-to-one
+    chat: str            # group name, or "" for one-to-one and unnamed groups
     service: str         # iMessage / SMS / RCS
+    chat_id: str = ""    # Messages' stable chat identifier
+    group: bool = False  # a group chat, named or not
 
 
 # ── decoding ─────────────────────────────────────────────────────────────────
@@ -134,10 +136,14 @@ def name_for(handle: str) -> str:
     return contact_names().get(phone_key(handle), handle) if handle else ""
 
 
+_GROUP_STYLE = 43          # chat.style: 43 group, 45 one-to-one
+
+
 # ── queries ──────────────────────────────────────────────────────────────────
 _QUERY = """
 SELECT m.ROWID, m.text, m.attributedBody, m.is_from_me, m.date, m.service,
-       h.id, c.display_name, m.associated_message_type, m.cache_has_attachments
+       h.id, c.display_name, m.associated_message_type, m.cache_has_attachments,
+       c.chat_identifier, c.style
 FROM message m
 LEFT JOIN handle h ON h.ROWID = m.handle_id
 LEFT JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
@@ -161,7 +167,7 @@ def _connect(db: Path | None = None):
 
 
 def _row(r) -> Text | None:
-    rowid, text, body, from_me, date, service, handle, chat, assoc, attach = r
+    rowid, text, body, from_me, date, service, handle, chat, assoc, attach, chat_id, style = r
     if assoc:                                   # tapbacks / reactions, not messages
         return None
     words = text or decode_attributed_body(body)
@@ -173,7 +179,8 @@ def _row(r) -> Text | None:
     handle = handle or ""
     return Text(rowid=rowid, handle=handle, name=name_for(handle) if not from_me else "You",
                 text=words, at=apple_time(date), from_me=bool(from_me),
-                chat=chat or "", service=service or "")
+                chat=chat or "", service=service or "",
+                chat_id=chat_id or "", group=style == _GROUP_STYLE)
 
 
 def latest_rowid(db: Path | None = None) -> int:
@@ -288,3 +295,27 @@ def sent_to_recently(hours: float = 24.0, db: Path | None = None) -> set[str]:
     finally:
         con.close()
     return {phone_key(r[0]) for r in rows if r[0]}
+
+
+def chat_members(chat_id: str, db: Path | None = None) -> list[str]:
+    """Names of the other people in a chat, for naming a group with no title."""
+    con = _connect(db)
+    try:
+        rows = con.execute(
+            "SELECT h.id FROM chat c JOIN chat_handle_join chj ON chj.chat_id = c.ROWID "
+            "JOIN handle h ON h.ROWID = chj.handle_id WHERE c.chat_identifier = ?",
+            (chat_id,)).fetchall()
+    finally:
+        con.close()
+    return sorted({name_for(r[0]) for r in rows if r[0]})
+
+
+def named_groups(db: Path | None = None) -> list[tuple[str, str]]:
+    """(chat identifier, title) of every group chat that has a title."""
+    con = _connect(db)
+    try:
+        rows = con.execute("SELECT chat_identifier, display_name FROM chat WHERE style = ? "
+                           "AND IFNULL(display_name, '') <> ''", (_GROUP_STYLE,)).fetchall()
+    finally:
+        con.close()
+    return [(r[0], r[1]) for r in rows if r[0]]
