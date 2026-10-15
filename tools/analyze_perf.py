@@ -123,6 +123,9 @@ def summarize_run(run: list[dict]) -> dict:
         "flaps": dict(flaps),
         "sleeping_entered": {reason: n for (to, reason), n in entered.items() if to == "SLEEPING"},
         "reconnects": [(r.get("reason"), r.get("ms", 0.0)) for r in run if r.get("kind") == "reconnect"],
+        # Time from the end of the user's voice to the first audio of the reply,
+        # leaving out turns that ran a tool (their delay is mostly the tool).
+        "reply_ms": sorted(r["ms"] for r in run if r.get("kind") == "reply" and not r.get("tool")),
         # Where each thread was stuck, innermost frames first (newer logs only).
         "stall_causes": dict(Counter(f"{r['source']}: " + " < ".join(r["where"][:2])
                                      for r in lags if r.get("where")).most_common(5)),
@@ -173,6 +176,11 @@ def render(summary: dict) -> str:
         f"    came straight back to SPEAKING within {FLAP_WINDOW_S:.0f}s (flicker): {_labels(summary['flaps'])}",
         f"    entered SLEEPING via: {_labels(summary['sleeping_entered'])}",
     ]
+    replies = summary.get("reply_ms") or []
+    if replies:
+        lines.append(f"  Reply delay (you stop talking -> reply audio arrives, no tools): "
+                     f"median {statistics.median(replies):.0f} ms, "
+                     f"slowest {replies[-1]:.0f} ms over {len(replies)} replies")
     for cause, n in summary.get("stall_causes", {}).items():
         lines.append(f"    stalled in {cause} x{n}")
     if summary["reconnects"]:

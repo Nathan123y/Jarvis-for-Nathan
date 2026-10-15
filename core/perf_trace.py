@@ -254,6 +254,13 @@ def log_reconnect(reason: str, kept_context: bool, duration_s: float) -> None:
     })
 
 
+def log_reply_delay(delay_s: float, tool: bool) -> None:
+    """Time from the end of the user's voice (mic level) to the first audio of
+    the reply arriving from the server. `tool` marks turns that ran a tool,
+    whose delay includes the tool itself. Timing only, no content."""
+    _write({"kind": "reply", "ms": round(float(delay_s) * 1000, 1), "tool": bool(tool)})
+
+
 class HeartbeatLag:
     """Notices when a thread is scheduled much later than it asked to be.
 

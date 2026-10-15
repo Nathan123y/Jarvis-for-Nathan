@@ -97,7 +97,7 @@ from core                      import unprompted
 from core.playback_timing      import playback_idle, parse_output_latency
 from core.perf_trace          import (
     HeartbeatLag, log_audio_in_status, log_audio_write, log_lag,
-    log_launch_context, log_reconnect, log_state_transition,
+    log_launch_context, log_reconnect, log_reply_delay, log_state_transition,
 )
 from core.live_session        import (
     seconds_until_go_away, exception_details, is_expected_session_expiry,
@@ -602,6 +602,11 @@ class JarvisLive:
         self._vision_last_time     = 0.0     # monotonic time of last screen_process call (cooldown guard)
         self._vision_busy          = False   # True while a vision capture/inject cycle is in flight
         self._interrupted          = False   # True while draining audio after user interrupt
+        # Reply delay, for the performance trace: when the user's voice was last
+        # heard, and whether the reply now coming has started / ran a tool.
+        self._last_voice_at        = 0.0
+        self._reply_open           = False
+        self._tool_since_voice     = False
         # Transcript-driven mouth shapes for the avatar. Fed from the receive
         # loop as words arrive, drained by the playback loop against the audio.
         self._visemes              = VisemeStream()
@@ -1267,6 +1272,7 @@ class JarvisLive:
         else:
             log_args = args
         print(f"[JARVIS] 🔧 {name}  {log_args}")
+        self._tool_since_voice = True
         # A tool can run while an earlier sentence is still playing. Keep the
         # HUD in SPEAKING until the speaker drains.
         if not self._is_speaking:
@@ -1587,7 +1593,12 @@ class JarvisLive:
                 # the user's actual voice while listening. Purely cosmetic — any
                 # failure here must never disturb the mic.
                 try:
-                    self.ui.set_audio_level(_pcm_level(indata))
+                    _lvl = _pcm_level(indata)
+                    self.ui.set_audio_level(_lvl)
+                    if _lvl >= 0.2 and not self._is_speaking:
+                        self._last_voice_at = time.monotonic()
+                        self._reply_open = False
+                        self._tool_since_voice = False
                 except Exception:
                     pass
 
@@ -1810,6 +1821,11 @@ class JarvisLive:
                         if self._interrupted:
                             pass  # discard: interrupted
                         else:
+                            if not self._reply_open:
+                                self._reply_open = True
+                                _since = time.monotonic() - self._last_voice_at
+                                if self._last_voice_at and _since < 15.0:
+                                    log_reply_delay(_since, self._tool_since_voice)
                             if self._turn_done_event and self._turn_done_event.is_set():
                                 self._turn_done_event.clear()
                             # Split into ~50 ms chunks so interrupt() stops audio within 50 ms

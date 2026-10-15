@@ -17,9 +17,13 @@ def _receive_method():
     stub = ast.ClassDef(name="Receiver", bases=[], keywords=[], body=[method], decorator_list=[])
     code = ast.fix_missing_locations(ast.Module(body=[stub], type_ignores=[]))
     namespace = {"asyncio": asyncio, "time": time,
-                 "seconds_until_go_away": seconds_until_go_away}
+                 "seconds_until_go_away": seconds_until_go_away,
+                 "log_reply_delay": lambda *args: None}
     exec(compile(code, str(source), "exec"), namespace)
-    return namespace["Receiver"]
+    receiver = namespace["Receiver"]
+    # Reply-delay bookkeeping normally set in JarvisLive.__init__.
+    receiver._reply_open, receiver._last_voice_at, receiver._tool_since_voice = False, 0.0, False
+    return receiver
 
 
 class VoiceReceiveTests(unittest.IsolatedAsyncioTestCase):
