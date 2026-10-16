@@ -706,13 +706,18 @@ class JarvisLive:
             from memory.config_manager import get_plugin_enabled as _gpe
             if self._plugin_registry.has("messages_inbox") and _gpe("messages_inbox"):
                 import plugins.messages_inbox as _inbox
-                # Hold announcements while Jarvis is talking, running a task, or
-                # the user spoke in the last few seconds, so a text never cuts in.
-                _inbox.start(self.plugin_say, can_announce=lambda: (
-                    not self._is_speaking and self._pending_tool_batches == 0
-                    and time.monotonic() - self._last_user_speech >= 6.0))
+                _inbox.start(self.plugin_say, can_announce=self._free_to_announce)
         except Exception as e:
             print(f"[Messages] watcher not started: {e!r}")
+
+        # Announce deliveries (out for delivery, delivered, problems) from Gmail.
+        try:
+            from memory.config_manager import get_plugin_enabled as _gpe_pk
+            if self._plugin_registry.has("packages") and _gpe_pk("packages"):
+                import plugins.packages as _packages
+                _packages.start(self.plugin_say, can_announce=self._free_to_announce)
+        except Exception as e:
+            print(f"[Packages] watcher not started: {e!r}")
 
         # Notice when the user comes back after a long absence and brief them
         # (core/away.py). It only speaks when the Mac is unlocked, Jarvis is
@@ -847,6 +852,13 @@ class JarvisLive:
         # what they are waiting to see.
         return wake_install(logger=lambda m: print(f"[Wake] {m}"),
                             notify=lambda m: self.ui.write_log(f"SYS: {m}"))
+
+    def _free_to_announce(self) -> bool:
+        """Background news (texts, deliveries) waits while Jarvis is talking,
+        running a task, or the user spoke in the last few seconds, so it never
+        cuts into what they are doing."""
+        return (not self._is_speaking and self._pending_tool_batches == 0
+                and time.monotonic() - self._last_user_speech >= 6.0)
 
     def plugin_say(self, instruction: str) -> None:
         """

@@ -34,6 +34,8 @@ mss>=9,<11
 psutil>=5.9,<8
 send2trash
 youtube-transcript-api
+# YouTube Music search and your library (plugins/youtube_music.py)
+ytmusicapi>=1.8,<2
 python-pptx
 openpyxl
 
