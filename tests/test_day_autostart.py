@@ -145,6 +145,17 @@ class CommandTests(unittest.TestCase):
             self.run_cli("install")
         self.assertEqual(seen["run_flags"], ["--risk-pct", "0.25", "--max-fund-pct", "25"])
 
+    def test_the_fvg_rule_is_passed_through_remembered_and_never_with_the_analyst(self):
+        seen = {}
+        with patch.object(auto, "install", lambda **kw: seen.update(kw) or ["ok"]):
+            self.run_cli("install", "--rule", "fvg")
+        self.assertEqual(seen["run_flags"], ["--rule", "fvg", "--risk-pct", "0.25", "--max-fund-pct", "25"])
+        self.assertEqual(self.journal.state()["rule"], "fvg")
+        with patch.object(auto, "install", side_effect=AssertionError("installed")):
+            code, text = self.run_cli("install", "--rule", "fvg", "--analyst")
+        self.assertEqual(code, 1)
+        self.assertIn("does not use the analyst", text)
+
     def test_sizes_it_cannot_use_and_bad_times_are_refused(self):
         with patch.object(auto, "install", side_effect=AssertionError("installed")):
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):

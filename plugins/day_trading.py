@@ -183,7 +183,8 @@ def _start() -> str:
     else:
         options["start_new_session"] = True
     with open(journal.log_path, "ab") as log:
-        subprocess.Popen([sys.executable, "-u", "-m", "trading.day", "run"],
+        rule = ["--rule", "fvg"] if journal.state().get("rule") == "fvg" else []
+        subprocess.Popen([sys.executable, "-u", "-m", "trading.day", "run", *rule],
                          stdout=log, stderr=log, **options)
     for _ in range(16):
         time.sleep(0.25)

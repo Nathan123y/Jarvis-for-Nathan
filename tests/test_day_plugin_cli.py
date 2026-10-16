@@ -101,6 +101,14 @@ class StatusAndControlTests(PluginCase):
         if sys.platform != "win32":
             self.assertTrue(kwargs["start_new_session"])
 
+    def test_start_uses_the_fvg_rule_when_that_is_the_one_set(self):
+        self.journal.update_state(rule="fvg")
+        popen = MagicMock()
+        with patch.object(plugin.subprocess, "Popen", popen), patch.object(plugin.time, "sleep"), \
+             patch.object(Journal, "runner_pid", side_effect=[None, 4242]):
+            plugin.run({"action": "start"})
+        self.assertEqual(popen.call_args[0][0][1:], ["-u", "-m", "trading.day", "run", "--rule", "fvg"])
+
     def test_start_when_already_running_or_without_keys_launches_nothing(self):
         popen = MagicMock()
         with patch.object(plugin.subprocess, "Popen", popen), patch.object(Journal, "runner_pid", return_value=4242):

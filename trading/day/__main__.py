@@ -530,12 +530,18 @@ def cmd_autostart(args) -> int:
     try:
         if args.action == "install":
             auto.parse_time(args.at)                              # refuse a bad time before touching anything
+            if args.rule == "fvg" and args.analyst:
+                print("--rule fvg is pure code and does not use the analyst. Install it without --analyst.")
+                return 1
             flags = ["--risk-pct", f"{args.risk_pct:g}", "--max-fund-pct", f"{args.max_fund_pct:g}"]
             if args.analyst:
                 flags.insert(0, "--analyst")
+            if args.rule != "orb":
+                flags[:0] = ["--rule", args.rule]
             for line in auto.install(python=auto.current_python(), repo=repo, log=day_journal().log_path,
                                      run_flags=flags, at=args.at):
                 print(line)
+            day_journal().update_state(rule=args.rule)        # so Jarvis says, and starts, the same rule
             print("\nIt starts at the next weekday time. Check it with `python3 -m trading.day autostart status`. "
                   "If your Jarvis folder is inside Documents, Desktop or Downloads, macOS may stop a background "
                   "job reading it: `status` then shows a permission error in the log, and the fix is to move the "
@@ -676,7 +682,7 @@ def main(argv=None) -> int:
             p.add_argument("--show-input", action="store_true", help="also print exactly what the model is shown")
         if name == "run":
             p.add_argument("--once", action="store_true", help="do one pass and exit")
-        if name in ("run", "backtest"):
+        if name in ("run", "backtest", "autostart"):
             p.add_argument("--rule", choices=("orb", "fvg"), default="orb",
                            help="orb: opening-range breakout (default); fvg: fair-value-gap limit entry")
         if name == "backtest":
