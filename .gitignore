@@ -83,3 +83,5 @@ config/events.db-wal
 config/events.db-shm
 config/worker/
 config/dryrun/
+config/google_forms_token.json
+config/google_forms_token.json.tmp
