@@ -44,14 +44,14 @@ class TallyTests(unittest.TestCase):
         votes = [response(q1=["Jake", "Mia"], q2=["Jake"]), response(q1=["Jake", "Sam"], q2=["Mia"]),
                  response(q1=["Mia", "Ava", "Leo"], q2=["Jake"]), response(q1=["Jake", "Ava"])]
         summary = fa.tally(FORM, votes)
-        best, funny = summary["categories"]
+        best, funny, _ = summary["categories"]
         self.assertEqual(summary["responses"], 4)
         self.assertEqual(best["title"], "Best Dressed")
         self.assertEqual(best["top"][:2], [("Jake", 3), ("Mia", 2)])
         self.assertEqual(best["top"][2], ("Ava", 2))
         self.assertEqual(funny["top"], [("Jake", 2), ("Mia", 1)])
         self.assertEqual(funny["voters"], 3)
-        self.assertEqual([c["title"] for c in summary["categories"]], ["Best Dressed", "Funniest"], "text questions skipped")
+        self.assertEqual([c["kind"] for c in summary["categories"]], ["choice", "choice", "text"])
 
     def test_a_tie_for_fourth_keeps_everyone_tied(self):
         votes = [response(q1=["Jake", "Mia", "Sam", "Ava", "Leo"]), response(q1=["Jake", "Mia", "Sam"]),
@@ -78,6 +78,45 @@ class TallyTests(unittest.TestCase):
         summary = fa.tally(FORM, [])
         self.assertEqual(summary["categories"][0]["top"], [])
         self.assertIn("no votes yet", fa.spoken(summary, 4))
+
+
+TYPED = {"info": {"title": "Awards"}, "items": [
+    {"title": "Duo of the Year", "questionItem": {"question": {"questionId": "t1", "textQuestion": {}}}},
+    {"title": "Picture of the Year", "questionItem": {"question": {"questionId": "f1", "fileUploadQuestion": {}}}}]}
+
+
+def typed(text=None, files=()):
+    answers = {}
+    if text is not None:
+        answers["t1"] = {"textAnswers": {"answers": [{"value": text}]}}
+    if files:
+        answers["f1"] = {"fileUploadAnswers": {"answers": [{"fileName": f} for f in files]}}
+    return {"answers": answers}
+
+
+class TypedAnswerTests(unittest.TestCase):
+    def test_typed_answers_group_ignoring_case_punctuation_emoji_and_small_typos(self):
+        votes = [typed("Eli and Daniella #fairs 👌🏻"), typed("eli and daniella fairs"), typed("ELI AND DANIELLA FAIRS!"),
+                 typed("Michael Gabriel"), typed("micheal gabriel"), typed("Daniel and Parv"), typed("   ")]
+        cat = fa.tally(TYPED, votes)["categories"][0]
+        self.assertEqual(cat["kind"], "text")
+        self.assertEqual(cat["top"][0][1], 3)
+        self.assertEqual(cat["top"][1], ("Michael Gabriel", 2))
+        self.assertEqual(cat["top"][2], ("Daniel and Parv", 1))
+        self.assertEqual((cat["voters"], cat["distinct"]), (6, 3))
+
+    def test_different_long_answers_are_not_merged(self):
+        a = "going home with yasi's mom after the party at the lake house"
+        b = "going home with yasi's dad after the party at the lake house"
+        cat = fa.tally(TYPED, [typed(a), typed(b)])["categories"][0]
+        self.assertEqual(cat["distinct"], 2)
+
+    def test_uploads_are_listed_not_voted_on(self):
+        summary = fa.tally(TYPED, [typed(files=["IMG_1 - Dani.jpeg"]), typed(files=["IMG_2 - David.png"])])
+        pic = summary["categories"][1]
+        self.assertEqual((pic["kind"], pic["files"]), ("file", ["IMG_1 - Dani.jpeg", "IMG_2 - David.png"]))
+        self.assertIn("IMG_2 - David.png", fa.panel_text(summary, 4))
+        self.assertIn("2 uploaded", fa.spoken(summary, 4))
 
 
 class RunTests(unittest.TestCase):
