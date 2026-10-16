@@ -22,6 +22,9 @@ MUST_BE_IGNORED = [
     "memory/long_term.json",
     "memory/mission_control.lock",
     "memory/mission_control.json",
+    "memory/money.json",
+    "config/packages_state.json",
+    "config/youtube_music_auth.json",
     ".env",
 ]
 

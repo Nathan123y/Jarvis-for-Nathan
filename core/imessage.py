@@ -319,3 +319,32 @@ def named_groups(db: Path | None = None) -> list[tuple[str, str]]:
     finally:
         con.close()
     return [(r[0], r[1]) for r in rows if r[0]]
+
+
+def chat_history(chat_id: str, since: float = 0, limit: int = 200,
+                 db: Path | None = None) -> list[Text]:
+    """Messages in one chat (both sides) after Unix time `since`, oldest first."""
+    con = _connect(db)
+    try:
+        rows = con.execute(
+            _QUERY + " WHERE c.chat_identifier = ? AND m.date > ? AND IFNULL(m.item_type, 0) = 0"
+                     " ORDER BY m.date DESC LIMIT ?",
+            (chat_id, int((since - _APPLE_EPOCH) * 1e9) if since else 0, int(limit))).fetchall()
+    finally:
+        con.close()
+    out = [t for t in (_row(r) for r in rows) if t]
+    out.reverse()
+    return out
+
+
+def last_sent_at(chat_id: str, db: Path | None = None) -> float:
+    """When the user last wrote in this chat (Unix time), 0 if never."""
+    con = _connect(db)
+    try:
+        row = con.execute(
+            "SELECT MAX(m.date) FROM message m JOIN chat_message_join cmj ON cmj.message_id = m.ROWID "
+            "JOIN chat c ON c.ROWID = cmj.chat_id WHERE c.chat_identifier = ? AND m.is_from_me = 1",
+            (chat_id,)).fetchone()
+    finally:
+        con.close()
+    return apple_time(row[0]) if row and row[0] else 0.0

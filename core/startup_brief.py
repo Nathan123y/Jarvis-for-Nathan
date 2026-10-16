@@ -1,4 +1,5 @@
-"""What Jarvis reads out when it opens: the mission log and what is due today.
+"""What Jarvis reads out when it opens: the mission log, what is due today,
+and timed reminders still to come.
 
 Gathers, in parallel and with a short time limit so startup never waits long:
 open Mission Control tasks (local file) and Canvas work that is overdue or due
@@ -24,7 +25,17 @@ def _clean(value, limit=90) -> str:
     return " ".join(str(value or "").split())[:limit]
 
 
-def compose(tasks, events, canvas_items, today: str) -> tuple[str, str]:
+def _when(dt, now) -> str:
+    clock = dt.strftime("%I:%M %p").lstrip("0")
+    days = (dt.date() - now.date()).days
+    if days == 0:
+        return f"today {clock}"
+    if days == 1:
+        return f"tomorrow {clock}"
+    return dt.strftime("%a %b %d ").replace(" 0", " ") + clock
+
+
+def compose(tasks, events, canvas_items, today: str, reminders=None, now=None) -> tuple[str, str]:
     """(facts to speak, text for the on-screen panel). Pure: no I/O.
 
     tasks: open Mission Control tasks (dicts with title, due, priority, project), or
@@ -32,7 +43,12 @@ def compose(tasks, events, canvas_items, today: str) -> tuple[str, str]:
         not mentioned rather than reported as empty).
     events: [(clock, title)] for today, or None if the calendar was unavailable.
     canvas_items: [{name, course, due, overdue}], or None if Canvas was unavailable.
+    reminders: [(datetime, message)] timed reminders still to come, soonest first.
     """
+    from datetime import datetime, timedelta
+    now = now or datetime.now()
+    reminders = list(reminders or [])
+    soon = [r for r in reminders if r[0] - now <= timedelta(days=7)]
     known = tasks is not None
     tasks = [t for t in (tasks or []) if t.get("status", "open") == "open"]
     order = {"high": 0, "normal": 1, "low": 2}
@@ -54,15 +70,26 @@ def compose(tasks, events, canvas_items, today: str) -> tuple[str, str]:
         if due_today:
             room = max(1, SPOKEN_ITEMS - min(len(overdue), SPOKEN_ITEMS))
             parts.append(f"{len(due_today)} due today: " + "; ".join(_clean(t['title'], 70) for t in due_today[:room]))
+        room = SPOKEN_ITEMS - min(len(overdue) + len(due_today), SPOKEN_ITEMS)
+        rest = later[:room]
         if not overdue and not due_today:
             nxt = later[0]
             when = f"due {nxt['due']}" if nxt.get("due") else "no deadline"
             parts.append(f"nothing due today; next up is {_clean(nxt['title'], 70)} ({when})")
+            rest = later[1:room]
+        if rest:
+            # Ongoing things the user said they're doing ("selling my PS5 on eBay")
+            # have no date, and are exactly what they want to be reminded of.
+            parts.append("also on the list: " + "; ".join(
+                _clean(t['title'], 70) + (f" (due {t['due']})" if t.get("due") else "") for t in rest))
         spoken.append(f"Mission log ({len(tasks)} open): " + ". ".join(parts) + ".")
     if events:
         spoken.append("Calendar today: " + "; ".join(f"{c} {_clean(t, 60)}" for c, t in events[:4]) + ".")
     elif events is not None:
         spoken.append("Nothing on the calendar today.")
+    if soon:
+        spoken.append("Reminders coming up: " + "; ".join(
+            f"{_when(when, now)}: {_clean(msg, 80)}" for when, msg in soon[:3]) + ".")
     if school:
         spoken.append("School work due: " + "; ".join(
             f"{_clean(c['name'], 60)}" + (" (overdue)" if c.get("overdue") else "") for c in school[:3]) + ".")
@@ -84,6 +111,10 @@ def compose(tasks, events, canvas_items, today: str) -> tuple[str, str]:
     if events:
         lines.append("CALENDAR")
         lines.extend(f"  {c}  {_clean(t, 80)}" for c, t in events[:8])
+        lines.append("")
+    if reminders:
+        lines.append("REMINDERS")
+        lines.extend(f"  {_when(when, now)}  {_clean(msg, 80)}" for when, msg in reminders[:8])
         lines.append("")
     if school:
         lines.append("SCHOOL (CANVAS)")
@@ -124,6 +155,15 @@ def gather(timeout: float = GATHER_SECONDS) -> tuple[list, list | None, list | N
     return results.get("tasks"), None, results.get("canvas")
 
 
+def _reminders() -> list:
+    try:
+        from actions.reminder import pending_reminders
+        return pending_reminders()
+    except Exception as e:
+        print(f"[Brief] reminders section skipped: {e!r}")
+        return []
+
+
 def build(timeout: float = GATHER_SECONDS) -> tuple[str, str]:
     tasks, events, canvas = gather(timeout)
-    return compose(tasks, events, canvas, date.today().isoformat())
+    return compose(tasks, events, canvas, date.today().isoformat(), reminders=_reminders())

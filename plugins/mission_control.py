@@ -40,7 +40,11 @@ PLUGIN = {
         "A persistent Mission Control task board for assignments, projects and personal "
         "to-dos. Use for 'add a mission', 'track this assignment', 'what should I work "
         "on next', 'give me my mission briefing', 'show my tasks', 'mark this task done', "
-        "'change its due date', or 'undo my last mission change'. For mission undo, "
+        "'change its due date', or 'undo my last mission change'. Also add one, without "
+        "being asked, when the user mentions something ongoing they will need to follow up "
+        "on ('I'm selling my PS5 on eBay', 'I need to return the library book', 'I'm waiting "
+        "on a refund'): Jarvis reminds them of open missions every time it opens. Confirm in "
+        "a few words; complete it when they say it's done. For mission undo, "
         "call this tool with action=undo, not the separate core undo tool. These are tasks the "
         "USER asks to save; do not invent tasks or deadlines. It does NOT read Canvas, "
         "email or calendars and does NOT send scheduled alerts. Use pomodoro for focus "
@@ -255,6 +259,18 @@ def _fields(parameters, task):
         task["minutes"] = _integer(parameters["minutes"], "minutes", 0, 1440)
 
 
+_NUMBER_WORDS = {"one": "1", "two": "2", "three": "3", "four": "4", "five": "5", "six": "6",
+                 "seven": "7", "eight": "8", "nine": "9", "ten": "10", "first": "1",
+                 "second": "2", "third": "3", "final": "final"}
+
+
+def _same_title(a, b):
+    """'Physics Test 2 Exam' and 'physics test two exam' are the same mission."""
+    def norm(t):
+        return [_NUMBER_WORDS.get(w, w) for w in re.findall(r"[a-z0-9]+", str(t).casefold())]
+    return norm(a) == norm(b)
+
+
 def _operate(parameters):
     action = _text(parameters.get("action", "briefing"), "action", 20).lower()
     if action not in _ACTIONS:
@@ -276,8 +292,8 @@ def _operate(parameters):
                     "priority": "normal", "minutes": 0, "notes": "", "status": "open", "completed": ""}
             _fields(parameters, task)
             duplicate = next((t for t in tasks if t["status"] == "open" and
-                              all(str(t[k]).casefold() == str(task[k]).casefold()
-                                  for k in ("title", "project", "due"))), None)
+                              _same_title(t["title"], task["title"]) and
+                              str(t["due"]) == str(task["due"])), None)
             if duplicate:
                 return (f"That open mission already exists as #{duplicate['id']}. "
                         "Use update to change its details.", _board(tasks))

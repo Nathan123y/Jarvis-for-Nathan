@@ -79,6 +79,31 @@ def _sweep_fired_mac_reminders(agents_dir: Path) -> None:
             print(f"[Reminder] Could not remove {plist.name}: {e}")
 
 
+def pending_reminders(agents_dir: Path | None = None, now: datetime | None = None) -> list[tuple[datetime, str]]:
+    """Timed reminders still to come on this Mac: [(when, message)], soonest first."""
+    agents_dir = agents_dir or Path.home() / "Library" / "LaunchAgents"
+    now = now or datetime.now()
+    out = []
+    for plist in agents_dir.glob("com.jarvis.reminder.JARVISReminder_*.plist"):
+        task = plist.stem.split("com.jarvis.reminder.", 1)[-1]
+        try:
+            when = datetime.strptime(task, "JARVISReminder_%Y%m%d_%H%M%S")
+        except ValueError:
+            continue
+        if when <= now:
+            continue
+        message = "Reminder"
+        try:
+            for line in (_scripts_dir() / f"{task}.py").read_text(encoding="utf-8").splitlines():
+                if line.startswith("message = "):
+                    message = json.loads(line[len("message = "):])
+                    break
+        except Exception:
+            pass
+        out.append((when, message))
+    return sorted(out)
+
+
 def _write_notify_script(task_name: str, message: str, os_name: str) -> Path:
     script_path = _scripts_dir() / f"{task_name}.py"
     msg_literal = json.dumps(message)  
