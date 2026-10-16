@@ -77,15 +77,39 @@ def _key(name: str) -> str:
     return " ".join(str(name).split()).casefold()
 
 
+def _loose(text: str) -> str:
+    """A typed answer reduced to letters, digits and single spaces (no case, emoji or punctuation)."""
+    return " ".join(re.sub(r"[^\w\s]|_", " ", str(text)).split()).casefold()
+
+
+def _same(a: str, b: str) -> bool:
+    """Two typed answers that are the same nominee: equal once loosened, or a near-identical spelling
+    of a short name ("micheal gabriel" / "michael gabriel")."""
+    if a == b:
+        return True
+    if max(len(a), len(b)) > 40:
+        return False
+    from difflib import SequenceMatcher
+    return SequenceMatcher(None, a, b).ratio() >= 0.88
+
+
 def categories(form: dict) -> list[dict]:
-    """[{id, title, options}] for every choice question, in the form's order."""
+    """[{id, title, kind, options}] for every question that can be counted, in the form's order.
+    kind is "choice" (checkbox, multiple choice, dropdown), "text" (typed nominations) or "file" (uploads)."""
     out = []
     for item in form.get("items") or []:
         question = (item.get("questionItem") or {}).get("question") or {}
+        if not question.get("questionId"):
+            continue
+        title = " ".join(str(item.get("title") or "Untitled").split())
         choice = question.get("choiceQuestion") or {}
-        if choice.get("type") in _CHOICE_TYPES and question.get("questionId"):
-            out.append({"id": question["questionId"], "title": " ".join(str(item.get("title") or "Untitled").split()),
+        if choice.get("type") in _CHOICE_TYPES:
+            out.append({"id": question["questionId"], "title": title, "kind": "choice",
                         "options": [o.get("value", "") for o in choice.get("options") or [] if o.get("value")]})
+        elif "textQuestion" in question:
+            out.append({"id": question["questionId"], "title": title, "kind": "text", "options": []})
+        elif "fileUploadQuestion" in question:
+            out.append({"id": question["questionId"], "title": title, "kind": "file", "options": []})
     return out
 
 
@@ -107,6 +131,14 @@ def tally(form: dict, responses: list[dict], top: int = 4) -> dict:
     counted, dropped = latest_per_person(responses)
     result = []
     for cat in categories(form):
+        if cat["kind"] == "file":
+            files = [a.get("fileName", "file") for r in counted
+                     for a in (((r.get("answers") or {}).get(cat["id"]) or {}).get("fileUploadAnswers") or {}).get("answers") or []]
+            result.append({"title": cat["title"], "kind": "file", "voters": len(files), "top": [], "files": files})
+            continue
+        if cat["kind"] == "text":
+            result.append(_tally_text(cat, counted, top))
+            continue
         votes: dict[str, int] = {}
         spellings: dict[str, dict[str, int]] = {}
         for option in cat["options"]:
@@ -125,8 +157,41 @@ def tally(form: dict, responses: list[dict], top: int = 4) -> dict:
         ranked = sorted(votes.items(), key=lambda kv: (-kv[1], order.get(kv[0], len(order)), kv[0]))
         cut = ranked[top - 1][1] if len(ranked) >= top else 0
         winners = [(max(spellings[k], key=spellings[k].get), n) for k, n in ranked if n >= cut and n > 0]
-        result.append({"title": cat["title"], "voters": voters, "top": winners})
+        result.append({"title": cat["title"], "kind": "choice", "voters": voters, "top": winners})
     return {"responses": len(counted), "dropped": dropped, "categories": result}
+
+
+def _top(groups: list[dict], top: int) -> list[tuple]:
+    ranked = sorted(groups, key=lambda g: (-g["votes"], g["first"]))
+    cut = ranked[top - 1]["votes"] if len(ranked) >= top else 0
+    return [(max(g["spellings"], key=lambda s: (g["spellings"][s], -g["order"][s])), g["votes"])
+            for g in ranked if g["votes"] >= cut and g["votes"] > 0]
+
+
+def _tally_text(cat: dict, counted: list[dict], top: int) -> dict:
+    """Typed nominations: one answer is one vote for that nominee (a duo typed as one answer is one
+    nominee). Answers are grouped when they match ignoring case, punctuation and emoji, or are a
+    near-identical spelling; the most common spelling is shown."""
+    groups: list[dict] = []
+    voters, seen = 0, 0
+    for response in counted:
+        answer = (response.get("answers") or {}).get(cat["id"]) or {}
+        typed = [" ".join(str(a.get("value", "")).split()) for a in (answer.get("textAnswers") or {}).get("answers") or []]
+        typed = [t for t in typed if _loose(t)]
+        if typed:
+            voters += 1
+        for text in typed:
+            loose = _loose(text)
+            group = next((g for g in groups if _same(g["key"], loose)), None)
+            if group is None:
+                group = {"key": loose, "votes": 0, "first": seen, "spellings": {}, "order": {}}
+                groups.append(group)
+            group["votes"] += 1
+            group["spellings"][text] = group["spellings"].get(text, 0) + 1
+            group["order"].setdefault(text, seen)
+            seen += 1
+    return {"title": cat["title"], "kind": "text", "voters": voters, "top": _top(groups, top),
+            "distinct": len(groups)}
 
 
 def _names(top: list[tuple]) -> str:
@@ -138,7 +203,13 @@ def panel_text(summary: dict, top: int) -> str:
              + (f" ({summary['dropped']} earlier resubmission{'s' if summary['dropped'] != 1 else ''} not counted)"
                 if summary["dropped"] else ""), ""]
     for cat in summary["categories"]:
-        lines.append(f"{cat['title'].upper()}  ({cat['voters']} voted)")
+        if cat.get("kind") == "file":
+            lines.append(f"{cat['title'].upper()}  ({len(cat['files'])} uploaded; pick these yourself)")
+            lines += [f"  - {name}" for name in cat["files"]] or ["  nothing uploaded yet"]
+            lines.append("")
+            continue
+        typed = f", typed: {cat['distinct']} different answers" if cat.get("kind") == "text" else ""
+        lines.append(f"{cat['title'].upper()}  ({cat['voters']} voted{typed})")
         if not cat["top"]:
             lines.append("  no votes yet")
         for name, n in cat["top"]:
@@ -156,7 +227,10 @@ def spoken(summary: dict, top: int) -> str:
         return "I found the form, but it has no checkbox or multiple-choice categories to count."
     n = summary["responses"]
     head = f"{n} {'person has' if n == 1 else 'people have'} voted. Top {top} in each category: "
-    return head + " ".join(f"{c['title']}: {_names(c['top'])}." for c in summary["categories"])
+    voted = [c for c in summary["categories"] if c.get("kind") != "file"]
+    files = [c for c in summary["categories"] if c.get("kind") == "file"]
+    tail = (" " + " ".join(f"{c['title']}: {len(c['files'])} uploaded, they're on screen." for c in files)) if files else ""
+    return head + " ".join(f"{c['title']}: {_names(c['top'])}." for c in voted) + tail
 
 
 # ── Google ────────────────────────────────────────────────────────────────────
