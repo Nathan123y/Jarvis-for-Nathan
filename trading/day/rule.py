@@ -329,7 +329,8 @@ def backtest(sessions: dict[str, dict[str, list]], cfg: DayConfig = DayConfig(),
 # ── turning the day's fills into a result ─────────────────────────────────────
 def summarize_fills(orders: list[dict], symbols: tuple, day: str) -> list[dict]:
     """Per-fund result for `day` from Alpaca's filled orders: [{symbol, pnl, qty, bought, sold,
-    exit}]. Gross of any fees; a fund that is not flat again is left out (the next pass catches it)."""
+    exit}]. `exit` is "stop" (a stop sell filled), "target" (a bracket's take-profit limit sell
+    filled) or "time" (sold at market: the end-of-day sale or a manual stop). Gross of any fees; a fund that is not flat again is left out (the next pass catches it)."""
     out = []
     for symbol in symbols:
         fills = [o for o in orders if o["symbol"] == symbol and str(o.get("filled_at", ""))[:10] >= day[:10]]
@@ -343,5 +344,6 @@ def summarize_fills(orders: list[dict], symbols: tuple, day: str) -> list[dict]:
         kinds = {o["type"] for o in sells}
         out.append({"symbol": symbol, "qty": bought_qty, "bought": bought, "sold": sold,
                     "pnl": sold - bought,
-                    "exit": "stop" if "stop" in kinds or "stop_limit" in kinds else "time"})
+                    "exit": ("stop" if "stop" in kinds or "stop_limit" in kinds else
+                             "target" if "limit" in kinds else "time")})
     return out

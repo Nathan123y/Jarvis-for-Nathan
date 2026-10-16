@@ -84,7 +84,8 @@ def build(state: dict, snapshots: list[dict], trade_events: list[dict], *,
         "avg_win": (sum(wins) / len(wins)) if wins else None,
         "avg_loss": (sum(losses) / len(losses)) if losses else None,
         "profit_factor": (sum(wins) / -sum(losses)) if losses and sum(losses) < 0 else None,
-        "stops": sum(1 for t in trades if t.get("exit") == "stop"), "gross_pnl": gross,
+        "stops": sum(1 for t in trades if t.get("exit") == "stop"),
+        "targets": sum(1 for t in trades if t.get("exit") == "target"), "gross_pnl": gross,
         "holding": sorted(held), "paused": bool(state.get("paused")),
     }
     report["verdict"] = verdict(report)
@@ -127,6 +128,7 @@ def render(report: dict) -> str:
         + (f", {report['win_rate']:.0%} winners, average win {_usd(report['avg_win'])}, "
            f"average loss {_usd(report['avg_loss'])}"
            + (f", profit factor {pf:.2f}" if pf else "") + f", {report['stops']} stopped out"
+           + (f", {report['targets']} hit the target" if report.get("targets") else "")
            if report["trades"] and report["win_rate"] is not None else ""),
         "  Holding now        " + (", ".join(report["holding"]) or "nothing (it is flat when not in a trade)"),
     ]

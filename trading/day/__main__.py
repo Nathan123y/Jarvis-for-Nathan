@@ -7,6 +7,7 @@
     autostart   start the day trader by itself every weekday morning (macOS): install | remove | status
     run         start the automatic day trader (leave it running; Ctrl+C stops it)
                   add --analyst to let the pre-market analyst choose what to trade each day
+                  add --rule fvg for the fair-value-gap limit entry instead of the opening-range breakout
     report      results so far, next to simply holding SPY, with estimated costs
     learn       the learning loop: status | run | mode propose|auto|off | apply | reject | revert
     pause       stop buying (it still sells what it holds, on schedule)
@@ -31,6 +32,7 @@ from trading.day.analyst import (HEADLINE_QUERIES, MAX_PICKS, PlanError, gather_
 from trading.day.rule import (EASTERN, LIMIT_MAX_FUND_PCT, LIMIT_RISK_PCT, STANDARD_MAX_FUND_PCT,
                               STANDARD_RISK_PCT, STATUS_TEXT, DayConfig, backtest, size_text, sized_config,
                               to_sessions)
+from trading.day.fvg import fvg_config
 from trading.day.runner import DAY_TRADING_MINIMUM, DayRunner, review_latest_session
 from trading.day.store import day_journal
 from trading.day.universe import UNIVERSE
@@ -46,6 +48,11 @@ def _usd(value: float) -> str:
 
 def _pct(value: float) -> str:
     return f"{value * 100:+.1f}%"
+
+
+def fvg_size_text(cfg) -> str:
+    return (f"up to {cfg.risk_per_trade * 100:g}% of the account at risk per trade, "
+            f"at most {cfg.max_position_pct * 100:g}% of it in one fund")
 
 
 def _cfg(args) -> DayConfig:
@@ -227,6 +234,11 @@ def cmd_run(args) -> int:
             signal.signal(getattr(signal, name), lambda *_: stop.set())
     cfg = _cfg(args)
     use_analyst = bool(getattr(args, "analyst", False))
+    rule = getattr(args, "rule", "orb")
+    if rule == "fvg" and use_analyst:
+        journal.release_runner()
+        print("--rule fvg is pure code and does not use the analyst. Start it without --analyst.")
+        return 1
     if use_analyst:
         from core import gemini
         if not gemini.api_key():
@@ -235,12 +247,16 @@ def cmd_run(args) -> int:
                   "without --analyst to run the plain rule on SPY and QQQ.")
             return 1
     from trading.day import learn
-    tuned = learn.overrides()
-    cfg = learn.effective_cfg(cfg)
-    runner = DayRunner(broker, journal, cfg=cfg, log=_stamp,
-                       analyst=(lambda day: make_plan(broker, day)) if use_analyst else None,
-                       after_day=lambda day: learn.nightly(broker, journal, day, log=_stamp),
-                       never_sit_out=not getattr(args, "allow_sit_out", False))
+    if rule == "fvg":
+        tuned = {}                                       # learned settings belong to the breakout rule
+        runner = DayRunner(broker, journal, cfg=cfg, log=_stamp, rule="fvg", fvg_cfg=fvg_config(cfg))
+    else:
+        tuned = learn.overrides()
+        cfg = learn.effective_cfg(cfg)
+        runner = DayRunner(broker, journal, cfg=cfg, log=_stamp,
+                           analyst=(lambda day: make_plan(broker, day)) if use_analyst else None,
+                           after_day=lambda day: learn.nightly(broker, journal, day, log=_stamp),
+                           never_sit_out=not getattr(args, "allow_sit_out", False))
     left = "flat"
     try:
         if args.once:
@@ -250,7 +266,13 @@ def cmd_run(args) -> int:
         _stamp(f"Sizes: {size_text(cfg)}" + (" (the standard)." if (cfg.risk_per_trade, cfg.max_position_pct) == (DayConfig().risk_per_trade, DayConfig().max_position_pct) else " (bigger or smaller "
                "than standard: gains and losses scale with it)."))
         journal.record("config", risk_pct=round(cfg.risk_per_trade * 100, 4),
-                       max_fund_pct=round(cfg.max_position_pct * 100, 4), analyst=use_analyst)
+                       max_fund_pct=round(cfg.max_position_pct * 100, 4), analyst=use_analyst, rule=rule)
+        journal.update_state(rule=rule)
+        if rule == "fvg":
+            _stamp("Rule: fair value gap (the 15-minute / 5-minute entry). After 9:45 it waits for the first "
+                   "three-candle gap on five-minute candles that broke the opening range. Up: a limit buy at the "
+                   "top of the gap, stop under the first candle, target twice the risk, all held at Alpaca. "
+                   "Down: it stands aside for the day. Nothing new after 11:00. No analyst, no learning loop.")
         if use_analyst:
             _stamp(f"Analyst on. About 90 minutes before each open it reads recent prices and news, picks what to "
                    f"watch from a fixed list of {len(UNIVERSE)} funds and large stocks, and sizes each pick by its "
@@ -303,6 +325,8 @@ def cmd_report(args) -> int:
 
 
 def cmd_backtest(args) -> int:
+    if getattr(args, "rule", "orb") == "fvg":
+        return cmd_backtest_fvg(args)
     cfg = _cfg(args)
     today = date.today()
     start = (today - timedelta(days=int(args.years * 365.25))).isoformat()
@@ -374,6 +398,123 @@ def cmd_backtest(args) -> int:
           "\nprice feed, not these candles. The live safety checks (1% down on the day, skipping a"
           f"\nprice that already ran away) are not modelled. Hold SPY is {benchmark}. A day trader"
           "\nthat only beats SPY before costs has not beaten it: watch the cost check above.")
+    return 0
+
+
+FVG_SKIP = (("bearish_stand_aside", "first gap pointed down (stood aside)"),
+            ("no_pattern", "no qualifying gap by 11:00"),
+            ("never_filled", "limit never filled by 11:00"),
+            ("invalidated", "price broke the stop before the fill"),
+            ("bad_data", "bad data (patchy session or opening range)"),
+            ("risk_too_small", "risk under 0.05% of the price"),
+            ("stop_too_far", "risk over 1.5% of the price"),
+            ("too_small", "could not size even one share"))
+
+
+def _r(value) -> str:
+    return "n/a" if value is None else f"{value:+.2f}R"
+
+
+def _fvg_lines(result: dict) -> list[str]:
+    s = result
+    n = s["trades"]
+    lines = [f"Trades: {n} on {s['days_traded']} of {s['days']} days, about {s['trades_per_month']:.1f} a month."]
+    if n:
+        pf = f"{s['profit_factor']:.2f}" if s["profit_factor"] is not None else "n/a"
+        lines += [f"  Win rate {s['win_rate']:.0%}; average win {_r(s['avg_win_r'])}, average loss {_r(s['avg_loss_r'])}.",
+                  f"  Expectancy {_r(s['expectancy_r'])} per trade ({'+' if s['expectancy'] >= 0 else '-'}"
+                  f"${abs(s['expectancy']):,.0f}); profit factor {pf}.",
+                  f"  Exits: {s['targets']} at the target, {s['stops']} at the stop, {s['time_exits']} sold "
+                  "before the close.",
+                  f"  Longest run of losing trades: {s['losing_streak']}."]
+    return lines
+
+
+def cmd_backtest_fvg(args) -> int:
+    from trading.day import fvg
+    cfg = fvg_config(_cfg(args))
+    today = date.today()
+    start = (today - timedelta(days=int(args.years * 365.25))).isoformat()
+    feed = args.feed
+    kind = "IEX-exchange" if feed == "iex" else "full-market (SIP)"
+    end = (today - timedelta(days=1)).isoformat() if feed == "sip" else None
+    print(f"Fair-value-gap rule. Fetching one-minute prices from {start} (free {kind} data). This takes a few minutes.")
+    broker = make_broker()
+    raw = broker.minute_bars(list(cfg.symbols), start, end, feed=feed,
+                             progress=lambda n: print(f"  ...{n} pages", flush=True) if n % 10 == 0 else None)
+    print("Sorting the candles into trading days...")
+    sessions = {s: to_sessions(raw.get(s, [])) for s in cfg.symbols}
+    try:
+        daily = broker.daily_bars(["SPY"], (date.fromisoformat(start) - timedelta(days=7)).isoformat(),
+                                  end, feed=feed).get("SPY", [])
+    except BrokerError:
+        daily = []
+    kw = {"slippage_bps": args.slippage_bps, "benchmark_daily": daily}
+    try:
+        result = fvg.backtest(sessions, cfg, **kw)
+    except ValueError as exc:
+        print(f"Could not run the backtest: {exc}")
+        return 1
+    mine, base = result["strategy"], result["benchmark"]
+    print(f"\nFVG rule, {', '.join(cfg.symbols)}, feed {feed.upper()}: {result['start']} to {result['end']}, "
+          f"{result['days']} full trading days, {result['slippage_bps']:g} bp cost on every stop and end-of-day sale "
+          "(limit buys and targets fill at their price)")
+    print(f"Sizes: {fvg_size_text(cfg)}.\n")
+    print(f"{'':<24}{'This rule':>12}{'Hold SPY':>12}")
+    for label, key in (("Total return", "total_return"), ("Per year (CAGR)", "cagr"),
+                       ("Worst fall from a high", "max_drawdown")):
+        print(f"{label:<24}{_pct(mine[key]):>12}{_pct(base[key]):>12}")
+    print()
+    for line in _fvg_lines(result):
+        print(line)
+    if result["trades"] < 100:
+        print(f"\nWARNING: only {result['trades']} trades. Under 100 trades these numbers are mostly noise; "
+              "do not read a win rate or an edge into them.")
+    skipped = dict(result["skipped"])
+    skipped["bad_data"] = skipped.pop("no_session", 0) + skipped.pop("no_opening_range", 0)
+    print("\nFund-days with no trade (two funds a day):")
+    for key, text in FVG_SKIP:
+        print(f"  {text:<46}{skipped.pop(key, 0):>6}")
+    for key, value in sorted(skipped.items()):
+        print(f"  {key:<46}{value:>6}")
+    print(f"\n{'Year':<8}{'This rule':>12}{'Hold SPY':>12}")
+    for year in sorted(result["strategy_by_year"]):
+        print(f"{year:<8}{_pct(result['strategy_by_year'][year]):>12}"
+              f"{_pct(result['benchmark_by_year'].get(year, 0.0)):>12}")
+    print(f"\n{'Month':<9}{'Trades':>7}{'Wins':>6}{'Sum R':>8}{'Return':>9}")
+    for month, m in result["by_month"].items():
+        print(f"{month:<9}{m['trades']:>7}{m['wins']:>6}{m['r']:>+8.1f}{_pct(m['return']):>9}")
+    win = f"{result['win_rate']:.0%}" if result["win_rate"] is not None else "n/a"
+    busy = [kv for kv in result["by_month"].items() if kv[1]["trades"] >= 10]
+    best = max(busy, key=lambda kv: kv[1]["wins"] / kv[1]["trades"], default=None)
+    best_text = (f"; best month with 10+ trades here {best[0]}: {best[1]['wins']} of {best[1]['trades']}"
+                 if best else "")
+    print(f"\nThe video's claim: 81% winners over 16 trades in one month. Here: {win} over {result['trades']} "
+          f"trades in {result['months']} months{best_text}.")
+    info = result["short_info"]
+    print("\nMirror short side (information only, not tradable here: this trader never sells short):")
+    if info["trades"]:
+        pf = f"{info['profit_factor']:.2f}" if info["profit_factor"] is not None else "n/a"
+        print(f"  {info['trades']} trades, win rate {info['win_rate']:.0%}, expectancy {_r(info['expectancy_r'])}, "
+              f"profit factor {pf}; {info['targets']} targets, {info['stops']} stops, {info['time_exits']} time exits.")
+    else:
+        print("  no short trades would have filled.")
+    print("\nSensitivity (robustness check, NOT something to optimize; the headline numbers above use the "
+          "fixed settings):")
+    print(f"  {'Variant':<40}{'Trades':>7}{'Win':>6}{'Exp. R':>8}{'PF':>6}{'Total':>9}")
+    rows = [("headline (near edge, trade-through)", result)] + fvg.sensitivity(sessions, cfg, **kw)
+    for label, r in rows:
+        win = f"{r['win_rate']:.0%}" if r["win_rate"] is not None else "n/a"
+        pf = f"{r['profit_factor']:.2f}" if r["profit_factor"] is not None else "n/a"
+        exp = f"{r['expectancy_r']:+.2f}" if r["expectancy_r"] is not None else "n/a"
+        print(f"  {label:<40}{r['trades']:>7}{win:>6}{exp:>8}{pf:>6}{_pct(r['strategy']['total_return']):>9}")
+    source = "the IEX exchange only" if feed == "iex" else "the consolidated market tape"
+    benchmark = ("dividend-adjusted" if result["benchmark_adjusted"] else
+                 "without dividends, so it understates holding SPY by about 1.3 points a year")
+    print(f"\nRead this carefully: it is a replay, not a forecast. Candles come from {source}. Patterns are found "
+          "on five-minute\ncandles; fills are replayed on one-minute candles. A limit buy or target counts only if "
+          "a trade went a cent\nbeyond it; a candle that could have hit both stop and target is counted as the stop. "
+          f"Hold SPY is {benchmark}.")
     return 0
 
 
@@ -535,6 +676,9 @@ def main(argv=None) -> int:
             p.add_argument("--show-input", action="store_true", help="also print exactly what the model is shown")
         if name == "run":
             p.add_argument("--once", action="store_true", help="do one pass and exit")
+        if name in ("run", "backtest"):
+            p.add_argument("--rule", choices=("orb", "fvg"), default="orb",
+                           help="orb: opening-range breakout (default); fvg: fair-value-gap limit entry")
         if name == "backtest":
             p.add_argument("--years", type=float, default=3.0)
             p.add_argument("--slippage-bps", type=float, default=2.0)

@@ -68,6 +68,9 @@ class DayFakeBroker:
         self.fail_entries = 0
         self.lose_reply_after_fill = False
         self.price_override: dict[str, float] = {}
+        self.brackets: dict[str, dict] = {}      # order id -> resting/filled fvg bracket buy
+        self.targets: dict[str, str] = {}        # symbol -> id of its open take-profit leg
+        self.on_submit = None                    # called with the symbol just before a bracket is accepted
         for symbol, qty in (held or {}).items():
             self.held[symbol] = qty
             self.cash -= qty * self._price(symbol)
@@ -132,25 +135,87 @@ class DayFakeBroker:
 
     entry_error = "Alpaca is having trouble right now."
 
+    def submit_bracket_limit(self, symbol, qty, limit_price, target_price, stop_price, *, client_order_id=None):
+        if self.on_submit:
+            self.on_submit(symbol)
+        if self.fail_entries:
+            self.fail_entries -= 1
+            raise BrokerError(self.entry_error)
+        if client_order_id in self.client_ids:
+            raise BrokerError("Alpaca refused the request (422). client_order_id must be unique")
+        self.client_ids.add(client_order_id)
+        oid = f"bracket-{len(self.brackets) + 1:04d}"
+        self.brackets[oid] = {"id": oid, "symbol": symbol, "qty": qty, "limit": limit_price,
+                              "target": target_price, "stop": stop_price, "client_order_id": client_order_id,
+                              "status": "new", "filled_qty": 0.0}
+        self.entry_orders.append({"symbol": symbol, "qty": qty, "limit": limit_price, "target": target_price,
+                                  "stop": stop_price, "client_order_id": client_order_id})
+        if self.lose_reply_after_fill:
+            raise BrokerError("Could not reach Alpaca. Check the internet connection.")
+        return {"id": oid, "status": "new", "client_order_id": client_order_id}
+
+    def _bracket(self, symbol):
+        return next(o for o in self.brackets.values() if o["symbol"] == symbol)
+
+    def fill_limit(self, symbol):
+        order = self._bracket(symbol)
+        order.update(status="filled", filled_qty=float(order["qty"]))
+        self.cash -= order["qty"] * order["limit"]
+        self.held[symbol] = self.held.get(symbol, 0) + order["qty"]
+        self.stops[symbol] = order["id"] + "-stop"
+        self.targets[symbol] = order["id"] + "-target"
+        self._fill(symbol, "buy", order["qty"], order["limit"], "limit")
+
+    def hit_target(self, symbol):
+        order = self._bracket(symbol)
+        qty = self.held.pop(symbol)
+        self.stops.pop(symbol, None)
+        self.targets.pop(symbol, None)
+        self.cash += qty * order["target"]
+        self._fill(symbol, "sell", qty, order["target"], "limit")
+
+    def get_order(self, order_id):
+        order = self.brackets.get(order_id)
+        if order is None:
+            raise BrokerError("Alpaca refused the request (404). order not found")
+        return {"id": order_id, "status": order["status"], "filled_qty": order["filled_qty"],
+                "filled_avg_price": order["limit"] if order["filled_qty"] else 0.0}
+
+    def order_by_client_id(self, client_order_id):
+        for order in self.brackets.values():
+            if order["client_order_id"] == client_order_id:
+                return self.get_order(order["id"])
+        raise BrokerError("Alpaca refused the request (404). order not found")
+
     def hit_stop(self, symbol, price):
         qty = self.held.pop(symbol)
         self.stops.pop(symbol, None)
+        self.targets.pop(symbol, None)
         self.cash += qty * price
         self._fill(symbol, "sell", qty, price, "stop")
 
     def open_orders(self):
-        return [{"id": oid, "symbol": symbol, "side": "sell", "status": "new"}
-                for symbol, oid in self.stops.items()]
+        return ([{"id": o["id"], "symbol": o["symbol"], "side": "buy", "status": "new"}
+                 for o in self.brackets.values() if o["status"] == "new"]
+                + [{"id": oid, "symbol": symbol, "side": "sell", "status": "new"} for symbol, oid in self.stops.items()]
+                + [{"id": oid, "symbol": symbol, "side": "sell", "status": "new"}
+                   for symbol, oid in self.targets.items()])
 
     def cancel_order(self, order_id):
-        for symbol, oid in list(self.stops.items()):
-            if oid == order_id:
-                del self.stops[symbol]
-                return
+        self.cancelled = getattr(self, "cancelled", []) + [order_id]
+        order = self.brackets.get(order_id)
+        if order is not None and order["status"] == "new":
+            order["status"] = "canceled"
+            return
+        for legs in (self.stops, self.targets):
+            for symbol, oid in list(legs.items()):
+                if oid == order_id:
+                    del legs[symbol]
+                    return
         raise BrokerError("Alpaca refused the request (422). order is not cancelable")
 
     def close_position(self, symbol):
-        if symbol in self.stops:                  # the stop still holds the shares
+        if symbol in self.stops or symbol in self.targets:   # a leg still holds the shares
             raise BrokerError("Alpaca refused the request (403). insufficient qty available for order")
         if symbol not in self.held:
             raise BrokerError("Alpaca refused the request (404). position does not exist")

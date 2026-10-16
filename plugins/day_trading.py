@@ -23,7 +23,8 @@ PLUGIN = {
     "name": "day_trading",
     "description": (
         "Check on and control the automatic PRACTICE DAY trader: each morning it picks a few funds "
-        "or stocks, buys one only on an opening-range breakout, sells everything before the close "
+        "or stocks, buys one only on an opening-range breakout (or, if started with the fvg rule, a "
+        "limit buy back into the first fair value gap), sells everything before the close "
         "each day, and uses fake money "
         "in its own Alpaca paper account. Use for 'how is the day trader doing', 'start the "
         "practice day trader', 'stop the day trader', 'pause day trading', 'resume day trading', "
@@ -63,7 +64,13 @@ def _journal():
 
 
 _NO_TRADE = {"late": "none broke out before 2 pm", "no_breakout": "none broke out",
-             "stop_too_far": "the stop would have been too far away", "too_small": "the position would have been too small"}
+             "stop_too_far": "the stop would have been too far away", "too_small": "the position would have been too small",
+             "bearish_stand_aside": "the first gap pointed down, so it stood aside",
+             "no_pattern_by_cutoff": "no fair value gap formed by 11 am",
+             "never_filled": "its limit buy was not filled by 11 am",
+             "invalidated": "the price broke the stop before its limit buy filled",
+             "already_played_out": "the price had already come back to the gap",
+             "risk_too_small": "the stop would have been too close"}
 
 
 def _latest_session(journal) -> str:
@@ -101,7 +108,21 @@ def _latest_session(journal) -> str:
     return f"{when} it made a plan and is still watching."
 
 
+RULE_SPOKEN = {"orb": "the opening-range breakout rule",
+               "fvg": "the fair-value-gap rule (a limit buy back into the first gap after the opening range)"}
+
+
+def _rule_sentence(state: dict) -> str:
+    return f"It is set to trade {RULE_SPOKEN.get(state.get('rule') or 'orb', RULE_SPOKEN['orb'])}."
+
+
 def _status() -> str:
+    text = _status_text()
+    state = _journal().state()
+    return f"{text} {_rule_sentence(state)}" if state.get("start_equity") or _journal().runner_pid() else text
+
+
+def _status_text() -> str:
     journal = _journal()
     state = {**journal.state(), "paused": journal.paused()}
     if not state.get("start_equity"):

@@ -20,6 +20,10 @@ What keeps it safe (practice money, but written as if it were not)
   * A breakout is bought only within 90 seconds of happening, at most once per fund per day,
     with a deterministic order id, so a restart or a retry cannot send the same buy twice.
   * No short selling, no margin: sizes are whole shares, capped by the rule and by cash.
+  * Under the opt-in fvg rule the buy is a resting LIMIT order with its target and stop attached
+    at Alpaca (a bracket). It is written to the record before it is sent, cancelled at 11:00 if
+    unfilled, when the price breaks the stop first, on pause, on the loss halt, at the end-of-day
+    sale and when the trader is stopped. Nothing else about the safeguards changes.
   * Under $25,000 it does not trade at all: every trade here is a day trade, which brokers
     restrict below that size, and a refused sale could strand a position.
 """
@@ -32,6 +36,7 @@ from datetime import datetime, timedelta
 from typing import Callable, Optional
 
 from trading.broker import BrokerError, parse_ts
+from trading.day import fvg
 from trading.day.analyst import MAX_PICKS, PlanError, clamp_conviction, pick_config, plan_lines
 from trading.day.rule import (EASTERN, FINAL, SESSION_CLOSE, DayConfig, is_full_session,
                               live_signal, simulate_day, summarize_fills, to_sessions)
@@ -63,13 +68,22 @@ class DayRunner:
                  analyst: Optional[Callable[[str], dict]] = None,
                  sleep: Callable[[float], None] = time.sleep,
                  after_day: Optional[Callable[[str], None]] = None,
-                 never_sit_out: bool = False):
+                 never_sit_out: bool = False, rule: str = "orb",
+                 fvg_cfg: Optional[fvg.FvgConfig] = None):
         """`after_day`, if given, is called once with the trading day after its result is recorded
         (on its own thread, errors ignored): the nightly learning review uses it.
         `analyst`, if given, is called with a trading day ("YYYY-MM-DD") and returns that day's
         plan (see trading.day.analyst) or raises PlanError. Without it the trader watches
-        `cfg.symbols` exactly as before."""
+        `cfg.symbols` exactly as before.
+        `rule` is "orb" (the opening-range breakout, the default) or "fvg" (the fair-value-gap
+        limit entry in trading.day.fvg, which never consults the analyst)."""
+        if rule not in ("orb", "fvg"):
+            raise ValueError("The rule must be orb or fvg.")
+        if rule == "fvg" and analyst is not None:
+            raise ValueError("The fvg rule is pure code; it does not use the analyst.")
         self.broker, self.journal, self.cfg = broker, journal, cfg
+        self.rule = rule
+        self.fvg_cfg = fvg_cfg or fvg.fvg_config(cfg)
         self.analyst = analyst
         self.never_sit_out = never_sit_out
         self.after_day = after_day
@@ -361,6 +375,162 @@ class DayRunner:
         self._save(today)
         return "bought" if bought else "watching"
 
+    # ── the fair-value-gap rule (opt-in) ──────────────────────────────────────
+    @staticmethod
+    def _fvg_id(day: str, symbol: str) -> str:
+        return f"jvd-{day.replace('-', '')}-{symbol}-fvg"
+
+    def _fvg_pass(self, day: str, seconds: float, account: dict, positions: dict, today: dict,
+                  symbols: list[str]) -> str:
+        """One look at each undecided fund under the fvg rule: watch a resting limit buy, or look
+        for the day's first gap and place one."""
+        raw = self.broker.minute_bars(symbols, _midnight(day))
+        budget = dict(account)
+        label = "watching"
+        for symbol in symbols:
+            bars = to_sessions(raw.get(symbol, [])).get(day, [])
+            if symbol in today["entered"]:
+                self._watch_resting(day, seconds, symbol, bars, positions, today)
+                if today["entered"].get(symbol, {}).get("resting"):
+                    label = "limit_order_waiting"
+                continue
+            signal = fvg.live_signal(bars, self.fvg_cfg, account["equity"], seconds)
+            status = signal["status"]
+            if status == "place":
+                if self._place_fvg(symbol, signal, budget, day, seconds, today):
+                    entry = today["entered"][symbol]
+                    budget["cash"] -= entry["qty"] * entry["price"] * 1.002
+                    label = "limit_order_placed"
+            elif status in fvg.FINAL:
+                self._decide(today, day, symbol, status)
+        self._save(today)
+        return label
+
+    def _place_fvg(self, symbol: str, signal: dict, account: dict, day: str, seconds: float, today: dict) -> bool:
+        entry, stop, target = signal["entry"], signal["stop"], signal["target"]
+        try:
+            price = self.broker.latest_prices([symbol]).get(symbol)
+        except BrokerError:
+            return False                                    # try again on the next pass
+        if not price or price <= entry:
+            self._decide(today, day, symbol, "already_played_out")   # never chase
+            return False
+        qty = min(signal["qty"], math.floor(account["cash"] / (entry * 1.002)))
+        if qty < 1:
+            self._decide(today, day, symbol, "not_enough_cash")
+            return False
+        # Write down the intent first: a resting limit can fill at any moment, and a fill must
+        # never be mistaken for a leftover and swept away.
+        today["entered"][symbol] = {"qty": qty, "stop": stop, "price": entry, "target": target,
+                                    "rule": "fvg", "resting": True, "intent": True,
+                                    "placed_minute": int(seconds // 60)}
+        self._save(today)
+        try:
+            reply = self.broker.submit_bracket_limit(symbol, qty, entry, target, stop,
+                                                     client_order_id=self._fvg_id(day, symbol))
+        except BrokerError as exc:
+            message = str(exc).lower()
+            attempts = int(today["attempts"].get(symbol, 0)) + 1
+            today["attempts"][symbol] = attempts
+            self.journal.record("order_error", symbol=symbol, side="buy", msg=str(exc)[:140])
+            if "unique" in message or any(text in message for text in _UNSURE):
+                self._save(today)                           # it may exist: look it up by its id next pass
+                return True
+            today["entered"].pop(symbol, None)
+            self._log(f"limit buy of {symbol} was not accepted ({attempts} of {MAX_ATTEMPTS})")
+            if attempts >= MAX_ATTEMPTS:
+                self._decide(today, day, symbol, "order_failed")
+            self._save(today)
+            return False
+        today["entered"][symbol].pop("intent", None)
+        today["entered"][symbol]["order_id"] = reply.get("id", "")
+        self._save(today)
+        gap = signal["gap"]
+        self.journal.record("order", day=day, symbol=symbol, rule="fvg", qty=qty, limit=entry, stop=stop,
+                            target=target, range_high=round(signal["range"][0], 2),
+                            range_low=round(signal["range"][1], 2), c3_closed=gap["done"])
+        self._log(f"{symbol}: gap found; limit buy {qty} at {entry:.2f}, stop {stop:.2f}, target {target:.2f}")
+        return True
+
+    def _lookup(self, day: str, symbol: str, entry: dict) -> Optional[dict]:
+        """The resting order's state from Alpaca, or None if it cannot be read right now.
+        {"status": "missing"} when Alpaca says no order with our id exists."""
+        try:
+            if entry.get("order_id"):
+                return self.broker.get_order(entry["order_id"])
+            found = self.broker.order_by_client_id(self._fvg_id(day, symbol))
+        except BrokerError as exc:
+            if "404" in str(exc) or "not found" in str(exc).lower():
+                return {"status": "missing", "filled_qty": 0.0}
+            return None
+        if found.get("id"):
+            entry["order_id"] = found["id"]
+        return found
+
+    def _watch_resting(self, day: str, seconds: float, symbol: str, bars: list[tuple], positions: dict,
+                       today: dict) -> None:
+        entry = today["entered"][symbol]
+        if not entry.get("resting"):
+            today["decided"].setdefault(symbol, "entered")
+            return
+        if symbol in positions:
+            self._fvg_filled(day, symbol, entry, today)
+            return
+        order = self._lookup(day, symbol, entry)
+        if order is None:
+            return
+        if order.get("filled_qty", 0) > 0:
+            self._fvg_filled(day, symbol, entry, today)     # filled, and already out through the target or stop
+            return
+        if order["status"] in ("missing", "canceled", "expired", "rejected", "done_for_day"):
+            today["entered"].pop(symbol, None)
+            self._decide(today, day, symbol, "order_cancelled")
+            return
+        since = [b for b in bars if b[0] >= entry.get("placed_minute", 0)]
+        if seconds >= self.fvg_cfg.cutoff_minute * 60:
+            self._cancel_one(day, symbol, today, "never_filled")
+        elif any(b[3] <= entry["stop"] for b in since):
+            self._cancel_one(day, symbol, today, "invalidated")
+
+    def _fvg_filled(self, day: str, symbol: str, entry: dict, today: dict) -> None:
+        entry["resting"] = False
+        entry.pop("intent", None)
+        today["decided"][symbol] = "entered"
+        self.journal.record("entry", day=day, symbol=symbol, qty=entry["qty"], price=entry["price"],
+                            stop=entry["stop"], target=entry.get("target"), rule="fvg")
+        self._log(f"limit buy filled: {entry['qty']} {symbol} at {entry['price']:.2f}, "
+                  f"stop {entry['stop']:.2f}, target {entry.get('target', 0):.2f}")
+
+    def _cancel_one(self, day: str, symbol: str, today: dict, why: str) -> None:
+        """Cancel a resting limit buy (Alpaca cancels its target and stop with it). If it turns out to
+        have filled meanwhile it is kept as a trade: its target and stop are live at Alpaca."""
+        entry = today["entered"][symbol]
+        order = self._lookup(day, symbol, entry)
+        if order is None:
+            return                                          # try again next pass
+        if order.get("filled_qty", 0) > 0:
+            self._fvg_filled(day, symbol, entry, today)
+            return
+        if order["status"] not in ("missing", "canceled", "expired", "rejected", "done_for_day"):
+            try:
+                self.broker.cancel_order(entry["order_id"])
+            except BrokerError:
+                pass
+            order = self._lookup(day, symbol, entry)
+            if order is None or order.get("filled_qty", 0) > 0 or order["status"] not in (
+                    "missing", "canceled", "expired", "rejected", "done_for_day"):
+                if order is not None and order.get("filled_qty", 0) > 0:
+                    self._fvg_filled(day, symbol, entry, today)
+                return                                      # not confirmed yet: look again next pass
+        today["entered"].pop(symbol, None)
+        self._save(today)
+        self._decide(today, day, symbol, why)
+
+    def _cancel_resting(self, day: str, today: dict, positions: dict, why: str) -> None:
+        for symbol in [s for s, e in today["entered"].items() if e.get("resting") and s not in positions]:
+            self._cancel_one(day, symbol, today, why)
+        self._save(today)
+
     # ── end of day ────────────────────────────────────────────────────────────
     def _finish_day(self, day: str, account: dict, today: dict) -> None:
         if today["finished"]:
@@ -476,6 +646,10 @@ class DayRunner:
             self.journal.record("halt", day=day, equity=account["equity"], start=start_value)
             self._log("down 1% on the day: selling everything and stopping for today")
 
+        if self.rule == "fvg" and (today["halted"] or seconds >= flatten_at or self.journal.paused()):
+            self._cancel_resting(day, today, positions,
+                                 "daily_loss_halt" if today["halted"] else
+                                 "end_of_day" if seconds >= flatten_at else "paused")
         mine = self._sellable(positions, today, self._allowed())
         if today["halted"] or seconds >= flatten_at:
             if mine:
@@ -498,6 +672,13 @@ class DayRunner:
             self._note_once(today, "below_day_trading_minimum")
             self.hint = 60.0
             return "below_day_trading_minimum"
+        if self.rule == "fvg":
+            undecided = [s for s in self.fvg_cfg.symbols if s not in today["decided"]]
+            if not undecided:
+                return "done_for_entries"
+            if seconds < self.fvg_cfg.range_end * 60:
+                return "building_opening_range"
+            return self._fvg_pass(day, seconds, account, positions, today, undecided)
         watch = list(self.cfg.symbols)
         if self.analyst:
             plan, just_made = self._plan_for(day, seconds, today)
@@ -535,6 +716,8 @@ class DayRunner:
             symbols = self._sellable(positions, today, self._allowed())
         except (BrokerError, ValueError):
             return "held"
+        if self.rule == "fvg":
+            self._cancel_resting(day, today, positions, "trader_stopped")
         if not symbols:
             self._record_on_stop(day, today, [])
             return "flat"

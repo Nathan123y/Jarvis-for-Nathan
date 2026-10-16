@@ -214,6 +214,39 @@ class AlpacaPaper:
         return {"id": str(raw.get("id", "")), "status": str(raw.get("status", "")),
                 "client_order_id": str(raw.get("client_order_id", ""))}
 
+    def submit_bracket_limit(self, symbol: str, qty: int, limit_price: float, target_price: float,
+                             stop_price: float, *, client_order_id: Optional[str] = None) -> dict:
+        """Buy whole shares with a LIMIT order that carries its own target and stop (a "bracket").
+
+        Once the buy fills, Alpaca holds a take-profit limit sell at `target_price` and a stop sell
+        at `stop_price`; when one fills the other is cancelled. Both keep working if this computer
+        sleeps or Jarvis closes. Day orders only: anything unfilled ends at the close."""
+        symbol = str(symbol).upper()
+        if not _SYMBOL.match(symbol):
+            raise BrokerError("That is not a valid ticker symbol.")
+        if int(qty) != qty or qty < 1:
+            raise BrokerError("An entry order needs a whole number of shares, at least one.")
+        if not (0 < stop_price < limit_price < target_price):
+            raise BrokerError("A bracket buy needs stop < limit < target, all above zero.")
+        body: dict[str, Any] = {"symbol": symbol, "side": "buy", "type": "limit", "time_in_force": "day",
+                                "qty": str(int(qty)), "limit_price": f"{float(limit_price):.2f}",
+                                "order_class": "bracket",
+                                "take_profit": {"limit_price": f"{float(target_price):.2f}"},
+                                "stop_loss": {"stop_price": f"{float(stop_price):.2f}"}}
+        if client_order_id:
+            body["client_order_id"] = str(client_order_id)[:128]
+        raw = self._trading("POST", "/v2/orders", body=body)
+        return {"id": str(raw.get("id", "")), "status": str(raw.get("status", "")),
+                "client_order_id": str(raw.get("client_order_id", ""))}
+
+    def order_by_client_id(self, client_order_id: str) -> dict:
+        """One order looked up by the id this trader gave it (used when a reply was lost)."""
+        raw = self._trading("GET", "/v2/orders:by_client_order_id",
+                            params={"client_order_id": str(client_order_id)[:128]})
+        return {"id": str(raw.get("id", "")), "status": str(raw.get("status", "")),
+                "filled_qty": _num(raw.get("filled_qty")),
+                "filled_avg_price": _num(raw.get("filled_avg_price"))}
+
     def cancel_order(self, order_id: str) -> None:
         """Cancel one open order (for example a protective stop) by its id."""
         order_id = str(order_id or "").strip()
