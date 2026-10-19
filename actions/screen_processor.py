@@ -71,15 +71,19 @@ def _get_os() -> str:
 _IMG_MAX_W = 1280
 _IMG_MAX_H = 720
 _JPEG_Q    = 82
+# Screen captures can hold several displays side by side; this box keeps each
+# one about as sharp as a single screen at the camera size.
+_SCREEN_MAX = (2560, 1600)
 
 
-def _compress(img_bytes: bytes, source_format: str = "PNG") -> tuple[bytes, str]:
+def _compress(img_bytes: bytes, source_format: str = "PNG",
+              box: tuple[int, int] = (_IMG_MAX_W, _IMG_MAX_H)) -> tuple[bytes, str]:
     if not _PIL:
         return img_bytes, f"image/{source_format.lower()}"
 
     try:
         img = PIL.Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        img.thumbnail((_IMG_MAX_W, _IMG_MAX_H), PIL.Image.BILINEAR)
+        img.thumbnail(box, PIL.Image.BILINEAR)
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=_JPEG_Q, optimize=False)
         return buf.getvalue(), "image/jpeg"
@@ -110,7 +114,7 @@ def _capture_screen() -> tuple[bytes, str]:
             if response.exists():
                 png = response.read_bytes()
                 response.unlink(missing_ok=True)
-                return _compress(png, "PNG")
+                return _compress(png, "PNG", _SCREEN_MAX)
             if time.monotonic() >= pickup_deadline and request.exists():
                 if request.read_text(encoding="utf-8") == identifier:
                     request.unlink(missing_ok=True)
@@ -130,12 +134,10 @@ def _capture_screen() -> tuple[bytes, str]:
         raise RuntimeError("mss is not installed. Run: pip install mss")
 
     with mss.mss() as sct:
-        monitors = sct.monitors          # [0] = all combined, [1..n] = real screens
-        target   = monitors[1] if len(monitors) > 1 else monitors[0]
-        shot     = sct.grab(target)
+        shot = sct.grab(sct.monitors[0])  # [0] = every screen combined
         png      = mss.tools.to_png(shot.rgb, shot.size)
 
-    return _compress(png, "PNG")
+    return _compress(png, "PNG", _SCREEN_MAX)
 
 
 def _cv2_backend() -> int:

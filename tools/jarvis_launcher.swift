@@ -176,18 +176,41 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
                 do {
                     let content = try await SCShareableContent.excludingDesktopWindows(
                         false, onScreenWindowsOnly: true)
-                    guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() })
-                        ?? content.displays.first else {
+                    guard !content.displays.isEmpty else {
                         throw NSError(domain: "Jarvis", code: 1,
                                       userInfo: [NSLocalizedDescriptionKey: "No display available for capture."])
                     }
-                    let filter = SCContentFilter(display: display, excludingWindows: [])
-                    let config = SCStreamConfiguration()
-                    config.width = display.width
-                    config.height = display.height
-                    let frame = try await SCScreenshotManager.captureImage(
-                        contentFilter: filter, configuration: config)
-                    guard let png = NSBitmapImageRep(cgImage: frame).representation(
+                    // Capture every display and place each where macOS arranges it, so an
+                    // external monitor is seen too, not only the screen Jarvis is on.
+                    let bounds = content.displays.map { CGDisplayBounds($0.displayID) }
+                    let canvas = bounds.dropFirst().reduce(bounds[0]) { $0.union($1) }
+                    let scale = min(1.0, 1280.0 / (bounds.map(\.width).max() ?? 1280.0))
+                    let width = Int((canvas.width * scale).rounded())
+                    let height = Int((canvas.height * scale).rounded())
+                    guard let context = CGContext(
+                        data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                        space: CGColorSpaceCreateDeviceRGB(),
+                        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+                        throw NSError(domain: "Jarvis", code: 2,
+                                      userInfo: [NSLocalizedDescriptionKey: "Could not encode screenshot."])
+                    }
+                    context.setFillColor(CGColor(gray: 0, alpha: 1))
+                    context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+                    for (display, rect) in zip(content.displays, bounds) {
+                        let filter = SCContentFilter(display: display, excludingWindows: [])
+                        let config = SCStreamConfiguration()
+                        config.width = Int((rect.width * scale).rounded())
+                        config.height = Int((rect.height * scale).rounded())
+                        let frame = try await SCScreenshotManager.captureImage(
+                            contentFilter: filter, configuration: config)
+                        // Display bounds are top-left based; Core Graphics draws from the bottom left.
+                        context.draw(frame, in: CGRect(x: (rect.minX - canvas.minX) * scale,
+                                                       y: (canvas.maxY - rect.maxY) * scale,
+                                                       width: rect.width * scale,
+                                                       height: rect.height * scale))
+                    }
+                    guard let frame = context.makeImage(),
+                          let png = NSBitmapImageRep(cgImage: frame).representation(
                         using: .png, properties: [:]) else {
                         throw NSError(domain: "Jarvis", code: 2,
                                       userInfo: [NSLocalizedDescriptionKey: "Could not encode screenshot."])
