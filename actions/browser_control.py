@@ -993,6 +993,25 @@ def browser_control(
         _log(player, result)
         return result
 
+    # Typing into a tab of the user's own browser (e.g. after new_tab) cannot
+    # be automated: their profile is locked while it runs, so an automation
+    # browser would open as a second, blank window. Typed text with no target
+    # field is a search, so run it natively; Enter afterwards has nothing to do.
+    if not _registry.has(browser) and not params.get("selector"):
+        text = (params.get("text") or "").strip()
+        if action in ("type", "smart_type") and text:
+            nav_url = _SEARCH_ENGINES["google"] + text.replace(" ", "+")
+            result = _open_native(nav_url, browser)
+            if result.startswith("Opened"):
+                _registry.note_native_url(nav_url)
+                result = f"Searched for '{text}' in the user's browser. No need to press Enter."
+            _log(player, result)
+            return result
+        if action == "press" and params.get("key", "Enter").lower() in ("enter", "return"):
+            result = "Nothing to submit — searches already open with their results."
+            _log(player, result)
+            return result
+
     # ── Interactive actions (click/type/read…) ───────────────────────────────
     # These require a physically controllable browser; the automation window
     # only opens here, and as soon as it opens it goes to the user's last
@@ -1063,7 +1082,7 @@ def _log(player, text: str):
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "browser_control",
-    "description": "Controls any web browser. Use for: opening websites, searching the web, clicking elements, filling forms, scrolling, screenshots, navigation, any web-based task. Simple open/search requests launch the user's own browser normally (their real profile and logged-in accounts); interactive actions (click, type, fill_form...) attach an automation browser. Always pass the 'browser' parameter when the user specifies a browser (e.g. 'open in Edge', 'use Firefox', 'open Chrome'). Multiple browsers can run simultaneously.",
+    "description": "Controls any web browser. Use for: opening websites, searching the web, clicking elements, filling forms, scrolling, screenshots, navigation, any web-based task. Simple open/search requests launch the user's own browser normally (their real profile and logged-in accounts); interactive actions (click, type, fill_form...) attach an automation browser. To search, use the search action with the query — never new_tab followed by type and press. Always pass the 'browser' parameter when the user specifies a browser (e.g. 'open in Edge', 'use Firefox', 'open Chrome'). Multiple browsers can run simultaneously.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
