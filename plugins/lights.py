@@ -31,7 +31,7 @@ PLUGIN = {
         "Control the user's LED strip lights (Govee, over Bluetooth): turn them on or "
         "off or toggle them, set a colour, set brightness, or report their state. Use for 'turn on my "
         "lights', 'lights off', 'make the LEDs blue', 'set the lights to 30 percent', "
-        "'what colour are my lights'. Not for the screen's brightness, which belongs to "
+        "'what colour are my lights'. 'Lighten up' means action brightness at 70. Not for the screen's brightness, which belongs to "
         "the computer settings tool. The strip is found automatically: never ask the "
         "user for a Bluetooth address and never pass one."
     ),
