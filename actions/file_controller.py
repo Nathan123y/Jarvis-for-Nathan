@@ -18,6 +18,7 @@ try:
 except ImportError:
     _SEND2TRASH = False
 
+from core import confirm
 from core.undo import push_undo
 
 _OS = platform.system()  # "Windows" | "Darwin" | "Linux"
@@ -1222,6 +1223,56 @@ def get_file_info(path: str, name: str = "") -> str:
     except Exception as e:
         return f"Could not get file info: {e}"
 
+_TRASH_COUNT = 'tell application "Finder" to count items of trash'
+_TRASH_EMPTY = 'tell application "Finder" to empty trash'
+
+
+def _finder(script: str, timeout: float = 10) -> str:
+    """Ask Finder; it already owns the Trash on every volume and in iCloud, so
+    nothing here needs Full Disk Access to ~/.Trash."""
+    r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=timeout)
+    if r.returncode:
+        err = r.stderr.strip()
+        if "-1743" in err or "not authorized" in err.lower():
+            raise PermissionError("Jarvis needs permission to control Finder: System Settings, "
+                                  "Privacy & Security, Automation, Jarvis, then turn on Finder.")
+        raise RuntimeError(err or "Finder did not answer.")
+    return r.stdout.strip()
+
+
+def empty_trash() -> str:
+    """Permanent, so it waits behind the on-screen confirmation."""
+    if platform.system() != "Darwin":
+        return "Emptying the Trash is only set up on macOS."
+    try:
+        count = int(_finder(_TRASH_COUNT) or 0)
+    except PermissionError as e:
+        return str(e)
+    except Exception as e:
+        return f"I couldn't check the Trash: {e}"
+    if count == 0:
+        return "Your Trash is already empty."
+    if confirm.pending_title():
+        return ("There is already a confirmation waiting on screen. "
+                "Ask the user to answer that one first.")
+    label = f"{count} item{'s' if count != 1 else ''}"
+
+    def _run() -> str:
+        # A big Trash can take a while; Finder answers when it has finished.
+        _finder(_TRASH_EMPTY, timeout=300)
+        left = int(_finder(_TRASH_COUNT) or 0)
+        if left:
+            return (f"Emptied the Trash, but {left} item{'s' if left != 1 else ''} "
+                    "couldn't be deleted, probably because something is using them.")
+        return f"Emptied the Trash: {label} permanently deleted."
+
+    return confirm.request(
+        key="empty_trash", title=f"Empty the Trash ({label})",
+        detail="Everything in the Trash is deleted for good. This can't be undone.",
+        run=_run,
+    )
+
+
 def file_controller(
     parameters: dict = None,
     response=None,
@@ -1320,6 +1371,9 @@ def file_controller(
         elif action == "organize_desktop":
             return organize_desktop()
 
+        elif action == "empty_trash":
+            return empty_trash()
+
         elif action == "info":
             return get_file_info(path, name=name)
 
@@ -1350,7 +1404,8 @@ TOOL = {
         "matches exactly. Search once, then use the full path it returns: to read or study "
         "a PDF or image, pass that path to file_processor. read, open and info also accept "
         "just a file name and find the file themselves. action='close' closes the window "
-        "or tab showing a file in whatever app has it open. "
+        "or tab showing a file in whatever app has it open. action='empty_trash' empties the "
+        "Trash after the user confirms on screen or out loud; don't ask first yourself. "
         "Read-only actions can inspect any macOS location "
 
         "allowed by Full Disk Access. Changes are limited to the home folder and mounted "
@@ -1361,7 +1416,7 @@ TOOL = {
         "properties": {
             "action": {
                 "type": "STRING",
-                "description": "list | tree | find | search_contents | recent | read | info | open | close | reveal | create_file | create_folder | write | copy | move | rename | delete | largest | disk_usage | organize_desktop"
+                "description": "list | tree | find | search_contents | recent | read | info | open | close | reveal | create_file | create_folder | write | copy | move | rename | delete | largest | disk_usage | organize_desktop | empty_trash"
             },
             "path": {
                 "type": "STRING",
