@@ -38,6 +38,9 @@ memory/long_term.json
 memory/*.db
 # Mission Control task list (your deadlines and notes)
 memory/mission_control.json
+# Last-seen injury statuses of your ESPN fantasy players
+memory/espn_status.json
+memory/espn_status.tmp
 # Money tracker entries and budgets
 memory/money.json
 # Package tracker: order email subjects and states

@@ -35,7 +35,8 @@ def _when(dt, now) -> str:
     return dt.strftime("%a %b %d ").replace(" 0", " ") + clock
 
 
-def compose(tasks, events, canvas_items, today: str, reminders=None, now=None) -> tuple[str, str]:
+def compose(tasks, events, canvas_items, today: str, reminders=None, now=None,
+            fantasy=None) -> tuple[str, str]:
     """(facts to speak, text for the on-screen panel). Pure: no I/O.
 
     tasks: open Mission Control tasks (dicts with title, due, priority, project), or
@@ -44,6 +45,7 @@ def compose(tasks, events, canvas_items, today: str, reminders=None, now=None) -
     events: [(clock, title)] for today, or None if the calendar was unavailable.
     canvas_items: [{name, course, due, overdue}], or None if Canvas was unavailable.
     reminders: [(datetime, message)] timed reminders still to come, soonest first.
+    fantasy: (spoken sentence, panel lines) from ESPN fantasy, or None.
     """
     from datetime import datetime, timedelta
     now = now or datetime.now()
@@ -93,6 +95,8 @@ def compose(tasks, events, canvas_items, today: str, reminders=None, now=None) -
     if school:
         spoken.append("School work due: " + "; ".join(
             f"{_clean(c['name'], 60)}" + (" (overdue)" if c.get("overdue") else "") for c in school[:3]) + ".")
+    if fantasy and fantasy[0]:
+        spoken.append(fantasy[0])
 
     if not spoken:
         return "", ""                    # nothing real to say: plain greeting
@@ -120,6 +124,11 @@ def compose(tasks, events, canvas_items, today: str, reminders=None, now=None) -
         lines.append("SCHOOL (CANVAS)")
         lines.extend(f"  {'Overdue' if c.get('overdue') else 'Today'}  {_clean(c.get('name'))}  · {_clean(c.get('course'), 40)}"
                      for c in school[:6])
+    if fantasy and fantasy[1]:
+        if lines[-1]:
+            lines.append("")
+        lines.append("FANTASY FOOTBALL")
+        lines.extend(f"  {_clean(x, 140)}" for x in fantasy[1][:12])
     return " ".join(spoken), "\n".join(lines).strip()[:3600]
 
 
@@ -164,6 +173,32 @@ def _reminders() -> list:
         return []
 
 
+def _fantasy():
+    """ESPN status changes and lineup fixes, when the plugin is on and connected."""
+    from memory.config_manager import get_plugin_enabled
+    if not get_plugin_enabled("espn_fantasy"):
+        return None
+    from memory.config_manager import get_plugin_config
+    from plugins import espn_fantasy
+    if not espn_fantasy._league_ids(get_plugin_config("espn_fantasy")):
+        return None
+    return espn_fantasy.briefing_lines(espn_fantasy.roster_alerts())
+
+
 def build(timeout: float = GATHER_SECONDS) -> tuple[str, str]:
+    # ESPN loads alongside the other sources, inside the same time limit.
+    found: dict = {}
+
+    def fantasy():
+        try:
+            found["fantasy"] = _fantasy()
+        except Exception as e:
+            print(f"[Brief] fantasy section skipped: {e!r}")
+
+    worker = threading.Thread(target=fantasy, daemon=True, name="startup-brief-fantasy")
+    worker.start()
+    start = time.monotonic()
     tasks, events, canvas = gather(timeout)
-    return compose(tasks, events, canvas, date.today().isoformat(), reminders=_reminders())
+    worker.join(max(0.0, timeout - (time.monotonic() - start)))
+    return compose(tasks, events, canvas, date.today().isoformat(), reminders=_reminders(),
+                   fantasy=found.get("fantasy"))

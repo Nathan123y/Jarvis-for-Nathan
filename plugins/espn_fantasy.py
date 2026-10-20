@@ -13,10 +13,12 @@ Every answer hands the model the facts it is based on, so follow-ups like
 from __future__ import annotations
 
 import difflib
+import json
 import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+from datetime import date, datetime, timedelta
+from pathlib import Path
 from urllib.parse import quote
 
 from memory.config_manager import get_plugin_config, save_plugin_config
@@ -73,6 +75,12 @@ _STATUS = {
     "INJURY_RESERVE": "IR", "SUSPENSION": "Suspended", "DAY_TO_DAY": "Day-to-day",
 }
 _BENCH = {"BE", "IR"}
+# Last status seen for each player on the user's teams, and recent changes.
+STATE_FILE = Path(__file__).resolve().parent.parent / "memory" / "espn_status.json"
+# A change stays in the briefings this long, so a skipped startup briefing
+# doesn't swallow it.
+CHANGE_HOURS = 24
+_NEEDS_SWAP = ("Out", "Doubtful", "IR", "Suspended")
 
 _CONNECT_STEPS = (
     "CONNECT ESPN FANTASY (one time)\n\n"
@@ -445,6 +453,88 @@ def _summary(league) -> str:
     mine = _mine(league)
     return (f"You're {mine.team_name}, {mine.wins}-{mine.losses}, week {league.current_week}."
             if mine else f"Week {league.current_week}; I couldn't tell which team is yours.")
+
+
+def _load_state() -> dict:
+    try:
+        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_state(state: dict) -> None:
+    try:
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = STATE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, indent=1), encoding="utf-8")
+        tmp.replace(STATE_FILE)
+    except Exception as exc:
+        print(f"[ESPN] couldn't save player statuses: {exc!r}")
+
+
+def roster_alerts(now: datetime | None = None) -> dict:
+    """For the briefings: status changes on the user's teams in the last day,
+    starters who need swapping out, and questionable starters to watch.
+
+    Compares every rostered player with the status last seen, records what
+    changed, and keeps each change for CHANGE_HOURS. The first check only
+    records a baseline. Returns {"changes", "swap", "watch"} lists of short lines."""
+    now = now or datetime.now()
+    leagues = _leagues()
+    state = _load_state()
+    seen, kept = state.get("seen", {}), state.get("changes", [])
+    swap, watch, fresh, new_seen = [], [], [], {}
+    for lg in leagues:
+        try:
+            me, _ = _week_sides(lg)
+        except ValueError:
+            continue
+        key, where = str(lg.league_id), _name(lg)
+        before_all, now_all = seen.get(key), {}
+        for p in me[3]:
+            status = _status(p) or "healthy"
+            slot = getattr(p, "slot_position", "")
+            starter = slot not in _BENCH
+            pid = str(getattr(p, "playerId", "") or p.name)
+            now_all[pid] = status
+            before = (before_all or {}).get(pid)
+            if before_all is not None and before is not None and before != status:
+                if status == "healthy":
+                    what = "is back from IR" if before == "IR" else f"is healthy again (was {before})"
+                else:
+                    what = f"is now {status} (was {before})"
+                if starter and status in _NEEDS_SWAP + ("Questionable",):
+                    what += ", and he's in your starting lineup"
+                fresh.append(f"{p.name} ({where}) {what}")
+            if starter and (status in _NEEDS_SWAP or getattr(p, "on_bye_week", False)):
+                why = status if status != "healthy" else "on bye"
+                swap.append(f"{p.name} ({where}, {why})")
+            elif starter and status == "Questionable":
+                watch.append(f"{p.name} ({where})")
+            elif slot == "IR" and status not in _NEEDS_SWAP:
+                swap.append(f"{p.name} ({where}) is {status.lower()} but still in your IR spot")
+        new_seen[key] = now_all
+    cutoff = now - timedelta(hours=CHANGE_HOURS)
+    kept = [c for c in kept if isinstance(c, dict) and c.get("at", "") >= cutoff.isoformat()]
+    kept += [{"at": now.isoformat(timespec="seconds"), "text": t} for t in fresh]
+    _save_state({"seen": {**seen, **new_seen}, "changes": kept})
+    return {"changes": [c["text"] for c in kept], "swap": swap, "watch": watch}
+
+
+def briefing_lines(alerts: dict) -> tuple[str, list[str]]:
+    """(one spoken sentence, panel lines) for the briefings; ("", []) when quiet."""
+    changes, swap, watch = alerts.get("changes", []), alerts.get("swap", []), alerts.get("watch", [])
+    spoken = []
+    if changes:
+        spoken.append("Status changes: " + "; ".join(changes[:4]))
+    if swap:
+        spoken.append("Starters to swap out: " + "; ".join(swap[:4]))
+    if watch:
+        spoken.append("Questionable starters: " + "; ".join(watch[:3]))
+    panel = ([f"  Changed: {c}" for c in changes] + [f"  Swap out: {s}" for s in swap]
+             + [f"  Questionable: {w}" for w in watch])
+    return ("Fantasy football. " + ". ".join(spoken) + "." if spoken else ""), panel
 
 
 def _activity(league, player) -> str:

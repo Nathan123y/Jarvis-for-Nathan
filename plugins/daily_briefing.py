@@ -17,8 +17,8 @@ PLUGIN = {
     "description": (
         "Give the user's on-demand daily/morning briefing: today's Mac Calendar "
         "events, live Canvas assignments, overdue and upcoming Mission Control "
-        "tasks, and unread mail from connected personal, school, and spam "
-        "Gmail accounts. Use for 'give me my daily briefing', 'what is my day "
+        "tasks, unread mail from connected personal, school, and spam "
+        "Gmail accounts, and fantasy football injury changes and lineup fixes. Use for 'give me my daily briefing', 'what is my day "
         "looking like', 'morning update', or 'what do I have today'. Unlike "
         "mission_control's task-only briefing, this combines available sources. "
         "Read-only: never create tasks, send mail or claim to read Canvas. "
@@ -152,6 +152,21 @@ def _canvas():
         return [], "Canvas assignments could not be read."
 
 
+def _fantasy() -> tuple[str, list[str]]:
+    """ESPN status changes and lineup fixes; nothing when off or unreachable."""
+    if not get_plugin_enabled("espn_fantasy"):
+        return "", []
+    try:
+        from plugins import espn_fantasy
+        from memory.config_manager import get_plugin_config
+        if not espn_fantasy._league_ids(get_plugin_config("espn_fantasy")):
+            return "", []
+        return espn_fantasy.briefing_lines(espn_fantasy.roster_alerts())
+    except Exception as e:
+        print(f"[Briefing] fantasy section skipped: {e!r}")
+        return "", []
+
+
 def run(parameters: dict, player=None, session_memory=None) -> str:
     today = date.today().isoformat()
     events, calendar_notice = _calendar()
@@ -212,6 +227,9 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
     lines.extend(mail_notices)
     if focus is not None:
         lines += ["", f"FOCUS TODAY  ·  {focus} completed minutes"]
+    fantasy_spoken, fantasy_panel = _fantasy()
+    if fantasy_panel:
+        lines += ["", "FANTASY FOOTBALL", *fantasy_panel]
 
     panel = "\n".join(lines)[:3600]
     if player:
@@ -233,4 +251,5 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
                              for account, count, _ in mail) or "no connected inbox could be read"
     return (f"Here's your briefing for {today}: {calendar_phrase}, {mission_phrase}, "
             f"{canvas_phrase}, "
-            f"and {mail_phrase}. I've put the details on screen.")
+            f"and {mail_phrase}. I've put the details on screen."
+            + (f" {fantasy_spoken}" if fantasy_spoken else ""))
