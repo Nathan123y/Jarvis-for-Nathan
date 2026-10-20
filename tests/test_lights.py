@@ -26,6 +26,11 @@ class FakeBackend:
         self.sent.extend(frames)
         return list(self.answers)
 
+    async def toggle(self, device):
+        on = lights._power_state(self.answers) is not True
+        self.sent.append(lights._power_frame(on))
+        return on
+
 
 class LightsTests(unittest.TestCase):
     def run_with(self, params, backend, settings=None):
@@ -63,7 +68,7 @@ class LightsTests(unittest.TestCase):
         for value in (0, 101, "loud", None):
             self.assertIn("between 1 and 100",
                           self.run_with({"action": "brightness", "brightness": value}, backend))
-        self.assertIn("on, off, color", self.run_with({"action": "dance"}, backend))
+        self.assertIn("on, off, toggle", self.run_with({"action": "dance"}, backend))
         self.assertEqual(backend.sent, [])
 
     def test_brightness_turns_on_then_sets_level(self):
@@ -76,6 +81,18 @@ class LightsTests(unittest.TestCase):
         self.run_with({"action": "on", "address": "AA:BB"}, backend)
         self.run_with({"action": "on"}, backend, settings={"address": " 854D8E14 "})
         self.assertEqual(backend.addresses, [None, "854D8E14"])
+
+    def test_toggle_sends_the_opposite_of_what_the_strip_reports(self):
+        on = FakeBackend(answers=[_frame("aa0101" + "00" * 16 + "aa")])
+        self.assertEqual(self.run_with({"action": "toggle"}, on), "Your LED lights are off.")
+        self.assertEqual(on.sent, [lights._power_frame(False)])
+        off = FakeBackend(answers=[_frame("aa0100" + "00" * 16 + "ab")])
+        self.assertEqual(self.run_with({"action": "toggle"}, off), "Your LED lights are on.")
+        # No answer at all: turn them on, the likelier wish after a clap.
+        silent = FakeBackend()
+        self.assertEqual(self.run_with({"action": "toggle"}, silent), "Your LED lights are on.")
+        self.assertEqual(silent.sent, [lights._power_frame(True)])
+        self.assertIn("couldn't find", self.run_with({"action": "toggle"}, FakeBackend(device=None)))
 
     def test_status_reports_what_the_strip_answers(self):
         answers = [_frame("aa0101" + "00" * 16 + "aa"), _frame("aa047f" + "00" * 16 + "d1"),

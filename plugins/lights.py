@@ -29,7 +29,7 @@ PLUGIN = {
     "name": "lights",
     "description": (
         "Control the user's LED strip lights (Govee, over Bluetooth): turn them on or "
-        "off, set a colour, set brightness, or report their state. Use for 'turn on my "
+        "off or toggle them, set a colour, set brightness, or report their state. Use for 'turn on my "
         "lights', 'lights off', 'make the LEDs blue', 'set the lights to 30 percent', "
         "'what colour are my lights'. Not for the screen's brightness, which belongs to "
         "the computer settings tool. The strip is found automatically: never ask the "
@@ -38,7 +38,7 @@ PLUGIN = {
     "parameters": {
         "type": "OBJECT",
         "properties": {
-            "action": {"type": "STRING", "description": "on, off, color, brightness, or status"},
+            "action": {"type": "STRING", "description": "on, off, toggle, color, brightness, or status"},
             "color": {"type": "STRING", "description": "For color: a colour name (red, warm white…), #RRGGBB, or R,G,B"},
             "brightness": {"type": "INTEGER", "description": "For brightness: 1-100 percent"},
         },
@@ -51,7 +51,7 @@ PLUGIN_SETTINGS = {
     "title": "Govee LED strip (Bluetooth)",
     "fields": [{"key": "address", "type": "text", "label": "Pinned Bluetooth address (optional)",
                 "placeholder": "Leave blank to find the strip by its name"},
-               {"key": "clap", "type": "text", "label": "Double clap or snap turns the lights on (on or off)",
+               {"key": "clap", "type": "text", "label": "Double clap or snap switches the lights on and off (on or off)",
                 "placeholder": "on"}],
 }
 
@@ -84,6 +84,14 @@ def _frame(command: bytes) -> bytes:
 
 def _power_frame(on: bool) -> bytes:
     return _frame(bytes([0x33, 0x01, 0x01 if on else 0x00]))
+
+
+def _power_state(answers: list[bytes]) -> bool | None:
+    """The strip's reply to a power query (aa 01 ..), if one came back."""
+    for a in answers:
+        if len(a) >= 3 and a[0] == 0xAA and a[1] == 0x01:
+            return bool(a[2])
+    return None
 
 
 def _brightness_frame(percent: int) -> bytes:
@@ -156,18 +164,38 @@ class _Bleak:
                 await asyncio.sleep(0.6 if replies else 0.15)
         return answers
 
+    async def toggle(self, device) -> bool:
+        """Ask whether the strip is on and send the opposite, in one connection,
+        so it is right even after the phone app or a voice command changed it.
+        Returns True if the strip is now on. No answer counts as off."""
+        from bleak import BleakClient
+        answers: list[bytes] = []
+        async with BleakClient(device, timeout=_CONNECT_SECONDS) as client:
+            await client.start_notify(_NOTIFY, lambda _h, data: answers.append(bytes(data)))
+            await asyncio.sleep(_NOTIFY_SETTLE)
+            await client.write_gatt_char(_WRITE, _frame(bytes([0xAA, 0x01])), response=False)
+            for _ in range(15):
+                if _power_state(answers) is not None:
+                    break
+                await asyncio.sleep(0.1)
+            on = _power_state(answers) is not True
+            await client.write_gatt_char(_WRITE, _power_frame(on), response=False)
+            await asyncio.sleep(0.15)
+        return on
+
 
 def _backend():
     return _Bleak()
 
 
-async def _send(frames: list[bytes], replies: bool = False):
+async def _send(work):
+    """Find the strip, then run work(backend, device). None if not found."""
     backend = _backend()
     address = str(get_plugin_config("lights").get("address") or "").strip() or None
     device = await backend.find(address)
     if device is None:
         return None
-    return await backend.exchange(device, frames, replies)
+    return await work(backend, device)
 
 
 def _status_text(answers: list[bytes]) -> str:
@@ -209,6 +237,8 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
         frames, done = [_power_frame(True)], "Your LED lights are on."
     elif action == "off":
         frames, done = [_power_frame(False)], "Your LED lights are off."
+    elif action == "toggle":
+        frames, done = [], ""
     elif action == "color":
         rgb = _parse_color(params.get("color"))
         if rgb is None:
@@ -228,7 +258,7 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
         frames = [_frame(bytes([0xAA, code])) for code in (0x01, 0x04, 0x05)]
         done = ""
     else:
-        return "LED commands are on, off, color, brightness, or status."
+        return "LED commands are on, off, toggle, color, brightness, or status."
 
     if _bluetooth_blocked():
         return ("Jarvis can't use Bluetooth yet: the Jarvis app needs a Bluetooth permission "
@@ -236,8 +266,11 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
     if not _lock.acquire(timeout=_TOTAL_SECONDS):
         return "I'm still talking to the LED strip. Try again in a moment."
     try:
-        answers = asyncio.run(asyncio.wait_for(_send(frames, replies=action == "status"),
-                                               _TOTAL_SECONDS))
+        if action == "toggle":
+            work = lambda backend, device: backend.toggle(device)
+        else:
+            work = lambda backend, device: backend.exchange(device, frames, action == "status")
+        answers = asyncio.run(asyncio.wait_for(_send(work), _TOTAL_SECONDS))
     except ImportError:
         return "Bluetooth support isn't installed. Run: pip install bleak"
     except asyncio.TimeoutError:
@@ -255,6 +288,9 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
     if answers is None:
         return ("I couldn't find your LED strip. Make sure it's plugged in and that your "
                 "phone isn't connected to it.")
-    result = _status_text(answers) if action == "status" else done
+    if action == "toggle":
+        result = "Your LED lights are on." if answers else "Your LED lights are off."
+    else:
+        result = _status_text(answers) if action == "status" else done
     _log(player, result)
     return result
