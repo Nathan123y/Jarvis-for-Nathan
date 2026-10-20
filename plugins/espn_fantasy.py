@@ -59,7 +59,8 @@ PLUGIN_SETTINGS = {
     ],
 }
 
-_LEAGUE_HOME = "https://fantasy.espn.com/football/team"
+# The fantasy home lists the user's teams; a team page without ?leagueId= is an error page.
+_LEAGUE_HOME = "https://fantasy.espn.com/football/"
 _STATUS = {
     "OUT": "Out", "DOUBTFUL": "Doubtful", "QUESTIONABLE": "Questionable",
     "INJURY_RESERVE": "IR", "SUSPENSION": "Suspended", "DAY_TO_DAY": "Day-to-day",
@@ -68,7 +69,8 @@ _BENCH = {"BE", "IR"}
 
 _CONNECT_STEPS = (
     "CONNECT ESPN FANTASY (one time)\n\n"
-    "1. In the ESPN tab that just opened, sign in and open your league's team page.\n"
+    "1. In the ESPN tab that just opened, sign in, then click your team under My Teams\n"
+    "   (the address should now contain leagueId=).\n"
     "2. Press Cmd+Option+I to open Developer Tools, then click the Network tab.\n"
     "3. In the filter box type:  lm-api-reads\n"
     "4. Press Cmd+R to reload the page so requests appear.\n"
