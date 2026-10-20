@@ -16,7 +16,8 @@ def player(name, pos, slot="RB", status="ACTIVE", proj=10.0, bye=False, team="AT
 
 def team(tid, name, wins, losses, owner, pf=500.0):
     return NS(team_id=tid, team_name=name, wins=wins, losses=losses, ties=0, points_for=pf,
-              owners=[{"id": owner, "firstName": name.split()[0], "lastName": "Owner"}])
+              owners=[{"id": owner, "firstName": name.split()[0], "lastName": "Owner"}],
+              scores=[100.0, 120.0, 110.0, 90.0, 130.0, 0.0, 0.0], streak_type="WIN", streak_length=2)
 
 
 class FakeLeague:
@@ -33,7 +34,7 @@ class FakeLeague:
             home_lineup=[player("Josh Allen", "QB", "QB", proj=24.0, team="BUF"),
                          player("Puka Nacua", "WR", "WR", "QUESTIONABLE", proj=15.0, team="LAR")],
             away_team=self.me, away_score=0.0, away_projected=110.2,
-            away_lineup=[player("Bijan Robinson", "RB", "RB", proj=19.5),
+            away_lineup=[player("Bijan Robinson", "RB", "RB", proj=19.5, playerId=1),
                          player("Amon-Ra St. Brown", "WR", "WR", "DOUBTFUL", proj=12.0, team="DET"),
                          player("Drake London", "WR", "WR", bye=True, proj=0.0),
                          player("Rhamondre Stevenson", "RB", "BE", "OUT", proj=0.0, team="NE")])
@@ -43,20 +44,25 @@ class FakeLeague:
                            "Drake Maye": 4, "Marcus Maye": 5}
 
     def box_scores(self, week=None):
-        return [self.box]
+        if week is None or week == self.current_week:
+            return [self.box]
+        # Earlier weeks: Bijan started weeks 1-5 except week 3 on the bench.
+        bijan = player("Bijan Robinson", "RB", "BE" if week == 3 else "RB", playerId=1)
+        bijan.points = 10.0 * week
+        return [NS(home_team=self.them, home_lineup=[], away_team=self.me, away_lineup=[bijan])]
 
     def player_info(self, name=None, playerId=None):
         if isinstance(playerId, list):
-            return [NS(name="Marcus Maye", position="S", proTeam="NO", injuryStatus="ACTIVE", onTeamId=0,
+            return [NS(name="Marcus Maye", playerId=5, position="S", proTeam="NO", injuryStatus="ACTIVE", onTeamId=0,
                        total_points=0.0, avg_points=0.0, percent_owned=0.1, stats={}),
-                    NS(name="Drake Maye", position="QB", proTeam="NE", injuryStatus="ACTIVE", onTeamId=0,
+                    NS(name="Drake Maye", playerId=4, position="QB", proTeam="NE", injuryStatus="ACTIVE", onTeamId=0,
                        total_points=90.0, avg_points=18.0, percent_owned=85.0, stats={})]
         if name == "Bijan Robinson":
-            return NS(name=name, position="RB", proTeam="ATL", injuryStatus="ACTIVE", onTeamId=1,
+            return NS(name=name, playerId=1, position="RB", proTeam="ATL", injuryStatus="ACTIVE", onTeamId=1,
                       total_points=120.0, avg_points=20.0, percent_owned=99.9,
                       stats={7: {"projected_points": 19.5}})
         if name == "Josh Allen":
-            return NS(name=name, position="QB", proTeam="BUF", injuryStatus="ACTIVE", onTeamId=2,
+            return NS(name=name, playerId=3, position="QB", proTeam="BUF", injuryStatus="ACTIVE", onTeamId=2,
                       total_points=150.0, avg_points=25.0, percent_owned=100.0, stats={})
         return None
 
@@ -106,11 +112,19 @@ class EspnTests(unittest.TestCase):
         out = espn.run({"action": "matchup"})
         self.assertIn("Week 7: Nathan Ballers vs Gridiron Kings (Gridiron Owner, 5-1)", out)
         self.assertIn("You're projected to lose by 8.2", out)
+        self.assertIn("5-1, 1 of 2 in the standings, 2-game win streak", out)
+        self.assertIn("Averaging 110.0 a week; last week 130.0", out)
+        self.assertIn("Their top projected starter: Josh Allen (QB, 24.0)", out)
+        self.assertIn("Injured or bye-week starters: Puka Nacua (WR, LAR) — Questionable", out)
 
     def test_player_lookup_is_forgiving_and_says_who_owns_him(self):
         out = espn.run({"action": "player", "name": "bijan"})
         self.assertIn("Bijan Robinson · RB · ATL", out)
-        self.assertIn("In your league: on your team", out)
+        self.assertIn("In this league: on your team", out)
+        # Started weeks 1, 2, 4, 5, 6 (10+20+40+50+60) and week 7 (0 so far); week 3 benched.
+        self.assertIn("Points for you: 180.0 in 6 starts (week 7 still in progress)", out)
+        self.assertIn("wk 3 30.0 (bench)", out)
+        self.assertIn("Left on your bench: 30.0 pts in 1 week", out)
         self.assertIn("Week 7 projection: 19.5", out)
         self.assertIn("on Gridiron Kings", espn.run({"action": "player", "name": "josh alen"}))
         self.assertIn("couldn't find", espn.run({"action": "player", "name": "nobody special"}))
@@ -212,6 +226,14 @@ class EspnTests(unittest.TestCase):
             one = espn.run({"action": "injuries", "league": "family"})
             self.assertNotIn("Work League", one)
             self.assertIn("You're Nathan Ballers, 4-2", espn.run({"action": "leagues"}))
+
+    def test_one_player_across_leagues_leads_with_where_he_is_yours(self):
+        work, family = FakeLeague(111, "Work League"), FakeLeague(222, "Family League")
+        family.me.team_id, family.them.team_id = 9, 1           # Bijan's team is someone else's there
+        with patch.object(espn, "_leagues", side_effect=lambda which="": [family, work]):
+            out = espn.run({"action": "player", "name": "bijan"})
+        self.assertTrue(out.startswith("You have him in: Work League. Elsewhere — Family League: on Gridiron Kings"))
+        self.assertLess(out.index("== Work League =="), out.index("== Family League =="))
 
     def test_season_rolls_over_in_march(self):
         self.assertEqual(espn._season(date(2027, 1, 10)), 2026)
