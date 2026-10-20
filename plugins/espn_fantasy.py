@@ -71,8 +71,9 @@ _CONNECT_STEPS = (
     "1. In the ESPN tab that just opened, sign in and open your league's team page.\n"
     "2. Press Cmd+Option+I to open Developer Tools, then click the Network tab.\n"
     "3. In the filter box type:  lm-api-reads\n"
-    "4. Press Cmd+R to reload the page so requests appear, and click any one of them.\n"
-    "5. Right-click it → Copy → Copy request headers.\n"
+    "4. Press Cmd+R to reload the page so requests appear.\n"
+    "5. Right-click a request whose name STARTS WITH NUMBERS (your league ID, like\n"
+    "   1234567?view=mTeam) → Copy → Copy as cURL (or Copy request headers).\n"
     "6. Close Developer Tools and say \"done\".\n\n"
     "Your ESPN cookies are saved only on this Mac and wiped from your clipboard."
 )
@@ -308,20 +309,48 @@ def _activity(league, player) -> str:
     return "Recent league moves, newest first:\n" + "\n".join(lines[:20]) if lines else "No recent adds, drops or trades."
 
 
+_CHROME_URLS = '''
+if application "Google Chrome" is not running then return ""
+set out to ""
+tell application "Google Chrome"
+  repeat with w in windows
+    repeat with t in tabs of w
+      set out to out & (URL of t) & linefeed
+    end repeat
+  end repeat
+end tell
+return out'''
+
+
+def _league_in_chrome() -> str:
+    """The league ID from an open ESPN fantasy tab (…?leagueId=123…), since not
+    every copied request carries it."""
+    try:
+        urls = subprocess.run(["osascript", "-e", _CHROME_URLS], capture_output=True,
+                              text=True, timeout=8).stdout
+    except Exception:
+        return ""
+    found = re.search(r"fantasy\.espn\.com/football/\S*?leagueId=(\d+)", urls)
+    return found.group(1) if found else ""
+
+
 def _connect_done() -> str:
     try:
         raw = subprocess.run(["pbpaste"], capture_output=True, text=True, timeout=5).stdout
     except Exception:
         raw = ""
-    league_id = (re.search(r"leagues/(\d+)", raw) or re.search(r"leagueId=(\d+)", raw))
+    s2 = re.search(r"espn_s2=([^;\s'\"]+)", raw)
+    league = re.search(r"leagues/(\d+)", raw) or re.search(r"leagueId=(\d+)", raw)
+    league_id = league.group(1) if league else ""
+    if not league_id and s2:
+        league_id = _league_in_chrome()
     if not league_id:
-        return ("I don't see your league in the copied headers. In Developer Tools, filter for "
-                "lm-api-reads, reload, right-click a request, choose Copy, then Copy request "
-                "headers, and say done again.")
-    s2 = re.search(r"espn_s2=([^;\s]+)", raw)
+        return ("I don't see your ESPN login or league in what you copied. In Developer Tools, "
+                "filter for lm-api-reads, reload, right-click a request whose name starts with "
+                "numbers, choose Copy, then Copy as cURL, and say done again.")
     swid = re.search(r"SWID=(\{[0-9A-Fa-f-]+\})", raw)
     year = re.search(r"seasons/(\d{4})", raw)
-    values = {"league_id": league_id.group(1), "year": year.group(1) if year else str(_season()),
+    values = {"league_id": league_id, "year": year.group(1) if year else str(_season()),
               "espn_s2": s2.group(1) if s2 else "", "swid": swid.group(1) if swid else ""}
     from espn_api.football import League
     try:
