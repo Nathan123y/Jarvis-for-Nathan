@@ -15,7 +15,9 @@ from __future__ import annotations
 import difflib
 import re
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
+from urllib.parse import quote
 
 from memory.config_manager import get_plugin_config, save_plugin_config
 
@@ -30,19 +32,22 @@ PLUGIN = {
         "start/sit or trade questions: fetch the data with these actions, then reason from "
         "it. Actions: injuries (team: mine, opponent or league), lineup (team: mine or "
         "opponent), matchup, player (name), free_agents (position, count), standings, "
-        "activity, connect, connect_done (after the user copied the headers), status. "
-        "Never ask the user to say their cookies out loud."
+        "activity, leagues (which leagues are connected), connect, connect_done (after the user "
+        "copied the headers), status. The user may be in several leagues: pass league with "
+        "the name they say, or omit it to answer for all of them. Never ask the user to say "
+        "their cookies out loud."
     ),
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "action": {"type": "STRING", "enum": ["injuries", "lineup", "matchup", "player",
                                                   "free_agents", "standings", "activity",
-                                                  "connect", "connect_done", "status"]},
+                                                  "leagues", "connect", "connect_done", "status"]},
             "team": {"type": "STRING", "enum": ["mine", "opponent", "league"]},
+            "league": {"type": "STRING", "description": "Which of the user's leagues, by name, when they name one; omit for all"},
             "name": {"type": "STRING", "description": "For player: the player's name"},
             "position": {"type": "STRING", "description": "For free_agents: QB, RB, WR, TE, K or D/ST"},
-            "count": {"type": "INTEGER", "description": "For free_agents: how many (default 8)"},
+            "count": {"type": "INTEGER", "description": "For free_agents: how many (default 6)"},
         },
         "required": ["action"],
     },
@@ -52,7 +57,7 @@ PLUGIN_SETTINGS = {
     "namespace": "espn_fantasy",
     "title": "ESPN Fantasy Football (read-only)",
     "fields": [
-        {"key": "league_id", "type": "text", "label": "League ID",
+        {"key": "league_ids", "type": "text", "label": "League IDs (comma-separated)",
          "placeholder": "Filled in by 'connect ESPN fantasy'"},
         {"key": "espn_s2", "type": "password", "label": "espn_s2 cookie (private leagues)"},
         {"key": "swid", "type": "password", "label": "SWID cookie (private leagues)"},
@@ -91,25 +96,64 @@ def _season(today: date | None = None) -> int:
     return today.year if today.month >= 3 else today.year - 1
 
 
-def _league():
+def _league_ids(cfg: dict) -> list[str]:
+    # "league_id" is where a single league was kept before several were supported.
+    ids = re.findall(r"\d+", f"{cfg.get('league_ids') or ''},{cfg.get('league_id') or ''}")
+    return list(dict.fromkeys(ids))
+
+
+def _load(league_id: str, cfg: dict):
     from espn_api.football import League
-    cfg = get_plugin_config("espn_fantasy")
-    if not str(cfg.get("league_id") or "").strip():
-        raise _NeedsConnect()
-    return League(league_id=int(cfg["league_id"]), year=int(cfg.get("year") or _season()),
+    return League(league_id=int(league_id), year=int(cfg.get("year") or _season()),
                   espn_s2=cfg.get("espn_s2") or None, swid=cfg.get("swid") or None)
 
 
-def _mine(league):
-    """The user's team: the one their SWID owns, else the saved team id."""
+def _name(league) -> str:
+    return getattr(getattr(league, "settings", None), "name", "") or f"League {league.league_id}"
+
+
+def _words(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", str(text or "").lower())) - {"my", "the", "league", "fantasy"}
+
+
+def _leagues(which: str = "") -> list:
+    """The connected leagues, fetched in parallel; only those whose name matches
+    `which` when the user named one. A league that fails to load is skipped
+    unless every one does."""
     cfg = get_plugin_config("espn_fantasy")
-    swid = str(cfg.get("swid") or "").strip().lower()
+    ids = _league_ids(cfg)
+    if not ids:
+        raise _NeedsConnect()
+
+    def load(league_id):
+        try:
+            return _load(league_id, cfg)
+        except Exception as exc:
+            return exc
+
+    with ThreadPoolExecutor(max_workers=len(ids)) as pool:
+        results = list(pool.map(load, ids))
+    leagues = [r for r in results if not isinstance(r, Exception)]
+    if not leagues:
+        raise results[0]
+    want = _words(which)
+    if want:
+        named = [lg for lg in leagues if want & _words(_name(lg))]
+        if not named:
+            raise ValueError(f"None of your leagues is called {which}. They are: "
+                             + ", ".join(_name(lg) for lg in leagues) + ".")
+        return named
+    return leagues
+
+
+def _mine(league, swid: str = ""):
+    """The user's team: the one their ESPN account (SWID) owns."""
+    swid = str(swid or get_plugin_config("espn_fantasy").get("swid") or "").strip().lower()
     for team in league.teams:
         owners = team.owners or []
         if swid and any(str(o.get("id", "")).lower() == swid for o in owners if isinstance(o, dict)):
             return team
-    tid = str(cfg.get("team_id") or "")
-    return next((t for t in league.teams if str(t.team_id) == tid), None)
+    return None
 
 
 def _owner(team) -> str:
@@ -282,7 +326,7 @@ def _free_agents(league, position: str, count: int, player) -> str:
         return (getattr(p, "stats", {}) or {}).get(week, {}).get("projected_points") or 0
 
     healthy = [p for p in agents if _status(p) not in ("Out", "IR", "Suspended")]
-    best = sorted(healthy, key=proj, reverse=True)[:max(1, min(count or 8, 15))]
+    best = sorted(healthy, key=proj, reverse=True)[:max(1, min(count or 6, 15))]
     if not best:
         return f"No healthy free agents{' at ' + pos if pos else ''} right now."
     lines = [f"{p.name} ({p.position}, {p.proTeam}) · week {week} proj {proj(p):.1f}"
@@ -299,6 +343,12 @@ def _standings(league, player) -> str:
              for i, t in enumerate(league.standings(), 1)]
     _display(player, "STANDINGS", lines)
     return "Standings:\n" + "\n".join(lines)
+
+
+def _summary(league) -> str:
+    mine = _mine(league)
+    return (f"You're {mine.team_name}, {mine.wins}-{mine.losses}, week {league.current_week}."
+            if mine else f"Week {league.current_week}; I couldn't tell which team is yours.")
 
 
 def _activity(league, player) -> str:
@@ -336,45 +386,96 @@ def _league_in_chrome() -> str:
     return found.group(1) if found else ""
 
 
+def _discover(swid: str, s2: str, season: int) -> list[str]:
+    """Every football league this ESPN account has a team in this season, from
+    the account lookup the ESPN apps use. Empty if ESPN won't say."""
+    import requests
+    try:
+        r = requests.get(f"https://fan.api.espn.com/apis/v2/fans/{quote(swid)}",
+                         params={"displayHiddenPrefs": "true", "context": "fantasy",
+                                 "useCookieAuth": "true", "source": "fantasyapp-ios"},
+                         cookies={"SWID": swid, "espn_s2": s2}, timeout=8, allow_redirects=False)
+        data = r.json()
+    except Exception:
+        return []
+    found: list[str] = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            # Fantasy entries: gameId 1 is football; groups are the leagues.
+            if node.get("gameId") == 1 and isinstance(node.get("groups"), list) \
+                    and node.get("seasonId") in (None, season):
+                found.extend(str(g["groupId"]) for g in node["groups"]
+                             if isinstance(g, dict) and g.get("groupId"))
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(data)
+    return list(dict.fromkeys(found))
+
+
+def _try_load(league_id: str, cfg: dict):
+    try:
+        return _load(league_id, cfg)
+    except Exception as exc:
+        print(f"[ESPN] league {league_id} didn't load: {exc!r}")
+        return None
+
+
 def _connect_done() -> str:
     try:
         raw = subprocess.run(["pbpaste"], capture_output=True, text=True, timeout=5).stdout
     except Exception:
         raw = ""
+    cfg = get_plugin_config("espn_fantasy")
     s2 = re.search(r"espn_s2=([^;\s'\"]+)", raw)
-    league = re.search(r"leagues/(\d+)", raw) or re.search(r"leagueId=(\d+)", raw)
-    league_id = league.group(1) if league else ""
+    swid = re.search(r"SWID=(\{[0-9A-Fa-f-]+\})", raw)
+    copied = re.search(r"leagues/(\d+)", raw) or re.search(r"leagueId=(\d+)", raw)
+    league_id = copied.group(1) if copied else ""
     if not league_id and s2:
         league_id = _league_in_chrome()
-    if not league_id:
+    if not (league_id or s2):
         return ("I don't see your ESPN login or league in what you copied. In Developer Tools, "
                 "filter for lm-api-reads, reload, right-click a request whose name starts with "
                 "numbers, choose Copy, then Copy as cURL, and say done again.")
-    swid = re.search(r"SWID=(\{[0-9A-Fa-f-]+\})", raw)
     year = re.search(r"seasons/(\d{4})", raw)
-    values = {"league_id": league_id, "year": year.group(1) if year else str(_season()),
-              "espn_s2": s2.group(1) if s2 else "", "swid": swid.group(1) if swid else ""}
-    from espn_api.football import League
-    try:
-        league = League(league_id=int(values["league_id"]), year=int(values["year"]),
-                        espn_s2=values["espn_s2"] or None, swid=values["swid"] or None)
-    except Exception as exc:
-        print(f"[ESPN] connect failed: {exc!r}")
-        return ("ESPN didn't accept those headers. Make sure you're signed in and copied a "
-                "request from your own league, then say done again.")
-    save_plugin_config("espn_fantasy", values)
+    values = {"year": year.group(1) if year else str(cfg.get("year") or _season()),
+              "espn_s2": s2.group(1) if s2 else str(cfg.get("espn_s2") or ""),
+              "swid": swid.group(1) if swid else str(cfg.get("swid") or "")}
+    found = _discover(values["swid"], values["espn_s2"], int(values["year"])) \
+        if values["swid"] and values["espn_s2"] else []
+    ids = list(dict.fromkeys(_league_ids(cfg) + ([league_id] if league_id else []) + found))
+    if not ids:
+        return ("I have your ESPN login but couldn't find a league. Open your team in Chrome so "
+                "the address shows leagueId=, copy a request whose name starts with numbers, "
+                "and say done again.")
+    trial = {**cfg, **values}
+    with ThreadPoolExecutor(max_workers=len(ids)) as pool:
+        loaded = list(pool.map(lambda i: _try_load(i, trial), ids))
+    connected = [(i, lg) for i, lg in zip(ids, loaded) if lg is not None]
+    if not connected:
+        return ("ESPN didn't accept that login. Make sure you're signed in and copied a request "
+                "from your own league, then say done again.")
+    save_plugin_config("espn_fantasy", {**values, "league_ids": ",".join(i for i, _ in connected),
+                                        "league_id": ""})
     try:
         subprocess.run(["pbcopy"], input="", text=True, timeout=5)        # cookies off the clipboard
     except Exception:
         pass
-    mine = _mine(league)
-    name = getattr(getattr(league, "settings", None), "name", "") or "your league"
-    if mine is None:
-        return (f"Connected to {name}, but I couldn't tell which team is yours. Make sure you "
-                "copied the headers while signed in to your own account.")
-    save_plugin_config("espn_fantasy", {"team_id": str(mine.team_id)})
-    return (f"Connected to {name}. You're {mine.team_name}, {mine.wins}-{mine.losses}, "
-            f"in week {league.current_week}.")
+    parts = []
+    for _, league in connected:
+        mine = _mine(league, values["swid"])
+        parts.append(f"{_name(league)} (you're {mine.team_name}, {mine.wins}-{mine.losses})"
+                     if mine else f"{_name(league)} (I couldn't tell which team is yours)")
+    text = (f"Connected {len(connected)} league{'s' if len(connected) != 1 else ''}: "
+            + "; ".join(parts) + ".")
+    if len(connected) == 1 and not found:
+        text += (" If you're in other leagues, open each one in Chrome, copy a request the same "
+                 "way and say done; I'll add it.")
+    return text
 
 
 def run(parameters: dict, player=None, session_memory=None) -> str:
@@ -390,26 +491,37 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
         if action == "connect_done":
             return _connect_done()
         if action == "status":
-            cfg = get_plugin_config("espn_fantasy")
-            return ("ESPN Fantasy is connected." if cfg.get("league_id") else
-                    "ESPN Fantasy isn't connected. Say 'connect ESPN fantasy' to set it up.")
-        league = _league()
-        if action == "injuries":
-            return _injuries(league, team, player)
-        if action == "lineup":
-            return _lineup(league, team, player)
-        if action == "matchup":
-            return _matchup(league, player)
-        if action == "player":
-            return _player(league, str(args.get("name") or ""), player)
-        if action == "free_agents":
-            return _free_agents(league, str(args.get("position") or ""), int(args.get("count") or 8), player)
-        if action == "standings":
-            return _standings(league, player)
-        if action == "activity":
-            return _activity(league, player)
-        return ("ESPN commands: injuries, lineup, matchup, player, free_agents, standings, "
-                "activity, connect, status.")
+            count = len(_league_ids(get_plugin_config("espn_fantasy")))
+            return (f"ESPN Fantasy is connected to {count} league{'s' if count != 1 else ''}." if count
+                    else "ESPN Fantasy isn't connected. Say 'connect ESPN fantasy' to set it up.")
+        handlers = {
+            "injuries": lambda lg, show: _injuries(lg, team, show),
+            "lineup": lambda lg, show: _lineup(lg, team, show),
+            "matchup": lambda lg, show: _matchup(lg, show),
+            "player": lambda lg, show: _player(lg, str(args.get("name") or ""), show),
+            "free_agents": lambda lg, show: _free_agents(lg, str(args.get("position") or ""),
+                                                         int(args.get("count") or 0), show),
+            "standings": lambda lg, show: _standings(lg, show),
+            "activity": lambda lg, show: _activity(lg, show),
+            "leagues": lambda lg, show: _summary(lg),
+        }
+        if action not in handlers:
+            return ("ESPN commands: injuries, lineup, matchup, player, free_agents, standings, "
+                    "activity, leagues, connect, status.")
+        leagues = _leagues(str(args.get("league") or ""))
+        if len(leagues) == 1 and action != "leagues":
+            return handlers[action](leagues[0], player)
+
+        def one(lg):
+            try:
+                return f"== {_name(lg)} ==\n{handlers[action](lg, None)}"
+            except ValueError as exc:
+                return f"== {_name(lg)} ==\n{exc}"
+
+        with ThreadPoolExecutor(max_workers=len(leagues)) as pool:
+            text = "\n\n".join(pool.map(one, leagues))
+        _display(player, "ESPN · YOUR LEAGUES", text.split("\n"))
+        return text
     except _NeedsConnect:
         return ("Your ESPN league isn't connected yet. Say 'connect ESPN fantasy' and I'll walk "
                 "you through it; it takes a minute, once.")
