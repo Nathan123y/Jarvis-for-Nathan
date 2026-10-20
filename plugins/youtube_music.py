@@ -35,6 +35,7 @@ PLUGIN = {
         "then public), liked, recent, mood (a vibe like chill, focus, hype)), pause, resume, "
         "next, previous, now_playing, add_to_playlist (playlist=name; the current song), "
         "like, playlists, connect, connect_done (after the user copied the headers), status. "
+        "'Play X on the speakers' is play with speakers true. "
         "Use this instead of youtube_video or the browser for music. Say what is playing in "
         "a few words; do not read URLs."
     ),
@@ -47,6 +48,7 @@ PLUGIN = {
             "query": {"type": "STRING", "description": "What to play: song, artist, album, playlist name or a mood; with kind recent, a language, artist or word to pick from the user's recent plays"},
             "kind": {"type": "STRING", "enum": ["song", "artist", "album", "playlist", "liked", "recent", "mood"]},
             "playlist": {"type": "STRING", "description": "For add_to_playlist: the user's playlist name"},
+            "speakers": {"type": "BOOLEAN", "description": "For play: true when the user says to play it on the speakers"},
         },
         "required": ["action"],
     },
@@ -420,6 +422,11 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
     action = str(args.get("action") or "play").strip().lower()
     try:
         if action == "play":
+            if args.get("speakers"):
+                from plugins.speakers import route_to_speakers
+                problem = route_to_speakers()
+                if problem:
+                    return problem
             return _play(str(args.get("query") or ""), str(args.get("kind") or ""))
         if action in ("pause", "resume"):
             return ("Done." if _media_key("play")
