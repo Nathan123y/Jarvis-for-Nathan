@@ -36,7 +36,8 @@ class GmailPluginTests(unittest.TestCase):
             result = gmail.run({"action": "recent", "account": "personal", "count": 5, "unread_only": True})
         self.assertIn("Project update", result)
         self.assertIn("mail_1234", result)
-        service.users().messages().list.assert_called_once_with(
+        # First a one-message check that this inbox uses tabs, then the listing.
+        service.users().messages().list.assert_called_with(
             userId="me", labelIds=["INBOX"], maxResults=5, q="category:primary is:unread"
         )
         service.users().messages().get.assert_called_once_with(
@@ -109,12 +110,14 @@ class GmailPluginTests(unittest.TestCase):
         service.assert_called_once_with("school", allow_login=False)
 
 
-    def test_two_connected_accounts_require_an_explicit_choice(self):
+    def test_recent_without_an_account_reads_every_connected_account(self):
+        gmail._TABS.clear()
         with patch.object(gmail, "_connected_accounts", return_value=["personal", "school"]), \
-                patch.object(gmail, "_service") as service:
+                patch.object(gmail, "_service", return_value=_service_with_inbox()) as service:
             result = gmail.run({"action": "recent"})
-        self.assertIn("Both Gmail accounts are connected", result)
-        service.assert_not_called()
+        self.assertIn("Personal Gmail", result)
+        self.assertIn("School Gmail", result)
+        self.assertEqual(sorted(c.args[0] for c in service.call_args_list), ["personal", "school"])
 
     def test_connect_requires_a_named_account(self):
         with patch.object(gmail, "_service") as service:
@@ -130,10 +133,10 @@ class GmailPluginTests(unittest.TestCase):
         self.assertIn("school Gmail", result)
         open_service.assert_called_once_with("school", allow_login=False)
 
-    def test_three_connected_accounts_require_an_explicit_choice(self):
+    def test_sending_with_three_accounts_requires_an_explicit_choice(self):
         with patch.object(gmail, "_connected_accounts", return_value=["personal", "school", "spam"]), \
                 patch.object(gmail, "_service") as service:
-            result = gmail.run({"action": "recent"})
+            result = gmail.run({"action": "send", "to": "a@b.co", "subject": "Hi", "body": "Hello"})
         self.assertIn("Multiple Gmail accounts are connected", result)
         self.assertIn("personal Gmail, school Gmail, or spam Gmail", result)
         service.assert_not_called()
@@ -141,7 +144,7 @@ class GmailPluginTests(unittest.TestCase):
     def test_ambiguity_names_only_the_connected_accounts(self):
         with patch.object(gmail, "_connected_accounts", return_value=["personal", "spam"]), \
                 patch.object(gmail, "_service") as service:
-            result = gmail.run({"action": "recent"})
+            result = gmail.run({"action": "send", "to": "a@b.co", "subject": "Hi", "body": "Hello"})
         self.assertIn("personal Gmail or spam Gmail", result)
         self.assertNotIn("school", result)
         service.assert_not_called()
@@ -315,3 +318,70 @@ class RecentOrderTests(unittest.TestCase):
         with patch.object(gmail, "_service", return_value=service):
             gmail.run({"action": "recent", "account": "personal", "all_tabs": True})
         self.assertNotIn("q", service.users().messages().list.call_args.kwargs)
+
+
+class TabsSearchAndReadTests(unittest.TestCase):
+    def setUp(self):
+        gmail._TABS.clear()
+        self.addCleanup(gmail._TABS.clear)
+
+    @staticmethod
+    def mailbox(stamps, subjects=None, primary=True):
+        """A fake account: `stamps` maps id -> received ms; category:primary
+        finds nothing when `primary` is False (tabs turned off)."""
+        service = MagicMock()
+        messages = service.users.return_value.messages.return_value
+
+        def listing(userId, q="", maxResults=10, labelIds=None):
+            m = MagicMock()
+            ids = [] if ("category:primary" in q and not primary) else list(stamps)
+            m.execute.return_value = {"messages": [{"id": i} for i in ids[:maxResults]]}
+            return m
+
+        def get(userId, id, **kw):
+            if id not in stamps:
+                raise RuntimeError("404 not found")
+            m = MagicMock()
+            m.execute.return_value = {"internalDate": stamps[id], "snippet": "",
+                                      "payload": {"headers": [{"name": "Subject",
+                                                               "value": (subjects or {}).get(id, f"S-{id}")}]}}
+            return m
+        messages.list.side_effect = listing
+        messages.get.side_effect = get
+        return service
+
+    def test_an_account_without_inbox_tabs_lists_its_whole_inbox(self):
+        school = self.mailbox({"a1": "1800000000000"}, primary=False)
+        with patch.object(gmail, "_service", return_value=school):
+            result = gmail.run({"action": "recent", "account": "school"})
+        self.assertIn("S-a1", result)
+        self.assertIn("school Gmail inbox", result)
+        self.assertNotIn("q", school.users().messages().list.call_args.kwargs)
+
+    def test_search_merges_accounts_newest_first_and_names_each(self):
+        boxes = {"personal": self.mailbox({"p1": "1700000000000"}),
+                 "school": self.mailbox({"s1": "1800000000000"})}
+        with patch.object(gmail, "_connected_accounts", return_value=["personal", "school", "spam"]), \
+                patch.object(gmail, "_service", side_effect=lambda a, **kw: boxes[a] if a in boxes
+                             else (_ for _ in ()).throw(RuntimeError("invalid_grant"))):
+            result = gmail.run({"action": "search", "query": "from:professor midterm"})
+        self.assertLess(result.index("Account: school"), result.index("Account: personal"))
+        self.assertIn("spam: its sign-in ended; say 'connect spam Gmail'", result)
+        sent = boxes["school"].users().messages().list.call_args.kwargs
+        self.assertEqual(sent["q"], "from:professor midterm")
+        self.assertNotIn("labelIds", sent)                   # the whole mailbox, not just the inbox
+
+    def test_search_in_a_named_account_and_empty_queries(self):
+        box = self.mailbox({})
+        with patch.object(gmail, "_service", return_value=box) as service:
+            self.assertIn("No emails in school Gmail match from:nobody",
+                          gmail.run({"action": "search", "account": "school", "query": "from:nobody"}))
+            self.assertIn("What should I search for", gmail.run({"action": "search", "account": "school"}))
+        self.assertEqual({c.args[0] for c in service.call_args_list}, {"school"})
+
+    def test_read_without_an_account_finds_the_right_one(self):
+        boxes = {"personal": self.mailbox({}), "school": self.mailbox({"school_1": "1800000000000"})}
+        with patch.object(gmail, "_connected_accounts", return_value=["personal", "school"]), \
+                patch.object(gmail, "_service", side_effect=lambda a, **kw: boxes[a]):
+            result = gmail.run({"action": "read", "message_id": "school_1"})
+        self.assertTrue(result.startswith("School Gmail message"))
