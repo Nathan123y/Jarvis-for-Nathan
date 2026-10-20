@@ -341,6 +341,30 @@ class Music(unittest.TestCase):
         self.assertEqual(cfg["youtube_music_recent_playlist"], "PLnew")
         self.assertIn("2 most recent songs", out)
 
+    def test_recent_arabic_song_plays_as_a_radio(self):
+        self.yt.get_history.return_value = [
+            {"videoId": "en1", "title": "Blinding Lights", "artists": [{"name": "The Weeknd"}]},
+            {"videoId": "ar1", "title": "تملي معاك", "artists": [{"name": "Amr Diab"}]},
+            {"videoId": "ar2", "title": "Nour El Ein", "artists": [{"name": "Amr Diab"}]},
+        ]
+        with patch("random.choice", side_effect=lambda items: items[-1]) as pick:
+            out = youtube_music.run({"action": "play", "kind": "recent", "query": "arabic music"})
+        # The romanised title counts too: the same artist has an Arabic-script song.
+        self.assertEqual([i["videoId"] for i in pick.call_args.args[0]], ["ar1", "ar2"])
+        self.assertTrue(self.opened[-1].endswith("watch?v=ar2&list=RDAMVMar2"))
+        self.assertEqual(out, "Playing Nour El Ein by Amr Diab, then similar songs.")
+
+    def test_recent_with_no_match_falls_back_to_a_mix(self):
+        self.yt.get_history.return_value = [{"videoId": "en1", "title": "Blinding Lights",
+                                             "artists": [{"name": "The Weeknd"}]}]
+        self.yt.search.return_value = [{"title": "Arabic Hits", "browseId": "VLPLar"}]
+        out = youtube_music.run({"action": "play", "kind": "recent", "query": "arabic"})
+        self.assertIn("didn't find any arabic songs in your recent plays", out)
+        self.assertTrue(self.opened[-1].endswith("watch?list=PLar"))
+        self.yt.get_history.return_value = [{"videoId": "x", "title": "Song", "artists": [{"name": "Drake"}]}]
+        youtube_music.run({"action": "play", "kind": "recent", "query": "drake"})
+        self.assertTrue(self.opened[-1].endswith("watch?v=x&list=RDAMVMx"))
+
     def test_controls_use_the_right_media_key(self):
         with patch.object(youtube_music, "_media_key", return_value=True) as key:
             self.assertEqual(youtube_music.run({"action": "next"}), "Skipped.")

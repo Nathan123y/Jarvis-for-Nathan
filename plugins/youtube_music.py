@@ -26,7 +26,9 @@ PLUGIN = {
     "description": (
         "Play music on the user's YouTube Music account and control it. Use for 'play "
         "<song/artist/album>', 'play my <name> playlist', 'play my liked songs', 'play my "
-        "recent plays', 'play something chill / some focus music', 'pause', 'resume', "
+        "recent plays', 'play a recent Arabic song' / 'my Arabic mix' (kind recent, query "
+        "arabic: one of their recent songs in that language, then similar ones), 'play "
+        "something chill / some focus music', 'pause', 'resume', "
         "'skip', 'next song', 'go back', 'what song is this', 'add this song to my gym "
         "playlist', 'like this song', 'what playlists do I have', 'connect YouTube Music'. "
         "Actions: play (query + kind: song, artist, album, playlist (the user's own first, "
@@ -42,7 +44,7 @@ PLUGIN = {
             "action": {"type": "STRING", "enum": ["play", "pause", "resume", "next", "previous",
                                                   "now_playing", "add_to_playlist", "like",
                                                   "playlists", "connect", "connect_done", "status"]},
-            "query": {"type": "STRING", "description": "What to play: song, artist, album, playlist name or a mood"},
+            "query": {"type": "STRING", "description": "What to play: song, artist, album, playlist name or a mood; with kind recent, a language, artist or word to pick from the user's recent plays"},
             "kind": {"type": "STRING", "enum": ["song", "artist", "album", "playlist", "liked", "recent", "mood"]},
             "playlist": {"type": "STRING", "description": "For add_to_playlist: the user's playlist name"},
         },
@@ -248,7 +250,7 @@ def _play(query: str, kind: str) -> str:
         _open(f"{_BASE}/watch?list=LM")
         return "Playing your liked songs."
     if kind == "recent":
-        return _play_recent()
+        return _play_recent_matching(query) if query else _play_recent()
     if not query:
         return "What should I play?"
     yt = _client()
@@ -313,6 +315,46 @@ def _play_recent() -> str:
     _save_flag("youtube_music_recent_playlist", pid)
     _open(_watch_list(pid))
     return f"Playing your {len(ids)} most recent songs."
+
+
+# Language words the user may say, and the script their song titles are written in.
+_SCRIPTS = {"arabic": "\u0600-\u06ff\u0750-\u077f\ufb50-\ufdff\ufe70-\ufeff"}
+
+
+def _play_recent_matching(query: str) -> str:
+    """One of the user's recent songs that fits `query` (a language like Arabic, an
+    artist, or a word in the title), played as that song's radio so similar songs
+    follow. A song by an artist the user has played in that script counts too,
+    which catches romanised titles."""
+    import random
+    history = [i for i in (_client(account=True).get_history() or []) if i.get("videoId")]
+    want = _words(query) - {"song", "songs", "music", "mix", "recent", "recently", "played"}
+    script = next((_SCRIPTS[w] for w in want if w in _SCRIPTS), None)
+
+    def text(item):
+        return " ".join([str(item.get("title") or ""), _artists(item),
+                         str((item.get("album") or {}).get("name") or "")])
+
+    if script:
+        pattern = re.compile(f"[{script}]")
+        artists = {a for i in history if pattern.search(text(i))
+                   for a in _artists(i).split(", ") if a}
+        matches = [i for i in history if pattern.search(text(i))
+                   or set(_artists(i).split(", ")) & artists]
+    else:
+        matches = [i for i in history if want and want <= _words(text(i))]
+    if not matches:
+        found = _client().search(f"{query} music mix", filter="playlists", limit=1)
+        if found:
+            _open(_watch_list(found[0]["browseId"]))
+            return (f"I didn't find any {query} songs in your recent plays, so I'm playing "
+                    f"the playlist {found[0].get('title')}.")
+        return f"I didn't find any {query} songs in your recent plays."
+    # Pick among the latest few so the same song doesn't open every time.
+    song = random.choice(matches[:10])
+    vid = quote(song["videoId"])
+    _open(f"{_BASE}/watch?v={vid}&list=RDAMVM{vid}")
+    return f"Playing {song.get('title')} by {_artists(song) or 'unknown artist'}, then similar songs."
 
 
 def _now_playing() -> str:
