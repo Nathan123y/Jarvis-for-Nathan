@@ -155,6 +155,8 @@ def install(repo: Path, interpreter: Path, destination: Path, architecture: str 
         "NSMicrophoneUsageDescription": "Jarvis listens when you use its voice assistant.",
         "NSCameraUsageDescription": "Jarvis accesses the camera when you request a camera feature.",
         "NSAppleEventsUsageDescription": "Jarvis controls approved Mac apps when you request an action.",
+        # Without this, macOS kills Jarvis the first time the lights plugin uses Bluetooth.
+        "NSBluetoothAlwaysUsageDescription": "Jarvis controls your Bluetooth lights when you ask it to.",
     }
     if _icon_available():
         info["CFBundleIconFile"] = "AppIcon"

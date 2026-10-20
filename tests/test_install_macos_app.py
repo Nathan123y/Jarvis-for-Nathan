@@ -81,7 +81,10 @@ class MacLauncherTests(unittest.TestCase):
             self.assertEqual(run.call_args_list[3].args[0][3], "-")
             self.assertTrue((target / "Contents" / "Resources" / "AppIcon.icns").is_file())
             with (target / "Contents" / "Info.plist").open("rb") as source:
-                self.assertEqual(plistlib.load(source)["CFBundleIconFile"], "AppIcon")
+                info = plistlib.load(source)
+            self.assertEqual(info["CFBundleIconFile"], "AppIcon")
+            # The lights plugin uses Bluetooth; macOS kills the app without this.
+            self.assertIn("NSBluetoothAlwaysUsageDescription", info)
 
     def test_local_self_signed_identity_is_used_when_no_apple_development_one(self):
         valid = SimpleNamespace(returncode=0, stdout="     0 valid identities found\n")
