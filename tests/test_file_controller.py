@@ -161,5 +161,65 @@ class FileControllerTests(unittest.TestCase):
         self.assertIn("hello.txt", result)
 
 
+
+class EmptyTrashTests(unittest.TestCase):
+    """Finder is faked: nothing real is ever emptied here."""
+
+    def setUp(self):
+        from core import confirm
+        self.confirm = confirm
+        self.shown, self.notes, self.scripts = [], [], []
+        confirm.bind(lambda title, detail: self.shown.append(title), lambda: None,
+                     notify=self.notes.append)
+        self.addCleanup(confirm.bind, None, None)
+        self.addCleanup(confirm.resolve, False)
+        self.counts = [3, 0]
+        p = patch.object(fc, "_finder", side_effect=self.finder)
+        p.start()
+        self.addCleanup(p.stop)
+        p = patch.object(fc.platform, "system", return_value="Darwin")
+        p.start()
+        self.addCleanup(p.stop)
+
+    def finder(self, script, timeout=10):
+        self.scripts.append(script)
+        return str(self.counts.pop(0)) if script == fc._TRASH_COUNT else ""
+
+    def wait_for_note(self):
+        import time
+        for _ in range(100):
+            if self.notes:
+                return self.notes[-1]
+            time.sleep(0.01)
+        self.fail("the confirmed action never reported back")
+
+    def test_nothing_is_emptied_until_the_user_confirms(self):
+        result = fc.file_controller({"action": "empty_trash"})
+        self.assertIn("CONFIRMATION_PENDING", result)
+        self.assertEqual(self.shown, ["Empty the Trash (3 items)"])
+        self.assertNotIn(fc._TRASH_EMPTY, self.scripts)
+        self.confirm.resolve(True)
+        self.assertIn("3 items permanently deleted", self.wait_for_note())
+        self.assertIn(fc._TRASH_EMPTY, self.scripts)
+
+    def test_cancel_leaves_the_trash_alone(self):
+        fc.file_controller({"action": "empty_trash"})
+        self.confirm.resolve(False)
+        self.assertIn("Cancelled", self.wait_for_note())
+        self.assertNotIn(fc._TRASH_EMPTY, self.scripts)
+
+    def test_empty_trash_and_missing_permission_need_no_confirmation(self):
+        self.counts = [0]
+        self.assertEqual(fc.file_controller({"action": "empty_trash"}), "Your Trash is already empty.")
+        with patch.object(fc, "_finder", side_effect=PermissionError("Jarvis needs permission to control Finder")):
+            self.assertIn("permission to control Finder", fc.file_controller({"action": "empty_trash"}))
+        self.assertEqual(self.shown, [])
+
+    def test_items_still_in_use_are_reported(self):
+        self.counts = [3, 1]
+        fc.file_controller({"action": "empty_trash"})
+        self.confirm.resolve(True)
+        self.assertIn("1 item couldn't be deleted", self.wait_for_note())
+
 if __name__ == "__main__":
     unittest.main()
