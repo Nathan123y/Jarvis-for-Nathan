@@ -798,10 +798,10 @@ class JarvisLive:
             return
         if str(get_plugin_config("lights").get("clap") or "on").strip().lower() in ("off", "no", "false", "0"):
             return
-        print("[Clap] 👏 Double clap — turning the lights on")
+        print("[Clap] 👏 Double clap — switching the lights")
 
         def _run():
-            result = self._plugin_registry.run("lights", {"action": "on"})
+            result = self._plugin_registry.run("lights", {"action": "toggle"})
             self.ui.write_log(f"SYS: Double clap — {result}")
         threading.Thread(target=_run, daemon=True, name="ClapLights").start()
 
