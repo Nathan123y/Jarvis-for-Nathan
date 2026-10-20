@@ -138,7 +138,25 @@ class EspnTests(unittest.TestCase):
         self.assertEqual(saved["swid"], SWID)
         self.assertIn("Connected to Friends League. You're Nathan Ballers, 4-2", out)
         with patch.object(espn.subprocess, "run", return_value=NS(stdout="nothing useful")):
-            self.assertIn("don't see your league", espn._connect_done())
+            self.assertIn("don't see your ESPN login or league", espn._connect_done())
+
+    def test_connect_accepts_curl_and_finds_the_league_in_chrome(self):
+        saved = {}
+        # Copy as cURL of a request without the league in its URL; espn_s2 is
+        # last, so the closing quote must not stick to it.
+        curl = ("curl 'https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/2026/players?view=players_wl' "
+                f"-H 'accept: application/json' -b 'SWID={SWID}; espn_s2=AEB%2Fxyz'")
+        def fake_run(cmd, **kw):
+            if cmd[0] == "pbpaste":
+                return NS(stdout=curl)
+            if cmd[0] == "osascript":
+                return NS(stdout="https://fantasy.espn.com/football/team?leagueId=555&teamId=3\n")
+            return NS(stdout="")
+        with patch.object(espn.subprocess, "run", side_effect=fake_run), \
+             patch.object(espn, "save_plugin_config", side_effect=lambda ns, v: saved.update(v)), \
+             patch("espn_api.football.League", return_value=self.league):
+            espn._connect_done()
+        self.assertEqual((saved["league_id"], saved["espn_s2"], saved["swid"]), ("555", "AEB%2Fxyz", SWID))
 
     def test_season_rolls_over_in_march(self):
         self.assertEqual(espn._season(date(2027, 1, 10)), 2026)
