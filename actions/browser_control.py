@@ -5,12 +5,16 @@ import asyncio
 import concurrent.futures
 import os
 import platform
+import re
 import shutil
 import subprocess
 import threading
 import webbrowser
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
+
+from core.undo import push_undo
 
 from playwright.async_api import (
     async_playwright,
@@ -439,6 +443,128 @@ def _open_native(url: str, browser_name: Optional[str]) -> str:
         except Exception:
             pass
         return f"Could not open a browser for: {url}"
+
+
+# ── Closing tabs in the user's own browser ─────────────────────────────────
+# AppleScript reaches the real browser and its real tabs; the automation
+# browser below never sees them.
+_TAB_NOISE = {"the", "a", "my", "tab", "tabs", "close", "that", "one", "page", "website", "site"}
+# More matches than this is too vague to close without asking which one.
+_MAX_TABS_AT_ONCE = 3
+
+
+def _mac_app(browser_name: Optional[str]) -> str:
+    name = _ALIASES.get((browser_name or "").lower().strip(), (browser_name or "").lower().strip())
+    return _MAC_APP_NAMES.get(name or _detect_default_browser(), "Google Chrome")
+
+
+def _osascript(script: str, timeout: float = 8) -> str:
+    r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=timeout)
+    if r.returncode:
+        err = r.stderr.strip()
+        if "-1743" in err or "not authorized" in err.lower():
+            raise PermissionError("not authorized")
+        raise RuntimeError(err or "the browser did not answer")
+    return r.stdout
+
+
+def _list_tabs(app: str) -> list[tuple[int, int, str, str]] | None:
+    """(window, tab, title, url) for every tab, or None if the browser isn't open."""
+    title = "name" if app == "Safari" else "title"
+    out = _osascript(f'''
+if application "{app}" is not running then return "NOT_RUNNING"
+-- Inside the browser's tell block "tab" means a browser tab, not the character.
+set sep to ASCII character 9
+tell application "{app}"
+  set out to ""
+  set wi to 0
+  repeat with w in windows
+    set wi to wi + 1
+    set ti to 0
+    repeat with t in tabs of w
+      set ti to ti + 1
+      set out to out & wi & sep & ti & sep & ({title} of t) & sep & (URL of t) & linefeed
+    end repeat
+  end repeat
+  return out
+end tell''')
+    if out.strip() == "NOT_RUNNING":
+        return None
+    tabs = []
+    for line in out.splitlines():
+        parts = line.split("\t", 2)
+        if len(parts) == 3 and "\t" in parts[2]:
+            title_text, url = parts[2].rsplit("\t", 1)
+            tabs.append((int(parts[0]), int(parts[1]), title_text, url))
+    return tabs
+
+
+def _tab_matches(query: str, title: str, url: str) -> bool:
+    words = [w for w in re.findall(r"[a-z0-9]+", query.lower()) if w not in _TAB_NOISE]
+    host = urlsplit(url).netloc.lower().removeprefix("www.")
+    hay = re.sub(r"[^a-z0-9]+", " ", f"{title} {host}".lower())
+    squashed = hay.replace(" ", "")
+    if not words:
+        return False
+    # Every spoken word must appear; "you tube" also matches "youtube".
+    return all(w in hay or w in squashed for w in words) or "".join(words) in squashed
+
+
+def _close_tabs(app: str, tabs: list[tuple[int, int, str, str]]) -> None:
+    # Highest window and tab first, so closing one never renumbers the rest.
+    lines = "\n".join(f"  close tab {t} of window {w}" for w, t, _, _ in sorted(tabs, reverse=True))
+    _osascript(f'tell application "{app}"\n{lines}\nend tell')
+
+
+def close_tab_native(query: str, browser_name: Optional[str] = None) -> str:
+    """Close the user's tab(s) whose title or site matches `query`, or the tab in
+    front when `query` is empty. 'Undo' reopens what was closed."""
+    if _OS != "Darwin":
+        return "Closing tabs by name is only set up on macOS."
+    app = _mac_app(browser_name)
+    try:
+        if not query.strip():
+            active = "current tab" if app == "Safari" else "active tab"
+            front = _osascript(f'''
+if application "{app}" is not running then return "NOT_RUNNING"
+tell application "{app}"
+  if (count of windows) is 0 then return "NOT_RUNNING"
+  set u to URL of {active} of front window
+  close {active} of front window
+  return u
+end tell''').strip()
+            if front == "NOT_RUNNING":
+                return f"{app} has no open tabs."
+            closed = [front]
+            result = "Closed the current tab."
+        else:
+            tabs = _list_tabs(app)
+            if tabs is None:
+                return f"{app} isn't open."
+            hits = [t for t in tabs if _tab_matches(query, t[2], t[3])]
+            if not hits:
+                names = "; ".join(t[2][:50] for t in tabs[:8])
+                return f"No open tab matches '{query}'. Open tabs: {names}."
+            if len(hits) > _MAX_TABS_AT_ONCE:
+                names = "; ".join(t[2][:50] for t in hits[:8])
+                return (f"{len(hits)} tabs match '{query}', so I left them open. Which one? "
+                        f"{names}.")
+            _close_tabs(app, hits)
+            closed = [t[3] for t in hits]
+            result = (f"Closed {hits[0][2][:60]}." if len(hits) == 1
+                      else f"Closed {len(hits)} tabs: " + "; ".join(t[2][:40] for t in hits) + ".")
+    except PermissionError:
+        return (f"Jarvis needs permission to control {app}: System Settings, Privacy & Security, "
+                f"Automation, Jarvis, then turn on {app}.")
+    except Exception as e:
+        return f"I couldn't close that tab: {e}"
+
+    def _reopen(urls=tuple(closed)) -> str:
+        for url in urls:
+            subprocess.run(["open", "-a", app, url], capture_output=True, timeout=10)
+        return f"Reopened {len(urls)} tab{'s' if len(urls) != 1 else ''}."
+    push_undo(f"closed {len(closed)} tab{'s' if len(closed) != 1 else ''}", _reopen)
+    return result
 
 
 class _BrowserSession:
@@ -1012,6 +1138,13 @@ def browser_control(
             _log(player, result)
             return result
 
+    # Closing a tab by name, or the tab in front, happens in the user's own
+    # browser; only a running automation flow closes its own tab instead.
+    if action == "close_tab" and (params.get("text") or params.get("query") or not _registry.has(browser)):
+        result = close_tab_native(str(params.get("text") or params.get("query") or ""), browser)
+        _log(player, result)
+        return result
+
     # ── Interactive actions (click/type/read…) ───────────────────────────────
     # These require a physically controllable browser; the automation window
     # only opens here, and as soon as it opens it goes to the user's last
@@ -1082,7 +1215,7 @@ def _log(player, text: str):
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "browser_control",
-    "description": "Controls any web browser. Use for: opening websites, searching the web, clicking elements, filling forms, scrolling, screenshots, navigation, any web-based task. Simple open/search requests launch the user's own browser normally (their real profile and logged-in accounts); interactive actions (click, type, fill_form...) attach an automation browser. To search, use the search action with the query — never new_tab followed by type and press. Always pass the 'browser' parameter when the user specifies a browser (e.g. 'open in Edge', 'use Firefox', 'open Chrome'). Multiple browsers can run simultaneously.",
+    "description": "Controls any web browser. Use for: opening websites, searching the web, clicking elements, filling forms, scrolling, screenshots, navigation, any web-based task. Simple open/search requests launch the user's own browser normally (their real profile and logged-in accounts); interactive actions (click, type, fill_form...) attach an automation browser. To search, use the search action with the query — never new_tab followed by type and press. 'Close the X tab' is close_tab with text X; it works on the user's own browser. Always pass the 'browser' parameter when the user specifies a browser (e.g. 'open in Edge', 'use Firefox', 'open Chrome'). Multiple browsers can run simultaneously.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
@@ -1112,7 +1245,7 @@ TOOL = {
             },
             "text": {
                 "type": "STRING",
-                "description": "Text to click or type"
+                "description": "Text to click or type; for close_tab, words from the tab's title or site (e.g. 'youtube'), or omit to close the current tab"
             },
             "description": {
                 "type": "STRING",
