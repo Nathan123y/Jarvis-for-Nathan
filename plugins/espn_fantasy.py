@@ -28,7 +28,9 @@ PLUGIN = {
         "The user's ESPN Fantasy Football league, read-only. Use for 'any injuries on my "
         "team', 'who's out or questionable this week', 'how's my matchup', 'who am I "
         "playing', 'what's my opponent starting', 'tell me about <player>', 'best free "
-        "agent running backs', 'league standings', 'any trades in my league', and to answer "
+        "agent running backs', 'league standings', 'any trades in my league', 'which league do I "
+        "have <player> in and how many points has he scored for me' (action player: says which "
+        "leagues he's on the user's team in and his points in weeks they started him), and to answer "
         "start/sit or trade questions: fetch the data with these actions, then reason from "
         "it. Actions: injuries (team: mine, opponent or league), lineup (team: mine or "
         "opponent), matchup, player (name), free_agents (position, count), standings, "
@@ -270,7 +272,25 @@ def _matchup(league, player) -> str:
     call = (f"projected to win by {lead:.1f}" if lead > 0 else
             f"projected to lose by {-lead:.1f}" if lead < 0 else "projected dead even")
     return (f"Week {week}: {me[0].team_name} vs {them[0].team_name} ({_owner(them[0])}, "
-            f"{them[0].wins}-{them[0].losses}). You're {call}.\n" + "\n".join(lines))
+            f"{them[0].wins}-{them[0].losses}). You're {call}.\n" + "\n".join(lines)
+            + "\n\nYour opponent:\n" + "\n".join(_opponent_form(league, them)))
+
+
+def _opponent_form(league, them) -> list[str]:
+    team, lineup = them[0], them[3]
+    rank = next((i for i, t in enumerate(league.standings(), 1) if t.team_id == team.team_id), None)
+    played = [x for x in (team.scores or [])[:max(league.current_week - 1, 0)] if x]
+    form = [f"{team.wins}-{team.losses}" + (f", {rank} of {len(league.teams)} in the standings" if rank else "")
+            + (f", {team.streak_length}-game {str(team.streak_type).lower()} streak" if team.streak_length else "")]
+    if played:
+        form.append(f"Averaging {sum(played) / len(played):.1f} a week; last week {played[-1]:.1f}")
+    starters = [p for p in lineup if getattr(p, "slot_position", "") not in _BENCH]
+    if starters:
+        top = max(starters, key=lambda p: getattr(p, "projected_points", 0) or 0)
+        form.append(f"Their top projected starter: {top.name} ({top.position}, {top.projected_points:.1f})")
+    hurt = [h for h in _problems(lineup) if h.endswith("STARTER")]
+    form.append("Injured or bye-week starters: " + ("; ".join(h.rsplit(", ", 1)[0] for h in hurt) if hurt else "none"))
+    return form
 
 
 def _match_names(league, name: str) -> list[str]:
@@ -290,12 +310,10 @@ def _match_names(league, name: str) -> list[str]:
     return [keyed[close[0]]] if close else []
 
 
-def _player(league, name: str, player) -> str:
-    if len(name.strip()) < 2:
-        return "Which player should I look up?"
+def _find_player(league, name: str):
     names = _match_names(league, name)
     if not names:
-        return f"I couldn't find a player called {name} on ESPN."
+        return None
     if len(names) == 1:
         p = league.player_info(name=names[0])
     else:
@@ -306,23 +324,93 @@ def _player(league, name: str, player) -> str:
         p = max(found, key=lambda c: getattr(c, "percent_owned", 0) or 0, default=None)
     if isinstance(p, list):
         p = p[0] if p else None
+    return p
+
+
+def _for_me(league, mine, player_id) -> list[tuple[int, float, bool]]:
+    """(week, points, started) for every week the player was on the user's
+    roster, including weeks before a trade or drop. One request per week, in
+    parallel."""
+    def week(w):
+        for box in league.box_scores(w):
+            for team, lineup in ((box.home_team, box.home_lineup), (box.away_team, box.away_lineup)):
+                if getattr(team, "team_id", None) == mine.team_id:
+                    for bp in lineup:
+                        if getattr(bp, "playerId", None) == player_id:
+                            return (w, float(bp.points or 0), bp.slot_position not in _BENCH)
+                    return None
+        return None
+
+    weeks = range(1, league.current_week + 1)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        return [r for r in pool.map(week, weeks) if r]
+
+
+def _player_report(league, name: str) -> tuple[str, str] | None:
+    """(where he is in this league, the detailed lines), or None if not found."""
+    p = _find_player(league, name)
     if not p:
-        return f"I couldn't find a player called {name} on ESPN."
+        return None
     owner = next((t for t in league.teams if t.team_id == getattr(p, "onTeamId", None)), None)
     mine = _mine(league)
-    whose = ("on your team" if owner and mine and owner.team_id == mine.team_id else
+    yours = bool(owner and mine and owner.team_id == mine.team_id)
+    whose = ("on your team" if yours else
              f"on {owner.team_name} ({_owner(owner)})" if owner else "a free agent")
     week = league.current_week
     proj = (getattr(p, "stats", {}) or {}).get(week, {}).get("projected_points")
     lines = [f"{p.name} · {p.position} · {p.proTeam}",
              f"Status: {_status(p) or 'healthy'}",
-             f"In your league: {whose}",
+             f"In this league: {whose}",
              f"Season: {getattr(p, 'total_points', 0):.1f} pts, {getattr(p, 'avg_points', 0):.1f} per game",
              f"Owned in {getattr(p, 'percent_owned', 0):.0f}% of ESPN leagues"]
     if proj is not None:
         lines.insert(3, f"Week {week} projection: {proj:.1f}")
-    _display(player, p.name.upper(), lines)
-    return "\n".join(lines)
+    if mine:
+        weeks = _for_me(league, mine, p.playerId)
+        if weeks:
+            started = [(w, pts) for w, pts, s in weeks if s]
+            benched = [(w, pts) for w, pts, s in weeks if not s]
+            total = sum(pts for _, pts in started)
+            lines.append(f"Points for you: {total:.1f} in {len(started)} start"
+                         f"{'s' if len(started) != 1 else ''}"
+                         + (f" (week {week} still in progress)" if any(w == week for w, _ in started) else ""))
+            lines.append("By week: " + ", ".join(
+                f"wk {w} {pts:.1f}" + ("" if s else " (bench)") for w, pts, s in weeks))
+            if benched:
+                lines.append(f"Left on your bench: {sum(pts for _, pts in benched):.1f} pts "
+                             f"in {len(benched)} week{'s' if len(benched) != 1 else ''}")
+    return whose, "\n".join(lines)
+
+
+def _player(league, name: str, player) -> str:
+    if len(name.strip()) < 2:
+        return "Which player should I look up?"
+    report = _player_report(league, name)
+    if report is None:
+        return f"I couldn't find a player called {name} on ESPN."
+    _display(player, name.upper(), report[1].split("\n"))
+    return report[1]
+
+
+def _player_everywhere(leagues, name: str, player) -> str:
+    """One player across every league: where he's yours first, then the rest."""
+    if len(name.strip()) < 2:
+        return "Which player should I look up?"
+    with ThreadPoolExecutor(max_workers=len(leagues)) as pool:
+        reports = list(pool.map(lambda lg: _player_report(lg, name), leagues))
+    found = [(lg, r) for lg, r in zip(leagues, reports) if r]
+    if not found:
+        return f"I couldn't find a player called {name} on ESPN."
+    yours = [_name(lg) for lg, (whose, _) in found if whose == "on your team"]
+    head = (f"You have him in: {', '.join(yours)}." if yours
+            else "He isn't on any of your teams.")
+    others = [f"{_name(lg)}: {whose}" for lg, (whose, _) in found if whose != "on your team"]
+    if others:
+        head += " Elsewhere — " + "; ".join(others) + "."
+    found.sort(key=lambda item: item[1][0] != "on your team")
+    text = head + "\n\n" + "\n\n".join(f"== {_name(lg)} ==\n{lines}" for lg, (_, lines) in found)
+    _display(player, name.upper(), text.split("\n"))
+    return text
 
 
 def _free_agents(league, position: str, count: int, player) -> str:
@@ -520,6 +608,8 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
         leagues = _leagues(str(args.get("league") or ""))
         if len(leagues) == 1 and action != "leagues":
             return handlers[action](leagues[0], player)
+        if action == "player":
+            return _player_everywhere(leagues, str(args.get("name") or ""), player)
 
         def one(lg):
             try:
