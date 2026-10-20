@@ -27,6 +27,7 @@ MARKER = "# Jarvis Git checkout launcher"
 NATIVE_SOURCE = Path(__file__).with_name("jarvis_launcher.swift")
 ANNOUNCER_SOURCE = Path(__file__).with_name("notification_announcer.swift")
 BUILD_MARKER = "native-build.sha256"
+LOCAL_IDENTITY = "Jarvis Local Signing"
 ICON_SOURCE = Path(__file__).resolve().parent.parent / "assets" / "icon.png"
 
 
@@ -57,7 +58,14 @@ def signing_identity() -> str:
         return "-"
     matches = re.findall(r'\b[0-9A-F]{40}\s+"(Apple Development:[^"]+)"', result.stdout)
     # If there are several identities, don't silently pick the wrong team.
-    return matches[0] if len(matches) == 1 else "-"
+    if len(matches) == 1:
+        return matches[0]
+    # A self-signed certificate made in Keychain Access works the same way for
+    # keeping permissions. It is not "valid" to the system, so list everything.
+    result = subprocess.run(["/usr/bin/security", "find-identity", "-p", "codesigning"],
+                            capture_output=True, text=True, check=False)
+    local = sorted(set(re.findall(rf'\b([0-9A-F]{{40}})\s+"{LOCAL_IDENTITY}"', result.stdout)))
+    return local[0] if len(local) == 1 else "-"
 
 
 def native_build_id(settings: dict, info: dict, identity: str) -> str:
