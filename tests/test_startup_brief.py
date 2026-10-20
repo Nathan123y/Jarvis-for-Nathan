@@ -58,6 +58,18 @@ class Compose(unittest.TestCase):
         self.assertNotIn("\n", spoken)
 
 
+class Fantasy(unittest.TestCase):
+    def test_fantasy_alerts_are_spoken_and_listed(self):
+        spoken, panel = sb.compose([], None, None, "2026-10-19",
+                                fantasy=("Fantasy football. Starters to swap out: A (L, Out).",
+                                         ["  Swap out: A (L, Out)"]))
+        self.assertIn("Fantasy football. Starters to swap out: A (L, Out).", spoken)
+        self.assertIn("FANTASY FOOTBALL\n  Swap out: A (L, Out)", panel)
+
+    def test_quiet_fantasy_adds_nothing(self):
+        self.assertNotIn("FANTASY", sb.compose([], None, None, "2026-10-19", fantasy=("", []))[1])
+
+
 class Gather(unittest.TestCase):
     def test_slow_or_failing_sources_are_skipped(self):
         import time

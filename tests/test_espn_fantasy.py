@@ -1,6 +1,6 @@
 """ESPN fantasy plugin against a fake league: no network, no real account."""
 import unittest
-from datetime import date
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace as NS
 from unittest.mock import patch
 
@@ -267,6 +267,64 @@ class LeagueLoadingTests(unittest.TestCase):
         self.loaded = {}
         with self.assertRaisesRegex(RuntimeError, "league deleted"):
             espn._leagues()
+
+
+class RosterAlertTests(unittest.TestCase):
+    """Briefing alerts: status changes since last time, and lineup fixes."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.league = FakeLeague()
+        for i, p in enumerate(self.league.box.away_lineup):
+            p.playerId = 100 + i
+        for p in (patch.object(espn, "STATE_FILE", Path(self.temp.name) / "status.json"),
+                  patch.object(espn, "_leagues", side_effect=lambda which="": [self.league]),
+                  patch.object(espn, "get_plugin_config", return_value={"swid": SWID})):
+            p.start()
+            self.addCleanup(p.stop)
+        self.t0 = datetime(2026, 10, 18, 9, 0)
+
+    def lineup(self, name):
+        return next(p for p in self.league.box.away_lineup if p.name == name)
+
+    def test_first_check_records_a_baseline_and_lists_fixes(self):
+        alerts = espn.roster_alerts(self.t0)
+        self.assertEqual(alerts["changes"], [])
+        self.assertEqual(alerts["swap"], ["Amon-Ra St. Brown (Friends League, Doubtful)",
+                                          "Drake London (Friends League, on bye)"])
+
+    def test_changes_are_reported_for_a_day_then_dropped(self):
+        espn.roster_alerts(self.t0)
+        self.lineup("Bijan Robinson").injuryStatus = "QUESTIONABLE"
+        self.lineup("Rhamondre Stevenson").injuryStatus = "ACTIVE"     # Out → healthy, on the bench
+        alerts = espn.roster_alerts(self.t0 + timedelta(hours=1))
+        self.assertEqual(alerts["changes"], [
+            "Bijan Robinson (Friends League) is now Questionable (was healthy), and he's in your starting lineup",
+            "Rhamondre Stevenson (Friends League) is healthy again (was Out)"])
+        self.assertEqual(alerts["watch"], ["Bijan Robinson (Friends League)"])
+        # Still there at the next briefing that day; gone a day later.
+        self.assertEqual(len(espn.roster_alerts(self.t0 + timedelta(hours=10))["changes"]), 2)
+        self.assertEqual(espn.roster_alerts(self.t0 + timedelta(hours=30))["changes"], [])
+
+    def test_back_from_ir_but_still_in_the_ir_spot(self):
+        ir = player("Jordan Mason", "RB", "IR", "INJURY_RESERVE", team="MIN", playerId=200)
+        self.league.box.away_lineup.append(ir)
+        espn.roster_alerts(self.t0)
+        ir.injuryStatus = "ACTIVE"
+        alerts = espn.roster_alerts(self.t0 + timedelta(hours=1))
+        self.assertIn("Jordan Mason (Friends League) is back from IR", alerts["changes"])
+        self.assertIn("Jordan Mason (Friends League) is healthy but still in your IR spot", alerts["swap"])
+
+    def test_briefing_sentence_and_quiet_day(self):
+        spoken, panel = espn.briefing_lines({"changes": ["A is now Out (was Questionable)"],
+                                             "swap": ["A (L, Out)"], "watch": []})
+        self.assertEqual(spoken, "Fantasy football. Status changes: A is now Out (was Questionable). "
+                                 "Starters to swap out: A (L, Out).")
+        self.assertEqual(panel, ["  Changed: A is now Out (was Questionable)", "  Swap out: A (L, Out)"])
+        self.assertEqual(espn.briefing_lines({"changes": [], "swap": [], "watch": []}), ("", []))
 
 
 if __name__ == "__main__":
