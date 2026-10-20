@@ -5,8 +5,10 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
-from tools.install_macos_app import BUNDLE_ID, compatible_arch, install, relocate_project
+from tools.install_macos_app import (BUNDLE_ID, compatible_arch, install, relocate_project,
+                                     signing_identity)
 from unittest.mock import patch
 
 
@@ -71,14 +73,23 @@ class MacLauncherTests(unittest.TestCase):
                 install(root, Path(sys.executable), target, architecture="arm64")
             with (target / "Contents" / "Resources" / "launch.plist").open("rb") as source:
                 self.assertEqual(plistlib.load(source)["Arch"], "arm64")
-            self.assertEqual(run.call_count, 4)
-            self.assertIn("swiftc", run.call_args_list[1].args[0])
+            # Two identity lookups (Apple Development, then a local certificate).
+            self.assertEqual(run.call_count, 5)
+            self.assertIn("swiftc", run.call_args_list[2].args[0])
             self.assertTrue(any(str(source).endswith("notification_announcer.swift")
-                                for source in run.call_args_list[1].args[0]))
-            self.assertEqual(run.call_args_list[2].args[0][3], "-")
+                                for source in run.call_args_list[2].args[0]))
+            self.assertEqual(run.call_args_list[3].args[0][3], "-")
             self.assertTrue((target / "Contents" / "Resources" / "AppIcon.icns").is_file())
             with (target / "Contents" / "Info.plist").open("rb") as source:
                 self.assertEqual(plistlib.load(source)["CFBundleIconFile"], "AppIcon")
+
+    def test_local_self_signed_identity_is_used_when_no_apple_development_one(self):
+        valid = SimpleNamespace(returncode=0, stdout="     0 valid identities found\n")
+        every = SimpleNamespace(returncode=0, stdout=(
+            '  1) ' + 'A' * 40 + ' "Jarvis Local Signing" (CSSMERR_TP_NOT_TRUSTED)\n'
+            '     1 identities found\n'))
+        with patch("tools.install_macos_app.subprocess.run", side_effect=[valid, every]):
+            self.assertEqual(signing_identity(), "A" * 40)
 
     def test_unchanged_signed_bundle_does_not_rebuild_or_change_permission_identity(self):
         with tempfile.TemporaryDirectory() as tmp:
