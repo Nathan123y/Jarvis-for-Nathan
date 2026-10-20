@@ -108,6 +108,41 @@ _CONNECT_STEPS = (
 )
 
 
+_HEADER_NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
+# Describe the copied request rather than this one: sending them makes YouTube
+# expect a gzip body and answer with an HTML error page.
+_DROP_HEADERS = {"content-encoding", "content-length", "host", "accept-encoding"}
+
+
+def _clean_headers(raw: str) -> str:
+    """Copied request headers as plain 'name: value' lines. Chrome now copies
+    each name and value on separate lines, after pseudo-headers (:path…) and
+    with a multi-line 'Decoded:' block inside, which ytmusicapi misreads."""
+    lines = [l.strip() for l in raw.replace("\r", "").split("\n")]
+    pairs: list[tuple[str, str]] = []
+    if sum(": " in l for l in lines) > len([l for l in lines if l]) / 2:
+        for l in lines:                                   # classic one-line format
+            name, sep, value = l.partition(": ")
+            if sep and _HEADER_NAME.fullmatch(name.lower()):
+                pairs.append((name.lower(), value))
+    else:
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            if line == "Decoded:":                        # x-client-data, decoded
+                while i < len(lines) and lines[i] != "}":
+                    i += 1
+                i += 1
+                continue
+            if (line.startswith(":") or _HEADER_NAME.fullmatch(line)) and i + 1 < len(lines):
+                pairs.append((line.lower(), lines[i + 1]))
+                i += 2
+                continue
+            i += 1
+    return "\n".join(f"{n}: {v}" for n, v in pairs
+                     if not n.startswith((":", "sec-")) and n not in _DROP_HEADERS)
+
+
 def _connect_done() -> str:
     try:
         raw = subprocess.run(["pbpaste"], capture_output=True, text=True, timeout=5).stdout
@@ -120,7 +155,7 @@ def _connect_done() -> str:
     AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
     tmp = AUTH_FILE.with_suffix(".tmp")
     try:
-        setup(filepath=str(tmp), headers_raw=raw)
+        setup(filepath=str(tmp), headers_raw=_clean_headers(raw))
         from ytmusicapi import YTMusic
         YTMusic(str(tmp), requests_session=_session()).get_library_playlists(limit=1)
     except Exception as exc:
