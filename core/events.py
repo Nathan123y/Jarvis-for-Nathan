@@ -31,7 +31,7 @@ from typing import Iterable, Optional
 # The funnel, in order. Counting one stage never implies the next.
 KINDS = (
     "biz_found", "biz_qualified", "site_built", "site_checked", "preview_published",
-    "offer_sent", "reply_received", "sale_paid", "delivered",
+    "offer_sent", "reply_received", "call_received", "sale_paid", "delivered",
     # paper trading (always simulated)
     "trade_result", "paper_snapshot",
     # things that need a person

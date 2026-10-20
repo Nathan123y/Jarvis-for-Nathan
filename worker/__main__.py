@@ -79,7 +79,15 @@ def cmd_run(args) -> int:
         campaign.seed_schedules(w.db)
     w.install_signal_handlers()
     logging.getLogger("jarvis.worker").info("worker started pid=%s", os.getpid())
-    w.run_forever()
+    # The AI phone line answers calls from here, so it works with the Jarvis window closed.
+    # It stays off until it is turned on and set up (see worker/phone/service.py).
+    from worker.phone.service import start_if_configured
+    phone = start_if_configured(logging.getLogger("jarvis.phone").info)
+    try:
+        w.run_forever()
+    finally:
+        if phone:
+            phone.stop()
     return 0
 
 
