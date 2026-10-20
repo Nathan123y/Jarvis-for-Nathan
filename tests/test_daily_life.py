@@ -365,6 +365,22 @@ class Music(unittest.TestCase):
         youtube_music.run({"action": "play", "kind": "recent", "query": "drake"})
         self.assertTrue(self.opened[-1].endswith("watch?v=x&list=RDAMVMx"))
 
+    def test_chrome_split_line_headers_are_cleaned(self):
+        # Chrome's newer "Copy request headers": names and values on separate
+        # lines, pseudo-headers first, and a multi-line Decoded block.
+        raw = "\n".join([
+            ":authority", "music.youtube.com", ":path", "/youtubei/v1/browse?x=1",
+            "content-encoding", "gzip", "content-length", "2055", "cookie", "SID=abc; HSID=def",
+            "sec-fetch-mode", "same-origin", "x-client-data", "CJa2",
+            "Decoded:", "message ClientVariations {", "  repeated int32 x = [1, 2];", "}",
+            "x-goog-authuser", "3", "user-agent", "Mozilla/5.0 (Macintosh)",
+        ])
+        self.assertEqual(youtube_music._clean_headers(raw).split("\n"), [
+            "cookie: SID=abc; HSID=def", "x-client-data: CJa2", "x-goog-authuser: 3",
+            "user-agent: Mozilla/5.0 (Macintosh)"])
+        classic = "Cookie: SID=abc\r\nX-Goog-AuthUser: 0\r\nContent-Encoding: gzip\r\nHost: music.youtube.com"
+        self.assertEqual(youtube_music._clean_headers(classic), "cookie: SID=abc\nx-goog-authuser: 0")
+
     def test_controls_use_the_right_media_key(self):
         with patch.object(youtube_music, "_media_key", return_value=True) as key:
             self.assertEqual(youtube_music.run({"action": "next"}), "Skipped.")
