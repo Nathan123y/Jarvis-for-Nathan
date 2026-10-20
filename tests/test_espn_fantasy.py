@@ -39,12 +39,18 @@ class FakeLeague:
                          player("Rhamondre Stevenson", "RB", "BE", "OUT", proj=0.0, team="NE")])
         self.player_map = {"Bijan Robinson": 1, 1: "Bijan Robinson",
                            "Amon-Ra St. Brown": 2, 2: "Amon-Ra St. Brown",
-                           "Josh Allen": 3, 3: "Josh Allen"}
+                           "Josh Allen": 3, 3: "Josh Allen",
+                           "Drake Maye": 4, "Marcus Maye": 5}
 
     def box_scores(self, week=None):
         return [self.box]
 
-    def player_info(self, name=None):
+    def player_info(self, name=None, playerId=None):
+        if isinstance(playerId, list):
+            return [NS(name="Marcus Maye", position="S", proTeam="NO", injuryStatus="ACTIVE", onTeamId=0,
+                       total_points=0.0, avg_points=0.0, percent_owned=0.1, stats={}),
+                    NS(name="Drake Maye", position="QB", proTeam="NE", injuryStatus="ACTIVE", onTeamId=0,
+                       total_points=90.0, avg_points=18.0, percent_owned=85.0, stats={})]
         if name == "Bijan Robinson":
             return NS(name=name, position="RB", proTeam="ATL", injuryStatus="ACTIVE", onTeamId=1,
                       total_points=120.0, avg_points=20.0, percent_owned=99.9,
@@ -66,7 +72,8 @@ class FakeLeague:
         return [self.them, self.me]
 
     def recent_activity(self, size=25):
-        return [NS(actions=[(self.them, "TRADED", NS(name="Josh Allen")),
+        # Newer ESPN data adds a bid amount to each move.
+        return [NS(actions=[(self.them, "TRADED", NS(name="Josh Allen"), 0),
                             (self.me, "FA ADDED", NS(name="Backup Back"))])]
 
 
@@ -107,6 +114,8 @@ class EspnTests(unittest.TestCase):
         self.assertIn("Week 7 projection: 19.5", out)
         self.assertIn("on Gridiron Kings", espn.run({"action": "player", "name": "josh alen"}))
         self.assertIn("couldn't find", espn.run({"action": "player", "name": "nobody special"}))
+        # Two players share the surname: the widely rostered one wins.
+        self.assertIn("Drake Maye · QB · NE", espn.run({"action": "player", "name": "maye"}))
 
     def test_free_agents_skip_the_injured_out_and_sort_by_projection(self):
         out = espn.run({"action": "free_agents", "position": "rb"})

@@ -273,29 +273,37 @@ def _matchup(league, player) -> str:
             f"{them[0].wins}-{them[0].losses}). You're {call}.\n" + "\n".join(lines))
 
 
-def _match_name(league, name: str) -> str | None:
+def _match_names(league, name: str) -> list[str]:
     """ESPN only looks players up by exact full name; people say "bijan" or
-    "st brown". Prefer a surname or full-name hit, then the closest spelling."""
+    "st brown". Every player the words could mean: an exact name, else each
+    first- or last-name hit, else the closest spelling."""
     names = [n for n in league.player_map if isinstance(n, str)]
     want = " ".join(re.findall(r"[a-z0-9]+", name.lower()))
     keyed = {" ".join(re.findall(r"[a-z0-9]+", n.lower())): n for n in names}
     if want in keyed:
-        return keyed[want]
+        return [keyed[want]]
     parts = [k for k in keyed if want and (k.endswith(" " + want) or k.startswith(want + " ")
                                           or f" {want} " in f" {k} ")]
-    if len(parts) == 1:
-        return keyed[parts[0]]
-    close = difflib.get_close_matches(want, parts or list(keyed), n=1, cutoff=0.75)
-    return keyed[close[0]] if close else None
+    if parts:
+        return [keyed[k] for k in parts]
+    close = difflib.get_close_matches(want, list(keyed), n=1, cutoff=0.75)
+    return [keyed[close[0]]] if close else []
 
 
 def _player(league, name: str, player) -> str:
     if len(name.strip()) < 2:
         return "Which player should I look up?"
-    full = _match_name(league, name)
-    if not full:
+    names = _match_names(league, name)
+    if not names:
         return f"I couldn't find a player called {name} on ESPN."
-    p = league.player_info(name=full)
+    if len(names) == 1:
+        p = league.player_info(name=names[0])
+    else:
+        # "Maye" is Drake Maye or Marcus Maye: the fantasy-relevant one is the
+        # one most leagues roster. One request covers every candidate.
+        found = league.player_info(playerId=[league.player_map[n] for n in names[:10]]) or []
+        found = found if isinstance(found, list) else [found]
+        p = max(found, key=lambda c: getattr(c, "percent_owned", 0) or 0, default=None)
     if isinstance(p, list):
         p = p[0] if p else None
     if not p:
@@ -354,7 +362,8 @@ def _summary(league) -> str:
 def _activity(league, player) -> str:
     lines = []
     for a in league.recent_activity(size=12):
-        for team, action, p in a.actions:
+        # (team, action, player), plus a bid amount on newer ESPN data.
+        for team, action, p, *_ in a.actions:
             name = getattr(p, "name", p)
             lines.append(f"{getattr(team, 'team_name', 'A team')}: {action.lower().replace('_', ' ')} {name}")
     _display(player, "LEAGUE ACTIVITY", lines or ["Nothing recent."])
