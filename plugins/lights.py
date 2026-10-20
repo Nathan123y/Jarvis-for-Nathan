@@ -50,7 +50,9 @@ PLUGIN_SETTINGS = {
     "namespace": "lights",
     "title": "Govee LED strip (Bluetooth)",
     "fields": [{"key": "address", "type": "text", "label": "Pinned Bluetooth address (optional)",
-                "placeholder": "Leave blank to find the strip by its name"}],
+                "placeholder": "Leave blank to find the strip by its name"},
+               {"key": "clap", "type": "text", "label": "Double clap or snap turns the lights on (on or off)",
+                "placeholder": "on"}],
 }
 
 _WRITE = "00010203-0405-0607-0809-0a0b0c0d2b11"

@@ -108,6 +108,7 @@ from core.viseme               import VisemeStream
 from core.wake_word            import (
     WakeWordDetector, is_ready as wake_is_ready, install_and_download as wake_install,
 )
+from core.clap                 import ClapDetector
 
 # How long the assistant stays awake with no user speech before it auto-sleeps
 # again (wake-word mode only).
@@ -758,6 +759,17 @@ class JarvisLive:
         self.ui.on_wake_manual   = self._ui_wake_manual   # () -> toggle awake/asleep
         self.ui.on_wake_install  = self._ui_wake_install  # () -> (ok, msg)
 
+        # ── Double clap → lights ─────────────────────────────────────────────
+        # Only while the lights plugin is loaded; the mic callback hands it
+        # frames the same cheap way it feeds the wake-word detector.
+        self._clap_detector: ClapDetector | None = None
+        if self._plugin_registry.has("lights"):
+            self._clap_detector = ClapDetector(
+                on_detect=self._on_double_clap,
+                logger=lambda m: print(f"[Clap] {m}"),
+            )
+            self._clap_detector.start()
+
     # ── Wake word: state machine ─────────────────────────────────────────────
 
     def _wake_state(self) -> dict:
@@ -777,6 +789,21 @@ class JarvisLive:
         if not self._wake_detector.ready:
             return self._wake_detector.start()
         return True
+
+    def _on_double_clap(self) -> None:
+        """Called from the clap thread. The plugin's Bluetooth round trip takes
+        a few seconds, so it runs on its own thread and the detector keeps up."""
+        from memory.config_manager import get_plugin_enabled, get_plugin_config
+        if not get_plugin_enabled("lights"):
+            return
+        if str(get_plugin_config("lights").get("clap") or "on").strip().lower() in ("off", "no", "false", "0"):
+            return
+        print("[Clap] 👏 Double clap — turning the lights on")
+
+        def _run():
+            result = self._plugin_registry.run("lights", {"action": "on"})
+            self.ui.write_log(f"SYS: Double clap — {result}")
+        threading.Thread(target=_run, daemon=True, name="ClapLights").start()
 
     def _on_wake_detected(self) -> None:
         """Called from the detector thread when 'Hey Jarvis' is heard."""
@@ -1529,6 +1556,11 @@ class JarvisLive:
             # send that speech back to the live model as a new user request.
             if getattr(self.ui, "announcing", False):
                 return
+            # Claps are heard asleep or awake, but not through Jarvis's own
+            # voice and not while the user has muted the mic.
+            clap = self._clap_detector
+            if clap is not None and not self._is_speaking and not self.ui.muted:
+                clap.feed(indata)
             # ── Wake-word gate ───────────────────────────────────────────────
             # While asleep, the mic audio NEVER goes to Gemini (nothing is
             # streamed, so JARVIS can't respond to speech not addressed to it and
