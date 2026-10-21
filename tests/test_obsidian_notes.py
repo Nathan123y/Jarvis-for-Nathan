@@ -170,5 +170,48 @@ class ObsidianNotesTests(unittest.TestCase):
         self.assertEqual((self.root / "Workout.md").read_text(), "Leg day volume and reps")
 
 
+    def test_links_point_at_existing_notes_not_new_ones(self):
+        self.connect()
+        (self.root / "Machine Learning Notes.md").write_text("Gradient descent")
+        changes = []
+        obsidian_notes.on_change(lambda: changes.append(1))
+        self.addCleanup(obsidian_notes._change_listeners.clear)
+        # A loosely heard link and a link_to both resolve to the notes already there.
+        result, callbacks = self.prepare_edit({
+            "action": "create", "query": "Neural Nets",
+            "content": "Builds on [[machine learning]].", "link_to": "physics"})
+        self.assertIn("existing note Machine Learning Notes.md", result)
+        callbacks[0]()
+        text = (self.root / "Neural Nets.md").read_text()
+        self.assertIn("[[Machine Learning Notes]]", text)
+        self.assertIn("[[Physics]]", text)
+        self.assertTrue(changes)
+
+    def test_create_refuses_duplicate_of_existing_note_in_another_folder(self):
+        self.connect()
+        result, callbacks = self.prepare_edit({"action": "create", "query": "physics", "content": "x"})
+        self.assertIn("already exists", result)
+        self.assertFalse(callbacks)
+        self.assertFalse((self.root / "physics.md").exists())
+
+    def test_link_action_appends_link_to_existing_note_once(self):
+        self.connect()
+        _, callbacks = self.prepare_edit({"action": "link", "query": "workout", "link_to": "Physics"})
+        callbacks[0]()
+        self.assertEqual((self.root / "Workout.md").read_text(),
+                         "Leg day volume and reps\nRelated: [[Physics]]\n")
+        result, callbacks = self.prepare_edit({"action": "link", "query": "Workout", "link_to": "physics"})
+        self.assertIn("already links", result)
+        self.assertFalse(callbacks)
+        result, callbacks = self.prepare_edit({"action": "link", "query": "Workout", "link_to": "Chemistry"})
+        self.assertIn("could not find an existing note", result)
+        self.assertFalse(callbacks)
+
+    def test_unknown_link_is_reported(self):
+        self.connect()
+        result, _ = self.prepare_edit({"action": "append", "query": "Workout",
+                                       "content": "See [[Totally Unrelated Topic]]"})
+        self.assertIn("NO existing note", result)
+
 if __name__ == "__main__":
     unittest.main()
