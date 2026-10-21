@@ -1066,6 +1066,7 @@ class NoteGraphPanel(QWidget):
     or minimised.
     """
     _loaded = pyqtSignal(object)
+    _vault_changed = pyqtSignal()
 
     _FPS          = 30
     _SPIN         = 0.09     # radians per second of automatic turn
@@ -1087,6 +1088,7 @@ class NoteGraphPanel(QWidget):
         self._layout_key = None
         self._status = "Loading notes…"
         self._busy = False
+        self._again = False
 
         self._yaw, self._pitch, self._zoom = 0.6, 0.28, 1.0
         self._drag_from = None
@@ -1112,11 +1114,21 @@ class NoteGraphPanel(QWidget):
         self._reload_tmr = QTimer(self)
         self._reload_tmr.timeout.connect(lambda: self.isVisible() and self.refresh())
         self._reload_tmr.start(120_000)
+        # And redraw the moment Jarvis creates, edits or links a note. The
+        # action runs off the Qt thread, so hop over via a queued signal.
+        self._vault_changed.connect(self.refresh)
+        try:
+            from actions import obsidian_notes
+            obsidian_notes.on_change(self._vault_changed.emit)
+        except Exception:
+            pass
 
     # ── data ──────────────────────────────────────────────────────────────
     def refresh(self) -> None:
         if self._busy:
+            self._again = True       # a note changed mid-scan: scan once more after
             return
+        self._again = False
         self._busy = True
         key = self._layout_key
         old = list(self._pos)
@@ -1145,6 +1157,8 @@ class NoteGraphPanel(QWidget):
 
     def _apply(self, payload) -> None:
         self._busy = False
+        if self._again:
+            QTimer.singleShot(0, self.refresh)
         msg, data = payload
         if data is None:
             self._nodes, self._paths, self._edges, self._pos = [], [], [], []
