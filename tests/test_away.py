@@ -256,20 +256,21 @@ class CollectorTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_trading_journal_becomes_simulated_events_and_is_idempotent(self):
-        from trading.journal import Journal
-        j = Journal(self.dir / "tr")
-        j.record("trade_result", day="2026-10-05", symbol="SPY", pnl=-3.0, qty=1, bought=1, sold=1, exit="stop")
-        j.record("trade_result", day="2026-10-05", symbol="SPY", pnl=4.0, qty=1, bought=1, sold=1, exit="time")
-        j.record("snapshot", date="2026-10-05", equity=100100.0, spy=500.0)
-        self.assertEqual(away.ingest_trading(self.store, self.dir / "tr"), 2)
-        self.assertEqual(away.ingest_trading(self.store, self.dir / "tr"), 0)
+    def test_optionsbots_trades_become_simulated_events_and_are_idempotent(self):
+        brief = {"running": True, "day": "2026-10-23", "account": {"equity": "1085.50"},
+                 "today": {"closed_trades": [
+                     {"bot_id": "spy-sma-1", "contract_id": "SPY261026C00763000", "quantity": 1, "bought": "441.40",
+                      "sold": "524.30", "pnl": "82.90", "ts": "2026-10-23T14:05:00.000000Z"}]}}
+        self.assertEqual(away.ingest_trading(self.store, lambda: brief, now=1.0), 2)
+        self.assertEqual(away.ingest_trading(self.store, lambda: brief, now=1.0), 0)
         trades = self.store.events(kinds=("trade_result",))
-        self.assertEqual((len(trades), trades[0]["detail"]["pnl"]), (1, 4.0))       # last result for the day wins
+        self.assertEqual((len(trades), trades[0]["detail"]["pnl"], trades[0]["status"]), (1, 82.9, "simulated"))
+        snap = self.store.events(kinds=("paper_snapshot",))
+        self.assertEqual(snap[0]["detail"]["equity"], 1085.5)
         self.assertEqual(self.store.sync_state("trading")["state"], "ok")
 
-    def test_missing_journal_stays_unavailable(self):
-        self.assertEqual(away.ingest_trading(self.store, self.dir / "none"), 0)
+    def test_bots_not_running_records_nothing_and_stays_unavailable(self):
+        self.assertEqual(away.ingest_trading(self.store, lambda: {"running": False}), 0)
         self.assertEqual(self.store.sync_state("trading")["state"], "unavailable")
 
     def test_promotion_sends_replies_and_uncertain(self):

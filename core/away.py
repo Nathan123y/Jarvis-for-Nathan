@@ -144,37 +144,41 @@ def idle_seconds(run: Callable[[list[str]], str] = None) -> Optional[float]:
 
 
 # ── collectors: turn files already on this Mac into events ───────────────────
-def ingest_trading(store: Store, journal_dir: Optional[Path] = None, now: Optional[float] = None) -> int:
-    """The day trader's journal, read-only. Returns how many events were new."""
-    from trading.journal import Journal
-    journal = Journal(journal_dir)
-    if not journal.events_path.exists():
-        return 0                            # never ran here: stays "unavailable", not zero
+OPTIONSBOTS_CMD = Path.home() / "optionsbots" / "scripts" / "bots.py"
+
+
+def optionsbots_brief(timeout: float = 60) -> dict:
+    """The paper bots' own summary (`bots brief`), or {"running": False} when they're not up."""
+    import json
+    import sys
+    if not OPTIONSBOTS_CMD.exists():
+        return {"running": False}
+    out = subprocess.run([sys.executable, str(OPTIONSBOTS_CMD), "brief"], capture_output=True, text=True, timeout=timeout)
+    return json.loads(out.stdout or "{}") if out.returncode == 0 else {"running": False}
+
+
+def ingest_trading(store: Store, brief: Optional[Callable[[], dict]] = None, now: Optional[float] = None) -> int:
+    """Today's closed trades and account value from the optionsbots paper bots, read-only. Returns how many events were new."""
+    b = (brief or optionsbots_brief)()
+    if not b.get("running"):
+        return 0                            # not running now: earlier days stay as they were recorded
     new = 0
-    try:
-        rows = journal.events(limit=5000)
-    except Exception as exc:
-        store.sync_failed(TRADING, f"journal unreadable: {exc!r}")
-        return 0
-    for row in rows:
-        kind, t = row.get("kind"), _iso_ts(row.get("t"))
+    day = str(b.get("day") or "")
+    for c in (b.get("today") or {}).get("closed_trades", []):
+        t = _iso_ts(c.get("ts"))
         if t is None:
             continue
-        if kind == "trade_result":
-            day, sym = str(row.get("day") or ""), str(row.get("symbol") or "")
-            if day and sym:
-                new += store.record("trade_result", source=TRADING, source_id=f"{day}:{sym}", ts=t,
-                                    task_id=f"{day}:{sym}", campaign_id="paper-trading", status="simulated",
-                                    title=f"{sym} {day}", update=True,
-                                    detail={k: row.get(k) for k in ("symbol", "pnl", "qty", "bought", "sold", "exit", "day")},
-                                    evidence={"journal": "config/trading_day/journal.jsonl", "t": row.get("t")})
-        elif kind == "snapshot":
-            day = str(row.get("date") or "")
-            if day:
-                new += store.record("paper_snapshot", source=TRADING, source_id=day, ts=t, campaign_id="paper-trading",
-                                    status="simulated", title=f"Paper account {day}", update=True,
-                                    detail={"equity": row.get("equity"), "spy": row.get("spy"), "date": day},
-                                    evidence={"t": row.get("t")})
+        key = f"{c.get('ts')}:{c.get('bot_id')}:{c.get('contract_id')}"
+        new += store.record("trade_result", source=TRADING, source_id=key, ts=t, task_id=key, campaign_id="paper-trading",
+                            status="simulated", title=f"{c.get('bot_id')} {c.get('contract_id')}", update=True,
+                            detail={"symbol": c.get("contract_id"), "bot": c.get("bot_id"), "pnl": float(c["pnl"]),
+                                    "qty": c.get("quantity"), "bought": float(c["bought"]), "sold": float(c["sold"]), "day": day},
+                            evidence={"source": "optionsbots brief", "ts": c.get("ts")})
+    equity = (b.get("account") or {}).get("equity")
+    if day and equity is not None:
+        new += store.record("paper_snapshot", source=TRADING, source_id=day, ts=now or time.time(), campaign_id="paper-trading",
+                            status="simulated", title=f"Paper account {day}", update=True,
+                            detail={"equity": float(equity), "date": day}, evidence={"source": "optionsbots brief"})
     store.sync_ok(TRADING, stale_after=5 * 86400)
     return new
 
@@ -493,10 +497,10 @@ def compose(events: list[dict], open_items: list[dict], syncs: dict, upcoming: O
         counts["trading"] = trade
         pnl = f"{_money(trade['pnl'])}" if trade["pnl"] is not None else "unavailable"
         panel += ["PAPER TRADING (simulated, not real money)",
-                  f"  {_plural(trade['trades'], 'simulated trade')}, result {pnl} before costs"
+                  f"  {_plural(trade['trades'], 'simulated trade')}, result {pnl} after fees"
                   + (f", account value ${trade['equity']:,.0f}" if isinstance(trade["equity"], (int, float)) else ""), ""]
         spoken.append(f"Your paper account (simulated) made {_plural(trade['trades'], 'trade')}"
-                      + (f" for {_money(trade['pnl'])} before costs" if trade["pnl"] is not None else ""))
+                      + (f" for {_money(trade['pnl'])} after fees" if trade["pnl"] is not None else ""))
     elif syncs.get(TRADING, {}).get("known") and syncs[TRADING]["state"] in ("stale", "error", "unavailable"):
         panel += ["PAPER TRADING (simulated)", f"  {syncs[TRADING]['state']}", ""]
 

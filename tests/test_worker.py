@@ -579,7 +579,7 @@ class HeadlessTests(unittest.TestCase):
         code = (
             f"import sys; sys.path.insert(0, {str(REPO)!r})\n"
             "import tempfile\nfrom pathlib import Path\nfrom core.events import Store\nfrom core import away\n"
-            "away.ingest_trading(Store(Path(tempfile.mkdtemp())/'e.db'), Path(tempfile.mkdtemp()))\n"
+            "away.ingest_trading(Store(Path(tempfile.mkdtemp())/'e.db'), lambda: {'running': False})\n"
             "bad = [m for m in sys.modules if m.split('.')[0] in ('PyQt6','sounddevice','pyaudio','openwakeword','ui','main')]\n"
             "print('BAD', bad)\n")
         out = subprocess.run([sys.executable, "-I", "-c", code], cwd=REPO, capture_output=True, text=True,

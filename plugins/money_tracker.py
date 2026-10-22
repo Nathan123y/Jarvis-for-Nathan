@@ -106,19 +106,15 @@ def _budget_note(data: dict, category: str, today: date | None = None) -> str:
     return f" {_money(limit - spent)} left in your {category} budget this {b['period']}."
 
 
-def _paper_week() -> str:
-    """The paper day trader's simulated result this week, if it traded."""
+def _paper_bots() -> str:
+    """How the optionsbots paper bots stand since they started, if they're running."""
     try:
-        from trading.day.store import day_journal
-        monday = _start("week").isoformat()
-        pnl = [e["pnl"] for e in day_journal().events()
-               if e.get("kind") == "trade_result" and e.get("day", "") >= monday]
+        from core.away import optionsbots_brief
+        acct = optionsbots_brief(timeout=20).get("account") or {}
+        total = float(acct["equity"]) - float(acct["starting_cash"])
     except Exception:
         return ""
-    if not pnl:
-        return ""
-    total = sum(pnl)
-    return f" The paper day trader (simulated money) is {'+' if total >= 0 else '-'}{_money(abs(total))} this week."
+    return f" The paper options bots (simulated money) are {'+' if total >= 0 else '-'}{_money(abs(total))} since they started."
 
 
 def _summary(data: dict, period: str, category: str | None) -> tuple[str, str]:
@@ -143,7 +139,7 @@ def _summary(data: dict, period: str, category: str | None) -> tuple[str, str]:
     if over:
         spoken += " Over budget: " + ", ".join(over) + "."
     if period == "week":
-        spoken += _paper_week()
+        spoken += _paper_bots()
     panel = [f"MONEY · {label.upper()}", ""] + [f"  {c:<14} {_money(v):>10}" for c, v in top]
     panel += ["", f"  {'spent':<14} {_money(spent):>10}", f"  {'income':<14} {_money(earned):>10}"]
     if data["budgets"]:
