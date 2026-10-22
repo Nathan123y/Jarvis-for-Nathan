@@ -218,7 +218,7 @@ class Money(unittest.TestCase):
         p = patch.object(money_tracker, "DATA_FILE", Path(tmp.name) / "money.json")
         p.start()
         self.addCleanup(p.stop)
-        p = patch.object(money_tracker, "_paper_week", return_value="")
+        p = patch.object(money_tracker, "_paper_bots", return_value="")
         p.start()
         self.addCleanup(p.stop)
 
