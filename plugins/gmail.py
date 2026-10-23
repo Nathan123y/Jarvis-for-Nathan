@@ -441,12 +441,17 @@ def _format_read(msg: dict, account: str) -> str:
     )
 
 
-def _send(service, to: str, subject: str, body: str, from_address: str) -> str:
+def _send(service, to: str, subject: str, body: str, from_address: str,
+          attachment: Path | None = None) -> str:
     email = EmailMessage()
     email["To"] = to
     email["From"] = from_address
     email["Subject"] = subject
     email.set_content(body)
+    if attachment is not None:
+        # Screen snips are the only attachments today, and they are always PNGs.
+        email.add_attachment(attachment.read_bytes(), maintype="image", subtype="png",
+                             filename=attachment.name)
     raw = base64.urlsafe_b64encode(email.as_bytes()).decode("ascii")
     result = service.users().messages().send(userId="me", body={"raw": raw}).execute()
     return f"Email sent to {to}. Gmail message ID: {result.get('id', 'available in Sent Mail')}."
