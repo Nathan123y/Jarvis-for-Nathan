@@ -3602,6 +3602,9 @@ class MainWindow(QMainWindow):
         self._center_split.setStretchFactor(1, 1)
         self._center_split.setCollapsible(0, False)
         self._center_split.setMinimumWidth(340)
+        # Resize on release, not on every pixel of the drag: live resizing
+        # re-laid out the animated HUD each step and the handle jittered.
+        self._center_split.setOpaqueResize(False)
 
         # Obsidian graph takes the centre; Jarvis (orb, status, results) sits
         # on the right. A splitter, so the divide can be dragged; hiding the
@@ -3622,9 +3625,26 @@ class MainWindow(QMainWindow):
         self._main_split.setSizes([max(400, _DEFAULT_W - _JARVIS_W), _JARVIS_W])
         body.addWidget(self._main_split, stretch=1)
 
-        root.addLayout(body, stretch=1)
-        root.addWidget(self._build_command_dock())
+        # The conversation dock sits under the body behind a draggable divide,
+        # so the reply box can be made as tall as you like; the height is kept.
+        body_w = QWidget()
+        body_w.setLayout(body)
+        self._dock_split = QSplitter(Qt.Orientation.Vertical)
+        self._dock_split.setStyleSheet(f"""
+            QSplitter::handle {{ background: {C.BORDER}; height: 4px; }}
+            QSplitter::handle:hover {{ background: {C.PRI_DIM}; }}
+        """)
+        self._dock_split.setOpaqueResize(False)
+        self._dock_split.addWidget(body_w)
+        self._dock_split.addWidget(self._build_command_dock())
+        self._dock_split.setStretchFactor(0, 1)
+        self._dock_split.setStretchFactor(1, 0)
+        self._dock_split.setCollapsible(0, False)
+        self._dock_split.setCollapsible(1, False)
+        self._dock_split.splitterMoved.connect(self._save_dock_height)
+        root.addWidget(self._dock_split, stretch=1)
         root.addWidget(self._build_footer())
+        QTimer.singleShot(0, self._restore_dock_height)
 
         # Quick-access drawer (floating overlay, built after central widget layout is done)
         self._quick_drawer = self._build_quick_drawer()
@@ -4349,8 +4369,9 @@ class MainWindow(QMainWindow):
 
         self._reply_text = QTextEdit()
         self._reply_text.setReadOnly(True)
-        self._reply_text.setFixedHeight(106)
-        self._reply_text.setFont(QFont("Menlo" if _OS == "Darwin" else "Consolas", 14))
+        self._reply_text.setMinimumHeight(106)
+        self._reply_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._reply_text.setFont(QFont("Menlo" if _OS == "Darwin" else "Consolas", 15))
         self._reply_text.setStyleSheet(f"""
             QTextEdit {{
                 background: {C.PANEL}; color: {C.WHITE};
@@ -4433,6 +4454,22 @@ class MainWindow(QMainWindow):
                 self._drop_zone._set_file(path)
                 event.acceptProposedAction()
                 break
+
+    _DOCK_H = 330   # default height of the conversation dock (reply box ~210 px)
+
+    def _restore_dock_height(self):
+        saved = _read_full_config().get("dock_height")
+        dock_h = saved if isinstance(saved, int) and saved > 0 else self._DOCK_H
+        total = self._dock_split.height()
+        dock_h = min(dock_h, max(total - 320, 0))   # always leave room for the HUD
+        self._dock_split.setSizes([total - dock_h, dock_h])
+
+    def _save_dock_height(self, *_):
+        try:
+            from memory.config_manager import _save_flag
+            _save_flag("dock_height", int(self._dock_split.sizes()[1]))
+        except Exception:
+            pass
 
     def _present_log_line(self, line: str):
         """Show the latest exchange instead of a scrolling activity panel."""
