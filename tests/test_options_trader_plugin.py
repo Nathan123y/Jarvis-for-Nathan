@@ -43,9 +43,10 @@ class RunTests(unittest.TestCase):
             self.assertEqual(plugin.run({}), "The paper account is at $1,000.00.")
             plugin.run({"action": "Pause"})
             plugin.run({"action": "bots"})
+            plugin.run({"action": "learning"})
         self.assertEqual([c.args[0][1:] for c in run.call_args_list],
                          [[str(plugin.BOTS), "status", "--jarvis"], [str(plugin.BOTS), "pause", "--jarvis"],
-                          [str(plugin.BOTS), "each", "--jarvis"]])
+                          [str(plugin.BOTS), "each", "--jarvis"], [str(plugin.BOTS), "learned", "--jarvis"]])
 
     def test_unknown_actions_run_nothing(self):
         with patch.object(plugin.subprocess, "run") as run:
