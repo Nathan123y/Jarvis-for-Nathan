@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 BOTS = Path(os.environ.get("OPTIONSBOTS_DIR", Path.home() / "optionsbots")) / "scripts" / "bots.py"
-ACTIONS = ("status", "each", "start", "stop", "pause", "resume")
+ACTIONS = ("status", "each", "learned", "start", "stop", "pause", "resume")
 
 PLUGIN = {
     "name": "day_trading",
@@ -19,15 +19,17 @@ PLUGIN = {
         "Check on and control the automatic PRACTICE OPTIONS trader (optionsbots): eleven rule-based bots trading "
         "QQQ, SPY and IWM options in an Alpaca paper account with fake money. It starts by itself at 6:25 am on "
         "weekdays. Use for 'how are the bots doing', 'how is the trader doing', 'did the bots trade today', "
-        "'start the trader', 'stop the trader', 'pause the bots', 'resume the bots', 'how is each bot doing'. "
-        "Actions: status (default), each, start, stop, pause, resume. This tool can NOT trade real money and can NOT "
+        "'start the trader', 'stop the trader', 'pause the bots', 'resume the bots', 'how is each bot doing', "
+        "'what did the bots learn', 'did the bots change anything'. Every weekday after the close the bots review themselves "
+        "on two years of past prices and may adjust one setting each; 'learned' says what changed. "
+        "Actions: status (default), each, learned, start, stop, pause, resume. This tool can NOT trade real money and can NOT "
         "buy or sell a specific option on request; only the bots trade. Never close or open positions at Alpaca "
         "outside the bots: it blocks them from trading. Never present practice results as proof of future profit."
     ),
     "parameters": {
         "type": "OBJECT",
         "properties": {
-            "action": {"type": "STRING", "description": "status (default), each, start, stop, pause, or resume"},
+            "action": {"type": "STRING", "description": "status (default), each, learned, start, stop, pause, or resume"},
         },
         "required": [],
     },
@@ -44,12 +46,12 @@ def bots(action: str, timeout: float = 150) -> str:
 
 def run(parameters: dict, player=None, session_memory=None) -> str:
     action = str((parameters or {}).get("action") or "status").strip().lower()
-    action = {"bots": "each"}.get(action, action)
+    action = {"bots": "each", "learn": "learned", "learning": "learned"}.get(action, action)
     try:
         if not BOTS.exists():
             result = "The options trader isn't installed where I expect it, in the optionsbots folder in your home folder."
         elif action not in ACTIONS:
-            result = "I can show the options trader's status or each bot, start, stop, pause or resume it."
+            result = "I can show the options trader's status or each bot, what it learned, start, stop, pause or resume it."
         else:
             result = bots(action) or "The options trader didn't say anything back. Check it with 'bots' in a terminal."
     except subprocess.TimeoutExpired:
