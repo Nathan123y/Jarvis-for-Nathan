@@ -25,6 +25,7 @@ class LoaderTests(unittest.TestCase):
         self.assertIn("can not trade real money", text)
         self.assertIn("eleven", text)
         self.assertIn("never close or open positions at alpaca", text)
+        self.assertIn("practice memecoin bot", text)
 
 
 class RunTests(unittest.TestCase):
@@ -44,9 +45,11 @@ class RunTests(unittest.TestCase):
             plugin.run({"action": "Pause"})
             plugin.run({"action": "bots"})
             plugin.run({"action": "learning"})
+            plugin.run({"action": "memecoins"})
+            plugin.run({"action": "start crypto"})
+            plugin.run({"action": "portfolio"})
         self.assertEqual([c.args[0][1:] for c in run.call_args_list],
-                         [[str(plugin.BOTS), "status", "--jarvis"], [str(plugin.BOTS), "pause", "--jarvis"],
-                          [str(plugin.BOTS), "each", "--jarvis"], [str(plugin.BOTS), "learned", "--jarvis"]])
+                         [[str(plugin.BOTS), a, "--jarvis"] for a in ("status", "pause", "each", "learned", "crypto", "crypto_start", "portfolio")])
 
     def test_unknown_actions_run_nothing(self):
         with patch.object(plugin.subprocess, "run") as run:

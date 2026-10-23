@@ -1,4 +1,5 @@
-"""Voice control for the optionsbots paper OPTIONS trader (11 bots, Alpaca paper account). Practice money only.
+"""Voice control for the optionsbots paper OPTIONS trader (11 bots, Alpaca paper account) and the paper MEMECOIN bot (its own
+Alpaca paper account). Practice money only.
 
 There is one trader and one control command: ~/optionsbots/scripts/bots.py. This plugin only runs that command and
 speaks what it prints, so Jarvis and the terminal (`bots status`, `bots pause`, ...) always say and do the same thing.
@@ -11,7 +12,9 @@ import sys
 from pathlib import Path
 
 BOTS = Path(os.environ.get("OPTIONSBOTS_DIR", Path.home() / "optionsbots")) / "scripts" / "bots.py"
-ACTIONS = ("status", "each", "learned", "start", "stop", "pause", "resume")
+ACTIONS = ("status", "each", "learned", "start", "stop", "pause", "resume", "crypto", "crypto_start", "crypto_stop", "portfolio")
+ALIASES = {"bots": "each", "learn": "learned", "learning": "learned", "memecoins": "crypto", "memecoin": "crypto", "meme": "crypto",
+           "coins": "crypto", "crypto_status": "crypto", "start_crypto": "crypto_start", "stop_crypto": "crypto_stop", "everything": "portfolio"}
 
 PLUGIN = {
     "name": "day_trading",
@@ -22,14 +25,19 @@ PLUGIN = {
         "'start the trader', 'stop the trader', 'pause the bots', 'resume the bots', 'how is each bot doing', "
         "'what did the bots learn', 'did the bots change anything'. Every weekday after the close the bots review themselves "
         "on two years of past prices and may adjust one setting each; 'learned' says what changed. "
-        "Actions: status (default), each, learned, start, stop, pause, resume. This tool can NOT trade real money and can NOT "
+        "Also the PRACTICE MEMECOIN bot: it trades DOGE, SHIB, PEPE, BONK, WIF and TRUMP in its own Alpaca paper account, "
+        "buying a coin that breaks above its 5-day high and selling on a trailing stop; it runs whenever the Mac is awake. Use "
+        "crypto for 'how are the memecoins doing', crypto_start / crypto_stop to start or stop it, and portfolio for "
+        "'how is my whole portfolio doing' (options and memecoins together). "
+        "Actions: status (default), each, learned, start, stop, pause, resume, crypto, crypto_start, crypto_stop, portfolio. This tool can NOT trade real money and can NOT "
         "buy or sell a specific option on request; only the bots trade. Never close or open positions at Alpaca "
         "outside the bots: it blocks them from trading. Never present practice results as proof of future profit."
     ),
     "parameters": {
         "type": "OBJECT",
         "properties": {
-            "action": {"type": "STRING", "description": "status (default), each, learned, start, stop, pause, or resume"},
+            "action": {"type": "STRING", "description": "status (default), each, learned, start, stop, pause, resume (options trader); "
+                                                        "crypto, crypto_start, crypto_stop (memecoin bot); portfolio (both)"},
         },
         "required": [],
     },
@@ -46,12 +54,13 @@ def bots(action: str, timeout: float = 150) -> str:
 
 def run(parameters: dict, player=None, session_memory=None) -> str:
     action = str((parameters or {}).get("action") or "status").strip().lower()
-    action = {"bots": "each", "learn": "learned", "learning": "learned"}.get(action, action)
+    action = ALIASES.get(action.replace(" ", "_"), action.replace(" ", "_"))
     try:
         if not BOTS.exists():
             result = "The options trader isn't installed where I expect it, in the optionsbots folder in your home folder."
         elif action not in ACTIONS:
-            result = "I can show the options trader's status or each bot, what it learned, start, stop, pause or resume it."
+            result = ("I can show the options trader's status or each bot, what it learned, start, stop, pause or resume it, "
+                      "and the memecoin bot's status, or start and stop it.")
         else:
             result = bots(action) or "The options trader didn't say anything back. Check it with 'bots' in a terminal."
     except subprocess.TimeoutExpired:
