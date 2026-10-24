@@ -35,6 +35,7 @@ KINDS = {
     "bots_review": "the bots' nightly review",
     "memecoin": "memecoin bot trades and big moves",
     "sales": "Gumroad sales",
+    "shop": "Etsy shop listings and orders",
     "canvas": "Canvas work due soon",
     "canvas_tonight": "the 8 PM 'due tonight' check",
     "grades": "Canvas grades posted",
