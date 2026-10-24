@@ -131,6 +131,10 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
         if action in ("mute", "unmute"):
             return _set_kind(str(args.get("kind") or "").strip().lower(), action == "mute")
         if action == "test":
+            cfg = pa.settings()
+            if not cfg["my_number"]:
+                # The worker runs without Contacts access, so look the number up here and save it.
+                save_plugin_config(pa.NS, {"my_number": pa.my_handle(cfg)})
             _store().set(pa.TEST_FLAG, time.time())
             return ("The background worker will text you a test within about 30 seconds. If macOS asks "
                     "whether Python may control Messages, click OK; that's what lets texts go out "
