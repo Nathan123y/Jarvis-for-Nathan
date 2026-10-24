@@ -23,7 +23,8 @@ PLUGIN = {
         "alerts on?', 'keep the Mac awake with the lid closed', 'always text me when Ms. Lee "
         "emails' (vip_add, value=name/email/domain), 'stop texting me about her emails' (vip_remove), "
         "'who are my VIPs' (vip_list), 'text me my morning summary now' (send_now, kind=morning), "
-        "'text me the trading summary now' (send_now, kind=trading_daily). Actions: status, on, off, "
+        "'text me the trading summary now' (send_now, kind=trading_daily), 'text me a fantasy summary' "
+        "(send_now, kind=fantasy); add in_minutes for 'in 3 minutes'. Actions: status, on, off, "
         "mute (kind), unmute (kind), test, lid_awake (state=on|off), vip_add, vip_remove, vip_list, "
         "send_now. Only for texts to the user's own phone; to text someone else use send_message."
     ),
@@ -34,6 +35,7 @@ PLUGIN = {
                                                   "vip_add", "vip_remove", "vip_list", "send_now"]},
             "kind": {"type": "STRING", "enum": list(pa.KINDS), "description": "For mute/unmute/send_now"},
             "value": {"type": "STRING", "description": "For vip_add/vip_remove: a name, email address or domain"},
+            "in_minutes": {"type": "INTEGER", "description": "For send_now: wait this many minutes first (0-720)"},
             "state": {"type": "STRING", "enum": ["on", "off"], "description": "For lid_awake"},
         },
         "required": ["action"],
@@ -174,12 +176,19 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
             return _vip(action, str(args.get("value") or ""))
         if action == "send_now":
             kind = str(args.get("kind") or "morning").strip().lower()
-            if kind not in ("morning", "trading_daily"):
-                return "I can send the morning text or the trading summary now."
-            _store().set(pa.NOW_FLAG, kind)
-            return ("Putting it together now; it'll be on your phone in a minute or so."
-                    if kind == "morning" else
-                    "Checking the bots now; the summary will be on your phone in a couple of minutes.")
+            if kind not in ("morning", "trading_daily", "fantasy"):
+                return "I can text you the morning summary, the trading summary or a fantasy summary."
+            try:
+                wait = max(0, min(720, int(args.get("in_minutes") or 0)))
+            except (TypeError, ValueError):
+                wait = 0
+            _store().set(pa.NOW_FLAG, {"kind": kind, "at": time.time() + wait * 60})
+            what = {"morning": "the morning summary", "trading_daily": "the trading summary",
+                    "fantasy": "a fantasy summary"}[kind]
+            if wait:
+                return (f"Okay, I'll text you {what} in {wait} minute{'s' if wait != 1 else ''}. "
+                        "You can close the lid; it'll still come.")
+            return f"Putting together {what} now; it'll be on your phone in a minute or two."
         if action == "lid_awake":
             return _lid(str(args.get("state") or "on").strip().lower(), player)
         return "Phone alert actions: status, on, off, mute, unmute, test, lid_awake, vip_add, vip_remove, vip_list, send_now."
