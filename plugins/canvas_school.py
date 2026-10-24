@@ -145,6 +145,32 @@ def _feed_day(value):
     return ""
 
 
+def _feed_time(value):
+    """Local ISO date-time for a timed DTSTART, "" for an all-day one."""
+    value = value.strip()
+    try:
+        if re.fullmatch(r"\d{8}T\d{6}Z", value):
+            return datetime.strptime(value, "%Y%m%dT%H%M%SZ").replace(
+                tzinfo=timezone.utc).astimezone().replace(tzinfo=None).isoformat(timespec="minutes")
+        if re.fullmatch(r"\d{8}T\d{6}", value):
+            return datetime.strptime(value, "%Y%m%dT%H%M%S").isoformat(timespec="minutes")
+    except ValueError:
+        pass
+    return ""
+
+
+def _local_time(value):
+    if not value:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError, OverflowError):
+        return ""
+    if parsed.tzinfo:
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    return parsed.isoformat(timespec="minutes")
+
+
 def _date_range(timeframe):
     today = date.today()
     if timeframe == "upcoming":
@@ -192,7 +218,8 @@ def _feed_assignments(url, start=None, end=None):
             if due and start <= date.fromisoformat(due) <= end and event.get("SUMMARY"):
                 items.append({"name": _clean(_ical_unescape(event["SUMMARY"])),
                               "course": _clean(_ical_unescape(event.get("LOCATION", "School")), 45),
-                              "due": due, "overdue": False})
+                              "due": due, "due_at": _feed_time(event.get("DTSTART", "")),
+                              "overdue": False})
             event = None
         elif event is not None and ":" in line:
             key, value = line.split(":", 1)
@@ -263,7 +290,8 @@ def fetch_assignments(timeframe="upcoming"):
                         "course": _clean(raw.get("context_name") or raw.get("context_code")
                                          or "School", 45),
                         "due": _local_day(work.get("due_at") or raw.get("plannable_date")
-                                          or work.get("todo_date")), "overdue": False})
+                                          or work.get("todo_date")),
+                        "due_at": _local_time(work.get("due_at")), "overdue": False})
     results.sort(key=lambda item: (not item["overdue"], item["due"] or "9999-99-99"))
     return results[:20], None
 
