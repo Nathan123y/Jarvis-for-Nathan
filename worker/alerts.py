@@ -13,15 +13,21 @@ starts from "now" the first time, so turning this on never texts a backlog.
                           account is skipped)
   calendar   every 2 min  an event starting within calendar_minutes; an Apple Reminder with a time
   canvas     every 15 min Canvas work due within canvas_hours
+  grades     every 30 min a Canvas grade that was just posted (needs the Canvas API token)
+  memecoin   every pass   a memecoin bot buy or sell; an open coin up or down meme_move percent
+  bots       every pass   the options bots' nightly review, once it's written (weekdays ~1:35 PM)
+  sales      every 10 min a new Gumroad sale
   fantasy    every 20 min an injury / status change on your teams, a starter who must be swapped out
   morning    once a day   at morning_time: weather, calendar, Canvas, fantasy, packages, overnight news
   trading    weekdays     at trading_time: the day's paper results
+  tonight    once a day   at tonight_time: Canvas work due later today
+  weekly     Sundays      at weekly_time: trading, memecoins, sales, spending, workouts, grades, the week ahead
 """
 from __future__ import annotations
 
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from email.utils import parseaddr
 from typing import Callable, Optional
 
@@ -38,6 +44,8 @@ EMAIL_QUERY = ("in:inbox is:unread newer_than:1d -category:promotions -category:
 EMAIL_ACCOUNTS = ("personal", "school")
 CALENDAR_EVERY = 120
 FANTASY_EVERY = 1200
+GRADES_EVERY = 1800
+SALES_EVERY = 600
 PACKAGE_TEXT = {"out_for_delivery": "is out for delivery", "delivered": "was delivered",
                 "problem": "has a delivery problem"}
 APPLE_REMINDERS = "Scheduled Reminders"
@@ -50,6 +58,15 @@ _CURSOR = "phone_alerts_cursor"
 def _short(value, limit=90) -> str:
     text = " ".join(str(value or "").split())
     return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def _ts(iso) -> float:
+    """An ISO time (the bots write UTC with an offset) as a timestamp; 0 when unreadable."""
+    try:
+        d = datetime.fromisoformat(str(iso))
+    except ValueError:
+        return 0.0
+    return (d if d.tzinfo else d.replace(tzinfo=timezone.utc)).timestamp()
 
 
 def vip_query(vips: list[str]) -> str:
@@ -78,6 +95,20 @@ class Scanner:
         cur = self._cur()
         cur.update(kv)
         self.store.set(_CURSOR, cur)
+
+    def _time_for(self, name: str, at: str, default: tuple[int, int], hours: float = 4) -> bool:
+        """True once a day, in the `hours` after the time `at`; remembers the day under `name`."""
+        now = datetime.fromtimestamp(self.clock())
+        h, m = _hhmm(at, default)
+        start = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        if self._cur().get(name) == now.date().isoformat() or not (start <= now < start + timedelta(hours=hours)):
+            return False
+        self._put(**{name: now.date().isoformat()})
+        return True
+
+    def _wants(self, kind: str) -> bool:
+        cfg = self.cfg()
+        return cfg["enabled"] and kind not in cfg["off"]
 
     # ── reminders ────────────────────────────────────────────────────────────
     def reminders(self, pending: Optional[Callable[[], list]] = None) -> int:
@@ -325,6 +356,8 @@ class Scanner:
         self.store.set(NOW_FLAG, "")
         if what == "morning":
             return self.morning(force=True)
+        if what == "weekly":
+            return self.weekly(force=True)
         if what == "fantasy":
             text = sources.fantasy_summary()
             return self.alerts.scheduled("fantasy", "🏈 Fantasy this week:\n" + (text or "No league is connected."),
@@ -362,6 +395,228 @@ class Scanner:
         return n
 
 
+    # ── Canvas: due tonight, grades ──────────────────────────────────────────
+    def canvas_tonight(self, fetch=None, force: bool = False) -> str:
+        """At tonight_time, what's still due later today. With only the calendar feed Jarvis can't see
+        submissions, so the text says so."""
+        if not force:
+            if not self._time_for("tonight_day", self.cfg()["tonight_time"], (20, 0), hours=3):
+                return ""
+            if not self._wants("canvas_tonight"):
+                return "off"
+        if fetch is None:
+            from plugins.canvas_school import fetch_assignments as fetch
+        items, notice = fetch("upcoming")
+        if notice:
+            return ""
+        now = datetime.fromtimestamp(self.clock())
+        today = now.date().isoformat()
+        left, warned = [], dict(self._cur().get("canvas") or {})
+        for it in items:
+            if it.get("overdue") or it.get("due") != today:
+                continue
+            due_at = it.get("due_at") or f"{today}T23:59"
+            try:
+                when = datetime.fromisoformat(due_at)
+            except ValueError:
+                continue
+            if when > now:
+                left.append((when, it))
+                warned[f"{it.get('course')}|{it.get('name')}|{due_at}"] = when.timestamp()   # no second text at 3 hours out
+        if not left:
+            return ""
+        self._put(canvas=warned)
+        from memory.config_manager import get_plugin_config
+        feed_only = not str(get_plugin_config("canvas").get("token") or "").strip()
+        head = "📚 Still due tonight" + (" (I can't see what you've turned in)" if feed_only else ", not turned in yet")
+        text = head + ":\n" + "\n".join(f"• {sources.clock(w)}: {_short(it.get('name'), 70)} ({_short(it.get('course'), 30)})"
+                                         for w, it in sorted(left, key=lambda x: x[0])[:6])
+        return self.alerts.scheduled("canvas_tonight", text, force=force)
+
+    def grades(self, fetch=None) -> int:
+        if fetch is None:
+            from plugins.canvas_school import fetch_grades as fetch
+        cur = self._cur()
+        now = datetime.fromtimestamp(self.clock()).astimezone()
+        if "grades_since" not in cur:                       # first look: start from now, text no backlog
+            self._put(grades_since=now.isoformat(), grades_seen=[])
+            return 0
+        # an hour of overlap (seen ids dedupe), but never more than two days back: a token added
+        # weeks after the first look doesn't text a month of grades
+        since = max(datetime.fromisoformat(cur["grades_since"]) - timedelta(hours=1), now - timedelta(days=2))
+        items, notice = fetch(since)
+        if notice:
+            return 0
+        seen = list(cur.get("grades_seen") or [])
+        week = [g for g in cur.get("grades_week") or [] if self.clock() - g[0] < 7 * 86400]
+        n = 0
+        for g in items:
+            if g["id"] in seen:
+                continue
+            seen.append(g["id"])
+            try:
+                pct = f" ({float(g['score']) / float(g['possible']) * 100:.0f}%)" if g.get("possible") else ""
+                mark = f"{float(g['score']):g}/{float(g['possible']):g}{pct}" if g.get("possible") else f"{float(g['score']):g}"
+            except (TypeError, ValueError):
+                mark = g.get("grade") or "graded"
+            self.alerts.notify("grades", f"🎓 Grade posted in {_short(g['course'], 30)}: {_short(g['name'], 60)}, {mark}.")
+            week.append([self.clock(), f"{_short(g['name'], 35)} {mark}"])
+            n += 1
+        self._put(grades_since=now.isoformat(), grades_seen=seen[-300:], grades_week=week[-20:])
+        return n
+
+    # ── the bots: nightly review, memecoin trades ────────────────────────────
+    def bots_review(self, read=None) -> str:
+        review = (read or sources.bots_review)()
+        if not review or not review.get("generated"):
+            return ""
+        cur = self._cur()
+        if cur.get("bots_review") == review["generated"]:
+            return ""
+        self._put(bots_review=review["generated"])
+        if "bots_review" not in cur or review.get("dry_run") or not self._wants("bots_review"):
+            return ""                                        # the first look is a baseline
+        return self.alerts.scheduled("bots_review", f"🧠 The bots' nightly review: {review.get('speech') or 'done.'}")
+
+    def memecoin(self, trades_fn=None, status_fn=None) -> int:
+        trades = (trades_fn or sources.meme_trades)()
+        cur = self._cur()
+        done = int(cur.get("meme_lines", -1))
+        n = 0
+        if 0 <= done <= len(trades):
+            for t in trades[done:]:
+                text = self._meme_trade_text(t)
+                if text:
+                    self.alerts.notify("memecoin", text)
+                    n += 1
+        status = (status_fn or sources.meme_status)()
+        moves = dict(cur.get("meme_moves") or {})
+        live = set()
+        try:
+            fresh = bool(status) and self.clock() - _ts(status["heartbeat"]) < 600
+        except (KeyError, TypeError, ValueError):
+            fresh = False
+        for p in (status or {}).get("positions") or [] if fresh else []:
+            key = f"{p.get('symbol')}|{p.get('opened')}"
+            live.add(key)
+            try:
+                change = float(p["change_pct"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            step = int(abs(change) // self.cfg()["meme_move"]) * (1 if change > 0 else -1)
+            prev = int(moves.get(key, 0))
+            if step and (abs(step) > abs(prev) or step * prev < 0):
+                moves[key] = step
+                self.alerts.notify("memecoin", f"🪙 {_short(p.get('symbol'), 15)} is {change:+.0f}% since the memecoin "
+                                               f"bot bought it (simulated).")
+                n += 1
+        self._put(meme_lines=len(trades), meme_moves={k: v for k, v in moves.items() if k in live} if fresh else moves)
+        return n
+
+    @staticmethod
+    def _meme_trade_text(t: dict) -> Optional[str]:
+        sym = _short(t.get("symbol"), 15)
+        try:
+            if t.get("kind") == "buy":
+                return (f"🪙 Memecoin bot bought {sym}: ${float(t['usd']):,.0f} at {sources.meme_price(t['price'])}, "
+                        f"stop {sources.meme_price(t['stop'])} (simulated).")
+            if t.get("kind") == "sell":
+                why = f" ({_short(t.get('why'), 30)})" if t.get("why") else ""
+                return f"🪙 Memecoin bot sold {sym}{why}: {float(t['pnl']):+,.2f} dollars (simulated)."
+        except (KeyError, TypeError, ValueError):
+            return None
+        return None
+
+    # ── Gumroad sales ────────────────────────────────────────────────────────
+    def sales(self, fetch=None) -> int:
+        fetch = fetch or sources.gumroad_sales
+        today = datetime.fromtimestamp(self.clock()).date()
+        found = fetch(today - timedelta(days=3))
+        cur = self._cur()
+        seen = list(cur.get("sales_seen") or [])
+        week = [s for s in cur.get("sales_week") or [] if self.clock() - s < 7 * 86400]
+        n = 0
+        for sale in found:
+            if sale["id"] in seen:
+                continue
+            seen.append(sale["id"])
+            if "sales_seen" in cur and not sale["refunded"]:
+                self.alerts.notify("sales", f"💰 Gumroad sale: {sale['product']}" +
+                                   (f", {sale['price']}." if sale["price"] else "."))
+                week.append(self.clock())
+                n += 1
+        self._put(sales_seen=seen[-300:], sales_week=week)
+        return n
+
+    # ── the Sunday recap ─────────────────────────────────────────────────────
+    def weekly(self, gather=None, force: bool = False) -> str:
+        now = datetime.fromtimestamp(self.clock())
+        if not force:
+            if now.weekday() != 6 or not self._time_for("weekly_day", self.cfg()["weekly_time"], (18, 0)):
+                return ""
+            if not self._wants("weekly"):
+                return "off"
+        text = sources.weekly_text(today=now.date(), **(gather or self._gather_weekly)(now))
+        return self.alerts.scheduled("weekly", text, force=force)
+
+    def _gather_weekly(self, now: datetime) -> dict:
+        def safe(fn, default):
+            try:
+                return fn()
+            except Exception as exc:
+                self.log(f"phone alerts: Sunday recap skipped a part: {exc!r}")
+                return default
+
+        week_ago = now - timedelta(days=7)
+
+        def trading():
+            trades = self.store.events(since=week_ago.timestamp(), kinds=["trade_result"])
+            pnls = [(t["detail"].get("bot"), float(t["detail"]["pnl"])) for t in trades
+                    if (t.get("detail") or {}).get("pnl") is not None]
+            if not pnls:
+                return "Options bots: no closed trades this week."
+            by_bot: dict = {}
+            for bot, pnl in pnls:
+                by_bot[bot] = by_bot.get(bot, 0.0) + pnl
+            line = (f"Options bots: {sum(p for _, p in pnls):+,.0f} dollars on {len(pnls)} closed trades, "
+                    f"{sum(1 for _, p in pnls if p > 0)} won")
+            if len(by_bot) >= 2:
+                best = max(by_bot, key=by_bot.get)
+                line += f". Best bot: {best} ({by_bot[best]:+,.0f})"
+            return line + " (simulated)."
+
+        def memecoin():
+            status = sources.meme_status()
+            if not status:
+                return None
+            sells = [t for t in sources.meme_trades() if t.get("kind") == "sell" and t.get("pnl") is not None
+                     and _ts(t.get("ts")) >= week_ago.timestamp()]
+            line = f"Memecoin account ${float(status['equity']):,.2f}"
+            if status.get("first_equity"):
+                line += f" ({float(status['equity']) - float(status['first_equity']):+,.2f} since it started)"
+            if sells:
+                line += f"; {len(sells)} closed this week, {sum(float(t['pnl']) for t in sells):+,.2f}"
+            return line + " (simulated)."
+
+        def canvas():
+            from plugins.canvas_school import fetch_assignments
+            items, notice = fetch_assignments("upcoming")
+            return [] if notice else items
+
+        cur = self._cur()
+        monday = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        return {
+            "trading": safe(trading, None),
+            "memecoin": safe(memecoin, None),
+            "grades": [g[1] for g in cur.get("grades_week") or [] if self.clock() - g[0] < 7 * 86400],
+            "canvas": safe(canvas, []),
+            "money": safe(lambda: sources.money_week(now.date()), None),
+            "workouts": safe(lambda: sources.workouts_since(week_ago), None),
+            "sales": len([s for s in cur.get("sales_week") or [] if self.clock() - s < 7 * 86400]),
+            "events": safe(lambda: sources.calendar_events(monday, monday + timedelta(days=7)), None),
+        }
+
+
 class AlertService:
     """The worker's alert thread."""
 
@@ -371,7 +626,7 @@ class AlertService:
         self.scanner = Scanner(store, self.alerts, log=log)
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        self._last = {"email": 0.0, "canvas": 0.0, "calendar": 0.0, "fantasy": 0.0}
+        self._last = {"email": 0.0, "canvas": 0.0, "calendar": 0.0, "fantasy": 0.0, "grades": 0.0, "sales": 0.0}
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, daemon=True, name="phone-alerts")
@@ -396,13 +651,18 @@ class AlertService:
         if now - self._last["email"] >= EMAIL_EVERY:
             self._last["email"] = now
             self._step("email", self.scanner.email)
-        for name, every in (("calendar", CALENDAR_EVERY), ("canvas", CANVAS_EVERY), ("fantasy", FANTASY_EVERY)):
+        self._step("memecoin", self.scanner.memecoin)
+        self._step("bots review", self.scanner.bots_review)
+        for name, every in (("calendar", CALENDAR_EVERY), ("canvas", CANVAS_EVERY), ("fantasy", FANTASY_EVERY),
+                            ("grades", GRADES_EVERY), ("sales", SALES_EVERY)):
             if now - self._last[name] >= every:
                 self._last[name] = now
                 self._step(name, getattr(self.scanner, name))
         self._step("on request", self.scanner.on_request)
         self._step("morning", self.scanner.morning)          # before flush: it carries the overnight news
         self._step("trading", self.scanner.trading_daily)
+        self._step("tonight", self.scanner.canvas_tonight)
+        self._step("weekly", self.scanner.weekly)
         self._step("flush", self.alerts.flush)
 
     def _run(self) -> None:

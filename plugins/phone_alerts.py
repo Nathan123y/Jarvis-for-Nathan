@@ -17,14 +17,16 @@ PLUGIN = {
         "Texts Jarvis sends to the user's own phone (iMessage) while they're away from the Mac: "
         "reminders (Jarvis and Apple Reminders), important emails, emails from VIP senders, calendar "
         "events starting soon, website business news, big trading losses, Canvas work due soon, "
+        "Canvas grades posted, memecoin bot trades and big moves, Gumroad sales, "
         "fantasy football injuries and lineup problems, packages, Jarvis problems; plus a morning "
-        "text and a weekday trading summary sent at set times. Use for 'text me when…', 'stop "
+        "text, a weekday trading summary, the bots' nightly review, an 8 PM 'still due tonight' "
+        "Canvas check and a Sunday recap of the week, sent at set times. Use for 'text me when…', 'stop "
         "texting me about Canvas', 'turn phone alerts off/on', 'send me a test text', 'are phone "
         "alerts on?', 'keep the Mac awake with the lid closed', 'always text me when Ms. Lee "
         "emails' (vip_add, value=name/email/domain), 'stop texting me about her emails' (vip_remove), "
         "'who are my VIPs' (vip_list), 'text me my morning summary now' (send_now, kind=morning), "
         "'text me the trading summary now' (send_now, kind=trading_daily), 'text me a fantasy summary' "
-        "(send_now, kind=fantasy); add in_minutes for 'in 3 minutes'. Actions: status, on, off, "
+        "(send_now, kind=fantasy), 'text me my weekly recap' (send_now, kind=weekly); add in_minutes for 'in 3 minutes'. Actions: status, on, off, "
         "mute (kind), unmute (kind), test, lid_awake (state=on|off), vip_add, vip_remove, vip_list, "
         "send_now. Only for texts to the user's own phone; to text someone else use send_message."
     ),
@@ -55,6 +57,9 @@ PLUGIN_SETTINGS = {
         {"key": "calendar_minutes", "type": "text", "label": "Text me before calendar events (minutes)", "placeholder": "15"},
         {"key": "morning_time", "type": "text", "label": "Morning text time (HH:MM)", "placeholder": "07:00"},
         {"key": "trading_time", "type": "text", "label": "Weekday trading summary time (HH:MM)", "placeholder": "13:30"},
+        {"key": "tonight_time", "type": "text", "label": "'Still due tonight' Canvas check time (HH:MM)", "placeholder": "20:00"},
+        {"key": "weekly_time", "type": "text", "label": "Sunday recap time (HH:MM)", "placeholder": "18:00"},
+        {"key": "meme_move", "type": "text", "label": "Text me when a memecoin moves this much (%)", "placeholder": "20"},
         {"key": "city", "type": "text", "label": "City for the morning weather", "placeholder": "San Jose"},
     ],
 }
@@ -89,6 +94,9 @@ def _status() -> str:
              f"I text you about {', '.join(on) or 'nothing'}."]
     if off:
         parts.append(f"Muted: {', '.join(off)}.")
+    from memory.config_manager import get_plugin_config
+    if "grades" not in cfg["off"] and not str(get_plugin_config("canvas").get("token") or "").strip():
+        parts.append("Grade texts need a Canvas access token in Plugin Settings; the calendar feed has no grades.")
     if cfg["quiet_start"] != cfg["quiet_end"]:
         parts.append(f"From {cfg['quiet_start']}:00 to {cfg['quiet_end']}:00 only reminders come through; "
                      "the rest wait for one text in the morning.")
@@ -176,15 +184,15 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
             return _vip(action, str(args.get("value") or ""))
         if action == "send_now":
             kind = str(args.get("kind") or "morning").strip().lower()
-            if kind not in ("morning", "trading_daily", "fantasy"):
-                return "I can text you the morning summary, the trading summary or a fantasy summary."
+            if kind not in ("morning", "trading_daily", "fantasy", "weekly"):
+                return "I can text you the morning summary, the trading summary, a fantasy summary or the weekly recap."
             try:
                 wait = max(0, min(720, int(args.get("in_minutes") or 0)))
             except (TypeError, ValueError):
                 wait = 0
             _store().set(pa.NOW_FLAG, {"kind": kind, "at": time.time() + wait * 60})
             what = {"morning": "the morning summary", "trading_daily": "the trading summary",
-                    "fantasy": "a fantasy summary"}[kind]
+                    "fantasy": "a fantasy summary", "weekly": "your weekly recap"}[kind]
             if wait:
                 return (f"Okay, I'll text you {what} in {wait} minute{'s' if wait != 1 else ''}. "
                         "You can close the lid; it'll still come.")
