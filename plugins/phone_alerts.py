@@ -15,18 +15,25 @@ PLUGIN = {
     "name": "phone_alerts",
     "description": (
         "Texts Jarvis sends to the user's own phone (iMessage) while they're away from the Mac: "
-        "reminders, important emails, website business news, big trading losses, Canvas work "
-        "due soon, Jarvis problems. Use for 'text me when…', 'stop texting me about Canvas', "
-        "'turn phone alerts off/on', 'send me a test text', 'are phone alerts on?', 'keep the "
-        "Mac awake with the lid closed'. Actions: status, on, off, mute (kind), unmute (kind), "
-        "test, lid_awake (state=on|off). Kinds: reminders, email, business, trading, canvas, system. "
-        "Only for texts to the user's own phone; to text someone else use send_message."
+        "reminders (Jarvis and Apple Reminders), important emails, emails from VIP senders, calendar "
+        "events starting soon, website business news, big trading losses, Canvas work due soon, "
+        "fantasy football injuries and lineup problems, packages, Jarvis problems; plus a morning "
+        "text and a weekday trading summary sent at set times. Use for 'text me when…', 'stop "
+        "texting me about Canvas', 'turn phone alerts off/on', 'send me a test text', 'are phone "
+        "alerts on?', 'keep the Mac awake with the lid closed', 'always text me when Ms. Lee "
+        "emails' (vip_add, value=name/email/domain), 'stop texting me about her emails' (vip_remove), "
+        "'who are my VIPs' (vip_list), 'text me my morning summary now' (send_now, kind=morning), "
+        "'text me the trading summary now' (send_now, kind=trading_daily). Actions: status, on, off, "
+        "mute (kind), unmute (kind), test, lid_awake (state=on|off), vip_add, vip_remove, vip_list, "
+        "send_now. Only for texts to the user's own phone; to text someone else use send_message."
     ),
     "parameters": {
         "type": "OBJECT",
         "properties": {
-            "action": {"type": "STRING", "enum": ["status", "on", "off", "mute", "unmute", "test", "lid_awake"]},
-            "kind": {"type": "STRING", "enum": list(pa.KINDS), "description": "For mute/unmute"},
+            "action": {"type": "STRING", "enum": ["status", "on", "off", "mute", "unmute", "test", "lid_awake",
+                                                  "vip_add", "vip_remove", "vip_list", "send_now"]},
+            "kind": {"type": "STRING", "enum": list(pa.KINDS), "description": "For mute/unmute/send_now"},
+            "value": {"type": "STRING", "description": "For vip_add/vip_remove: a name, email address or domain"},
             "state": {"type": "STRING", "enum": ["on", "off"], "description": "For lid_awake"},
         },
         "required": ["action"],
@@ -43,6 +50,10 @@ PLUGIN_SETTINGS = {
         {"key": "quiet_end", "type": "text", "label": "Quiet hours end (hour, 0-23)", "placeholder": "7"},
         {"key": "loss_alert", "type": "text", "label": "Text me when a paper trade loses more than ($)", "placeholder": "500"},
         {"key": "canvas_hours", "type": "text", "label": "Warn about Canvas work due within (hours)", "placeholder": "3"},
+        {"key": "calendar_minutes", "type": "text", "label": "Text me before calendar events (minutes)", "placeholder": "15"},
+        {"key": "morning_time", "type": "text", "label": "Morning text time (HH:MM)", "placeholder": "07:00"},
+        {"key": "trading_time", "type": "text", "label": "Weekday trading summary time (HH:MM)", "placeholder": "13:30"},
+        {"key": "city", "type": "text", "label": "City for the morning weather", "placeholder": "San Jose"},
     ],
 }
 
@@ -118,6 +129,26 @@ def _lid(state: str, player) -> str:
             "battery, so the texts keep coming. Don't zip it into a bag for long; it will get warm.")
 
 
+def _vip(action: str, value: str) -> str:
+    vips = pa.settings()["vip"]
+    if action == "vip_list":
+        return ("I always text you when these email: " + ", ".join(vips) + "." if vips
+                else "No VIP senders yet. Say 'always text me when <name> emails'.")
+    value = " ".join(value.split()).strip(" .,'\"")
+    if not value:
+        return "Whose emails? Give me a name, an email address or a domain."
+    if action == "vip_add":
+        if value.lower() not in (v.lower() for v in vips):
+            save_plugin_config(pa.NS, {"vip": vips + [value]})
+        return (f"Okay, I'll text you whenever {value} emails, even if Gmail doesn't mark it important. "
+                "Mail already in your inbox doesn't count.")
+    left = [v for v in vips if v.lower() != value.lower()]
+    if len(left) == len(vips):
+        return f"{value} isn't on your VIP list." + (f" It has: {', '.join(vips)}." if vips else "")
+    save_plugin_config(pa.NS, {"vip": left})
+    return f"Okay, no more special texts for {value}'s emails."
+
+
 def run(parameters: dict, player=None, session_memory=None) -> str:
     args = parameters or {}
     action = str(args.get("action") or "status").strip().lower()
@@ -139,8 +170,18 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
             return ("The background worker will text you a test within about 30 seconds. If macOS asks "
                     "whether Python may control Messages, click OK; that's what lets texts go out "
                     "with Jarvis closed.")
+        if action.startswith("vip_"):
+            return _vip(action, str(args.get("value") or ""))
+        if action == "send_now":
+            kind = str(args.get("kind") or "morning").strip().lower()
+            if kind not in ("morning", "trading_daily"):
+                return "I can send the morning text or the trading summary now."
+            _store().set(pa.NOW_FLAG, kind)
+            return ("Putting it together now; it'll be on your phone in a minute or so."
+                    if kind == "morning" else
+                    "Checking the bots now; the summary will be on your phone in a couple of minutes.")
         if action == "lid_awake":
             return _lid(str(args.get("state") or "on").strip().lower(), player)
-        return "Phone alert actions: status, on, off, mute, unmute, test, lid_awake."
+        return "Phone alert actions: status, on, off, mute, unmute, test, lid_awake, vip_add, vip_remove, vip_list, send_now."
     except Exception as exc:
         return f"Phone alerts {action} failed ({type(exc).__name__}: {str(exc)[:120]})."

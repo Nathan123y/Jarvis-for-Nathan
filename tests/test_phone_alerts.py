@@ -127,23 +127,133 @@ class ScannerTests(_Base):
         self.assertIn("lost $650", self.sent[1])
         self.assertEqual(s.events(), 0)
 
-    def test_email_first_pass_is_a_baseline_then_new_mail_is_texted(self):
+    def _gmail(self, results: dict, meta: dict | None = None):
+        """A fake Gmail whose search results depend on the query: keys 'vip', 'email', 'packages'."""
         service = MagicMock()
-        listing = service.users.return_value.messages.return_value.list.return_value.execute
-        listing.return_value = {"messages": [{"id": "m1"}]}
+        api = service.users.return_value.messages.return_value
+
+        def listing(userId, q, maxResults):
+            kind = "vip" if q.startswith("in:inbox is:unread newer_than:1d from:") else \
+                "packages" if "out for delivery" in q else "email"
+            return MagicMock(execute=MagicMock(return_value={"messages": [{"id": i} for i in results.get(kind, [])]}))
+        api.list.side_effect = listing
+        api.get.side_effect = lambda userId, id, **kw: MagicMock(execute=MagicMock(return_value=(meta or {})[id]))
+        return service
+
+    @staticmethod
+    def _meta(sender, subject, snippet=""):
+        return {"payload": {"headers": [{"name": "From", "value": sender}, {"name": "Subject", "value": subject}]},
+                "snippet": snippet, "labelIds": ["INBOX"]}
+
+    def test_email_first_pass_is_a_baseline_then_new_mail_is_texted(self):
+        results = {"email": ["m1"]}
         s = self.scanner()
-        meta = {"payload": {"headers": [{"name": "From", "value": "Ms. Lee <lee@school.edu>"},
-                                        {"name": "Subject", "value": "Midterm moved"}]}}
-        with patch("plugins.gmail._fetch", return_value=[(1, "m2", meta)]) as fetch:
+        meta = {"m2": self._meta("Ms. Lee <lee@school.edu>", "Midterm moved")}
+        service = self._gmail(results, meta)
+        with patch("plugins.gmail._fetch", side_effect=lambda svc, ids: [(1, i, meta[i]) for i in ids]) as fetch:
             self.assertEqual(s.email(accounts=["school"], service_for=lambda a: service), 0)
             fetch.assert_not_called()
-            listing.return_value = {"messages": [{"id": "m2"}, {"id": "m1"}]}
+            results["email"] = ["m2", "m1"]
             self.assertEqual(s.email(accounts=["school"], service_for=lambda a: service), 1)
-            self.assertEqual(fetch.call_args.args[1], ["m2"])
         self.assertEqual(self.sent, ["📧 School email from Ms. Lee: Midterm moved"])
-        query = service.users().messages().list.call_args.kwargs["q"]
-        self.assertIn("is:unread", query)
-        self.assertIn("-category:promotions", query)
+
+    def test_vip_mail_is_texted_once_and_a_new_vip_does_not_text_old_mail(self):
+        results = {"email": [], "vip": ["v1"]}
+        meta = {"v1": self._meta("Coach Dan <dan@club.org>", "Practice moved"),
+                "v2": self._meta("Coach Dan <dan@club.org>", "Game at 3")}
+        service = self._gmail(results, meta)
+        fetch = lambda svc, ids: [(1, i, meta[i]) for i in ids]
+        s = self.scanner()
+        with patch("plugins.gmail._fetch", side_effect=fetch):
+            s.email(accounts=["personal"], service_for=lambda a: service)        # baseline, no VIPs yet
+            s.cfg = _cfg(vip=["dan@club.org"])
+            s.alerts.cfg = s.cfg
+            s.email(accounts=["personal"], service_for=lambda a: service)        # VIP just added: v1 is old
+            self.assertEqual(self.sent, [])
+            results["vip"] = ["v2", "v1"]
+            results["email"] = ["v2"]                                            # also "important": one text only
+            s.email(accounts=["personal"], service_for=lambda a: service)
+        self.assertEqual(self.sent, ["⭐ Personal email from Coach Dan: Game at 3"])
+
+    def test_package_out_for_delivery_is_texted_and_kept_for_the_morning(self):
+        results = {"packages": ["p1"]}
+        meta = {"p2": self._meta("Amazon <ship@amazon.com>", "Your package is out for delivery"),
+                "p3": self._meta("Amazon <ship@amazon.com>", "Your order has shipped")}
+        service = self._gmail(results, meta)
+        s = self.scanner()
+        s.email(accounts=["personal"], service_for=lambda a: service)
+        results["packages"] = ["p3", "p2", "p1"]
+        s.email(accounts=["personal"], service_for=lambda a: service)
+        self.assertEqual(self.sent, ["📦 Amazon: your package is out for delivery."])
+        self.assertEqual(s._gather_morning(pa.DEFAULTS, datetime.fromtimestamp(NOON))["packages"],
+                         ["Amazon: your package is out for delivery"])
+
+    def test_vip_query_quotes_names_and_keeps_addresses(self):
+        self.assertEqual(wa.vip_query(["Ms. Lee", "lee@school.edu", "sjsu.edu"]),
+                         'in:inbox is:unread newer_than:1d from:("Ms. Lee" OR lee@school.edu OR sjsu.edu)')
+
+    def test_calendar_event_texts_ahead_and_apple_reminder_texts_on_time(self):
+        s = self.scanner(calendar_minutes=15)
+        at = lambda m: datetime.fromtimestamp(NOON) + timedelta(minutes=m)
+        events = [{"at": at(12), "title": "EE-98 lecture", "all_day": False, "calendar": "School"},
+                  {"at": at(40), "title": "Later thing", "all_day": False, "calendar": "School"},
+                  {"at": at(0), "title": "Holiday", "all_day": True, "calendar": "Home"},
+                  {"at": at(5), "title": "Pay credit card", "all_day": False, "calendar": "Scheduled Reminders"}]
+        s.calendar(events_fn=lambda a, b: events)
+        self.assertEqual(self.sent, ["📅 EE-98 lecture at 12:12 PM (in 12 min)."])
+        self.now = NOON + 5 * 60
+        s.calendar(events_fn=lambda a, b: events)
+        self.assertEqual(self.sent[1:], ["⏰ Reminder: Pay credit card"])
+        s.calendar(events_fn=lambda a, b: events)
+        self.assertEqual(len(self.sent), 2)
+
+    def test_fantasy_first_check_is_a_baseline_then_new_problems_are_texted(self):
+        s = self.scanner()
+        found = {"changes": ["Kelce (League A) is now Questionable (was healthy)"], "swap": [], "watch": []}
+        s.fantasy(alerts_fn=lambda: found)
+        self.assertEqual(self.sent, [])
+        found = {"changes": found["changes"] + ["Hall (League A) is now Out (was Questionable), and he's in your starting lineup"],
+                 "swap": ["Hall (League A, Out)"], "watch": []}
+        self.assertEqual(s.fantasy(alerts_fn=lambda: found), 2)
+        self.assertIn("Hall (League A) is now Out", self.sent[0])
+        self.assertEqual(self.sent[1], "🏈 Swap out of your lineup: Hall (League A, Out).")
+        self.assertEqual(s.fantasy(alerts_fn=lambda: found), 0)
+
+    def test_morning_text_once_a_day_at_the_set_time_with_the_overnight_news(self):
+        self.now = datetime(2026, 10, 23, 2, 0).timestamp()
+        s = self.scanner()
+        s.alerts.notify("email", "📧 overnight mail")                      # held: quiet hours
+        gather = lambda cfg, now: {"weather_line": "San Jose: 70°/54°", "events": [], "canvas": [],
+                                   "fantasy_swaps": [], "packages": []}
+        self.assertEqual(s.morning(gather=gather), "")
+        self.away = False                                                 # sent even at the Mac
+        self.now = datetime(2026, 10, 23, 7, 0, 30).timestamp()
+        self.assertEqual(s.morning(gather=gather), "sent")
+        self.assertIn("Good morning! Fri Oct 23", self.sent[0])
+        self.assertIn("🌙 Overnight: 📧 overnight mail", self.sent[0])
+        self.assertEqual(s.alerts.flush(), "empty")
+        self.assertEqual(s.morning(gather=gather), "")
+
+    def test_trading_summary_on_weekdays_after_the_close(self):
+        s = self.scanner()
+        summary = lambda: "Options: up $120 today."
+        self.now = datetime(2026, 10, 23, 13, 0).timestamp()
+        self.assertEqual(s.trading_daily(summary_fn=summary), "")
+        self.now = datetime(2026, 10, 23, 13, 31).timestamp()
+        self.assertEqual(s.trading_daily(summary_fn=summary), "sent")
+        self.assertEqual(self.sent, ["📈 Paper trading today: Options: up $120 today."])
+        self.assertEqual(s.trading_daily(summary_fn=summary), "")
+        self.now = datetime(2026, 10, 24, 13, 31).timestamp()             # Saturday
+        self.assertEqual(s.trading_daily(summary_fn=summary), "")
+
+    def test_send_now_from_the_plugin_ignores_the_schedule(self):
+        s = self.scanner(off=["morning"])
+        self.store.set(pa.NOW_FLAG, "morning")
+        with patch.object(s, "_gather_morning", return_value={"weather_line": None, "events": [], "canvas": [],
+                                                              "fantasy_swaps": [], "packages": []}):
+            self.assertEqual(s.on_request(), "sent")
+        self.assertIn("Good morning!", self.sent[0])
+        self.assertEqual(s.on_request(), "")
 
     def test_canvas_warns_once_inside_the_window(self):
         s = self.scanner(canvas_hours=3)
@@ -159,6 +269,42 @@ class ScannerTests(_Base):
         self.now = datetime(2026, 10, 23, 21, 30).timestamp()   # date-only work counts as due 11:59 PM
         self.assertEqual(s.canvas(fetch=lambda tf: (items, None)), 1)
         self.assertIn("Due at 11:59 PM: Tonight (Math)", self.sent[1])
+
+
+class SourceTests(unittest.TestCase):
+    def test_calendar_reads_expanded_occurrences_and_skips_birthdays(self):
+        import sqlite3
+        from worker import sources
+        with tempfile.TemporaryDirectory() as d:
+            db = Path(d) / "Calendar.sqlitedb"
+            con = sqlite3.connect(db)
+            con.executescript("""
+                CREATE TABLE Calendar (ROWID INTEGER PRIMARY KEY, title TEXT);
+                CREATE TABLE CalendarItem (ROWID INTEGER PRIMARY KEY, summary TEXT, all_day INTEGER);
+                CREATE TABLE OccurrenceCache (event_id INTEGER, calendar_id INTEGER,
+                    occurrence_date REAL, occurrence_start_date REAL);
+                INSERT INTO Calendar VALUES (1, 'School'), (2, 'Birthdays');
+                INSERT INTO CalendarItem VALUES (1, 'EE-98 lecture', 0), (2, 'Jacob', 1);""")
+            start = datetime(2026, 10, 26, 9, 0)
+            for day in range(3):                          # a repeating class: one row per occurrence
+                t = (start + timedelta(days=day)).timestamp() - sources.APPLE_EPOCH
+                con.execute("INSERT INTO OccurrenceCache VALUES (1, 1, ?, ?)", (t, t))
+            con.execute("INSERT INTO OccurrenceCache VALUES (2, 2, ?, NULL)",
+                        (start.timestamp() - sources.APPLE_EPOCH,))
+            con.commit()
+            con.close()
+            found = sources.calendar_events(start, start + timedelta(days=2), db=db)
+        self.assertEqual([(e["at"], e["title"]) for e in found],
+                         [(start, "EE-98 lecture"), (start + timedelta(days=1), "EE-98 lecture")])
+
+    def test_weather_line(self):
+        from worker import sources
+        def get(url):
+            if "geocoding" in url:
+                return {"results": [{"name": "San Jose", "latitude": 37.3, "longitude": -121.9}]}
+            return {"daily": {"temperature_2m_max": [71.6], "temperature_2m_min": [53.2],
+                              "precipitation_probability_max": [20], "weather_code": [2]}}
+        self.assertEqual(sources.weather("San Jose", get=get), "San Jose: 72°/53°, partly cloudy, 20% rain")
 
 
 class LidAwakeTests(unittest.TestCase):
@@ -219,6 +365,16 @@ class PluginTests(unittest.TestCase):
             self.assertIn("Canvas", out)
             plugin.run({"action": "unmute", "kind": "trading"})
             self.assertEqual(save.call_args.args, (pa.NS, {"off": []}))
+
+    def test_vip_add_and_remove(self):
+        from plugins import phone_alerts as plugin
+        with patch.object(plugin.pa, "settings", return_value={**pa.DEFAULTS, "vip": ["sjsu.edu"]}), \
+                patch.object(plugin, "save_plugin_config") as save:
+            plugin.run({"action": "vip_add", "value": "Ms. Lee"})
+            self.assertEqual(save.call_args.args, (pa.NS, {"vip": ["sjsu.edu", "Ms. Lee"]}))
+            plugin.run({"action": "vip_remove", "value": "SJSU.edu"})
+            self.assertEqual(save.call_args.args, (pa.NS, {"vip": []}))
+            self.assertIn("isn't on your VIP list", plugin.run({"action": "vip_remove", "value": "nobody"}))
 
     def test_lid_awake_without_setup_shows_the_one_time_command(self):
         from plugins import phone_alerts as plugin
