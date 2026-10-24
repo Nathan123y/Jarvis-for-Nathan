@@ -7,8 +7,10 @@ Rules it keeps:
     with backoff; a job that was running when the worker died is recovered from its lease;
   * a crash or Mac sleep never replays old outreach: schedules fire at most once after
     downtime and expired time-sensitive slots are dropped (worker/jobs.py);
-  * it never changes the Mac's power settings. Keep-awake is an explicit opt-in that holds a
-    `caffeinate -i` while on AC power (or above a battery floor) and lets go otherwise.
+  * it changes no power setting unless asked. Keep-awake is an explicit opt-in that holds a
+    `caffeinate -i` while on AC power (or above a battery floor) and lets go otherwise; its
+    lid option also turns on `pmset disablesleep` (through a one-line sudoers rule the user
+    installs, see LID_RULE) under the same conditions, and turns it back off.
 """
 from __future__ import annotations
 
@@ -86,18 +88,54 @@ def keep_awake_allowed(power: dict, min_battery: int) -> bool:
     return power.get("ac") is False and isinstance(pct, int) and pct >= min_battery
 
 
-class KeepAwake:
-    """Optional. Holds the Mac awake (not the display) only while enabled AND power allows."""
+LID_RULE = Path("/etc/sudoers.d/jarvis-lid-awake")
+LID_CMD = ["/usr/bin/sudo", "-n", "/usr/bin/pmset", "-a", "disablesleep"]
 
-    def __init__(self, popen=subprocess.Popen):
-        self._popen, self._proc = popen, None
+
+def lid_sleep_disabled(run=subprocess.run) -> Optional[bool]:
+    """True when `pmset disablesleep` is on (the Mac stays awake with the lid closed)."""
+    try:
+        out = run(["pmset", "-g"], capture_output=True, timeout=4).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"SleepDisabled\s+(\d)", out.decode("utf-8", "replace") if isinstance(out, bytes) else str(out))
+    return bool(int(m.group(1))) if m else False
+
+
+class KeepAwake:
+    """Optional. Holds the Mac awake (not the display) only while enabled AND power allows.
+    With `lid`, closing the lid does not put it to sleep either."""
+
+    def __init__(self, popen=subprocess.Popen, run=subprocess.run):
+        self._popen, self._run, self._proc = popen, run, None
+        self._lid: Optional[bool] = None        # what we last set disablesleep to
 
     @property
     def active(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
 
-    def update(self, enabled: bool, power: dict, min_battery: int, pid: Optional[int] = None) -> bool:
+    @property
+    def lid_active(self) -> bool:
+        return bool(self._lid)
+
+    def _set_lid(self, on: bool) -> None:
+        if self._lid is on:
+            return
+        try:
+            done = self._run([*LID_CMD, "1" if on else "0"], capture_output=True, timeout=10).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            done = False
+        if done:
+            self._lid = on
+        elif on:
+            log.warning("could not keep the Mac awake with the lid closed: the sudoers rule %s is missing", LID_RULE)
+            self._lid = False                   # do not retry every tick; a restart tries again
+
+    def update(self, enabled: bool, power: dict, min_battery: int, pid: Optional[int] = None,
+               lid: bool = False) -> bool:
         want = enabled and keep_awake_allowed(power, min_battery)
+        if lid or self._lid:
+            self._set_lid(want and lid)
         if want and not self.active:
             try:
                 self._proc = self._popen(["/usr/bin/caffeinate", "-i", "-w", str(pid or os.getpid())])
@@ -114,6 +152,8 @@ class KeepAwake:
 
     def stop(self) -> None:
         self.update(False, {}, 0)
+        if self._lid:
+            self._set_lid(False)
 
 
 # ── job context ──────────────────────────────────────────────────────────────
@@ -212,7 +252,7 @@ class Worker:
         self.events.sync_ok("worker", stale_after=HEARTBEAT_STALE_AFTER, at=now)
         status = {"pid": os.getpid(), "owner": self.owner, "started": self._started, "heartbeat": now,
                   "killed": self.killed(), "jobs": self.db.counts(), "mac": mac or {},
-                  "keep_awake": self.keep_awake.active}
+                  "keep_awake": self.keep_awake.active, "lid_awake": self.keep_awake.lid_active}
         tmp = self.status_path.with_suffix(".tmp")
         try:
             tmp.write_text(json.dumps(status))
@@ -224,13 +264,14 @@ class Worker:
         from core import away
         return {"screen": away.screen_state(), "power": read_power()}
 
-    def _settings(self) -> tuple[bool, int]:
+    def _settings(self) -> tuple[bool, int, bool]:
         try:
             from memory.config_manager import load_api_keys
             cfg = load_api_keys()
-            return bool(cfg.get("worker_keep_awake", False)), int(cfg.get("worker_keep_awake_min_battery", 40))
+            return (bool(cfg.get("worker_keep_awake", False)), int(cfg.get("worker_keep_awake_min_battery", 40)),
+                    bool(cfg.get("worker_keep_awake_lid", False)))
         except Exception:
-            return False, 40
+            return False, 40, False
 
     def run_once(self) -> Optional[dict]:
         """One iteration. Returns the job that ran (or None)."""
@@ -243,8 +284,8 @@ class Worker:
             self.events.record("worker_started", source="worker", source_id=f"resume:{int(now)}", ts=now,
                                title="Worker resumed after sleep", detail={"gap_s": int(gap)})
         mac = self._mac_state()
-        enabled, floor = self._settings()
-        self.keep_awake.update(enabled, mac["power"], floor)
+        enabled, floor, lid = self._settings()
+        self.keep_awake.update(enabled, mac["power"], floor, lid=lid)
         self.heartbeat(mac)
         for r in self.db.recover(now):
             log.warning("recovered job %s (%s) -> %s", r["id"], r["kind"], r["state"])

@@ -83,9 +83,14 @@ def cmd_run(args) -> int:
     # It stays off until it is turned on and set up (see worker/phone/service.py).
     from worker.phone.service import start_if_configured
     phone = start_if_configured(logging.getLogger("jarvis.phone").info)
+    # Texts to the user's phone about reminders and important news while they're away.
+    from worker.alerts import AlertService
+    alerts = AlertService(w.events, logging.getLogger("jarvis.alerts").info)
+    alerts.start()
     try:
         w.run_forever()
     finally:
+        alerts.stop()
         if phone:
             phone.stop()
     return 0
