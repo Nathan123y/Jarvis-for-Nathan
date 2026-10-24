@@ -291,7 +291,7 @@ class Scanner:
         cur = self._cur()
         return {
             "weather_line": safe(lambda: sources.weather(cfg["city"]), None),
-            "events": safe(lambda: sources.calendar_events(day, day + timedelta(days=1)), []),
+            "events": safe(lambda: sources.calendar_events(day, day + timedelta(days=1)), None),
             "canvas": safe(canvas, []),
             "fantasy_swaps": list(cur.get("fantasy_swaps") or []),
             "packages": [p[2] for p in cur.get("pkg_recent") or [] if p[1] == "out_for_delivery"],
