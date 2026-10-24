@@ -167,6 +167,7 @@ class ListingTests(_Base):
         done = s.list_pending()
         self.assertEqual([d for d in done if "Etsy" in d].__len__(), 3)
         self.assertFalse([d for d in done if "eBay" in d])
+        self.assertEqual(len([t for k, t in self.sent if "Couldn't list" in t and "eBay" in t]), 1)
 
     def test_listing_title_fits_the_channel(self):
         long = "Funny Overwatered Plant Lover Gift Idea For Garden Fairy Houseplant Mom Birthday Present"
@@ -201,8 +202,14 @@ class ListingTests(_Base):
         c.orders = [{"id": "o1", "line_items": [{"metadata": {"title": "Old order"}}]}]
         self.assertEqual(s.new_orders(), [])
         c.orders.append({"id": "o2", "total_price": 2899, "line_items": [{"metadata": {"title": "Plant Lover T-Shirt"}}]})
-        self.assertEqual(s.new_orders(), ["🛍️ New Etsy order: Plant Lover T-Shirt ($28.99). Printify will print and ship it."])
+        self.assertEqual(s.new_orders(), ["💰 SALE on Etsy! Plant Lover T-Shirt ($28.99). Printify will print and ship it."])
         self.assertEqual(s.new_orders(), [])
+        c.orders[1]["status"] = "in-production"
+        self.assertEqual(s.new_orders(), ["📦 Your Etsy order (Plant Lover T-Shirt) is being printed."])
+        c.orders[1].update(status="fulfilled", shipments=[{"carrier": "usps", "number": "9400", "url": "https://t.co/9400"}])
+        self.assertEqual(s.new_orders(), ["📦 Your Etsy order (Plant Lover T-Shirt) has shipped: USPS https://t.co/9400."])
+        c.orders[0]["status"] = "canceled"                                              # baseline orders update too
+        self.assertEqual(s.new_orders(), ["📦 Your Etsy order (Old order) was canceled."])
 
 
 class ScheduleTests(_Base):

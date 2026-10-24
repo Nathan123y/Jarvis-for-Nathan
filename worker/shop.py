@@ -232,6 +232,29 @@ def png_bytes(img) -> bytes:
     return buf.getvalue()
 
 
+ORDER_STATUS = {
+    "sending-to-production": "is being sent to the printer",
+    "in-production": "is being printed",
+    "fulfilled": "has shipped",
+    "partially-fulfilled": "has partly shipped",
+    "canceled": "was canceled",
+    "has-issues": "has a problem: check it in Printify",
+    "on-hold": "is on hold in Printify (check your payment card)",
+}
+
+
+def order_update(order: dict, items: str, channel: str) -> Optional[str]:
+    """The text for an order that changed status, with tracking once it ships."""
+    what = ORDER_STATUS.get(str(order.get("status")))
+    if not what:
+        return None
+    line = f"📦 Your {channel} order ({items}) {what}"
+    track = next((sh for sh in order.get("shipments") or [] if sh.get("url") or sh.get("number")), None)
+    if track and order.get("status") in ("fulfilled", "partially-fulfilled"):
+        line += f": {track.get('carrier', '').upper()} {track.get('url') or track.get('number')}"
+    return line + "."
+
+
 def listing_title(base: str, product: str, limit: int) -> str:
     """'<title> <product>' within the channel's limit, cut at a word so the product name always fits."""
     room = limit - len(product) - 1
@@ -476,6 +499,10 @@ class Shop:
                                         f"(${prod['price'] / 100:.2f})")
                     except Exception as exc:
                         self.log(f"shop: {channel} {kind} for {rec['id']} failed: {exc}")
+                        if channel not in rec.setdefault("failure_texted", []):
+                            rec["failure_texted"].append(channel)
+                            self.notify("shop", f"⚠️ Couldn't list '{rec['title'][:50]}' on "
+                                                f"{CHANNELS[channel]['name']}: {str(exc)[:120]}. I'll retry in an hour.")
                         rec.setdefault("errors", []).append(f"{channel} {kind}: {str(exc)[:200]}")
                         retry[channel] = self.clock() + 3600         # an hour, not every pass
                         if len(rec["errors"]) >= 12:
@@ -494,17 +521,24 @@ class Shop:
         lines = []
         for channel, shop in stores.items():
             data = self.c.printify("GET", f"shops/{shop['id']}/orders.json?limit=20")
+            status = st.setdefault("order_status", {})
             for o in data.get("data") or []:
-                if o["id"] in st["orders_seen"]:
-                    continue
-                st["orders_seen"].append(o["id"])
-                if not started.get(channel):                    # the first look at a channel is a baseline
-                    continue
                 items = ", ".join(str((li.get("metadata") or {}).get("title") or "an item")[:50]
                                   for li in o.get("line_items") or [])
-                total = (o.get("total_price") or 0) / 100
-                lines.append(f"🛍️ New {CHANNELS[channel]['name']} order: {items}" +
-                             (f" (${total:.2f})" if total else "") + ". Printify will print and ship it.")
+                if o["id"] not in st["orders_seen"]:
+                    st["orders_seen"].append(o["id"])
+                    status[o["id"]] = o.get("status")
+                    if not started.get(channel):                # the first look at a channel is a baseline
+                        continue
+                    total = (o.get("total_price") or 0) / 100
+                    lines.append(f"💰 SALE on {CHANNELS[channel]['name']}! {items}" +
+                                 (f" (${total:.2f})" if total else "") + ". Printify will print and ship it.")
+                    continue
+                if o.get("status") != status.get(o["id"]):
+                    status[o["id"]] = o.get("status")
+                    line = order_update(o, items, CHANNELS[channel]["name"])
+                    if line:
+                        lines.append(line)
             started[channel] = True
         st["orders_started"] = True
         st["orders_seen"] = st["orders_seen"][-500:]
@@ -531,7 +565,7 @@ class ShopService:
         cfg = settings()
         if not cfg["enabled"]:
             return
-        shop = shop or Shop(log=self.log)
+        shop = shop or Shop(log=self.log, notify=self.notify)
         if not (shop.c.printify_token and shop.c.cf_token):
             return
         now = now or datetime.now()
