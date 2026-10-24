@@ -27,11 +27,18 @@ NS = "phone_alerts"
 KINDS = {
     "reminders": "reminders",
     "email": "important emails",
+    "vip": "emails from the people you picked",
+    "calendar": "calendar events starting soon",
     "business": "the website business",
     "trading": "big trading losses",
+    "trading_daily": "the daily trading summary",
     "canvas": "Canvas work due soon",
+    "fantasy": "fantasy football injuries and lineup problems",
+    "packages": "packages",
+    "morning": "the morning text",
     "system": "Jarvis problems",
 }
+SCHEDULED = ("morning", "trading_daily")   # summaries you asked for: sent at the Mac too
 DEFAULTS = {
     "enabled": True,
     "my_number": "",
@@ -42,11 +49,17 @@ DEFAULTS = {
     "loss_alert": 500,        # dollars lost on one paper trade
     "canvas_hours": 3,        # warn this long before something is due
     "off": [],                # kinds switched off
+    "vip": [],                # email addresses, domains or names that always get a text
+    "city": "San Jose",       # for the morning weather
+    "morning_time": "07:00",
+    "trading_time": "13:30",  # weekdays, after the 1:00 PM Pacific close
+    "calendar_minutes": 15,
 }
 PREFIX = "JARVIS: "
 _STATE = "phone_alerts_state"
-TEST_FLAG = "phone_alerts_test"     # set by the plugin; the worker sends a test text
-_MAX_TEXT = 600
+TEST_FLAG = "phone_alerts_test"
+NOW_FLAG = "phone_alerts_now"        # "morning" or "trading_daily": send that summary now     # set by the plugin; the worker sends a test text
+_MAX_TEXT = 1200
 
 
 def settings() -> dict:
@@ -156,6 +169,23 @@ class Alerts:
             self._save(st)
             return "held"
         ok = self._deliver(st, text, now)
+        self._save(st)
+        return "sent" if ok else "failed"
+
+    def take_held(self) -> list[str]:
+        st = self._state()
+        held, st["held"] = st["held"], []
+        self._save(st)
+        return held
+
+    def scheduled(self, kind: str, text: str, force: bool = False) -> str:
+        """A summary the user asked for at a set time: sent whether or not they're at the Mac.
+        `force` is "send it now" by voice, which goes out even when that kind is muted."""
+        cfg = self.cfg()
+        if not force and (not cfg["enabled"] or kind in cfg["off"]):
+            return "off"
+        st = self._state()
+        ok = self._deliver(st, text, self.clock())
         self._save(st)
         return "sent" if ok else "failed"
 
