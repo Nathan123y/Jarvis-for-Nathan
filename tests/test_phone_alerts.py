@@ -321,16 +321,31 @@ class ScannerTests(_Base):
         beat = datetime.fromtimestamp(NOON).astimezone().isoformat()
         trades = [{"kind": "buy", "symbol": "DOGE/USD", "usd": 100, "price": 0.21, "stop": 0.19}]
         status = {"heartbeat": beat, "positions": [{"symbol": "PEPE/USD", "opened": "x", "change_pct": 12}]}
-        self.assertEqual(s.memecoin(trades_fn=lambda: trades, status_fn=lambda: status), 0)   # baseline
+        self.assertEqual(s.memecoin(trades_fn=lambda: trades, status_fn=lambda: status, hype_fn=lambda: None), 0)   # baseline
         trades = trades + [{"kind": "buy", "symbol": "PEPE/USD", "usd": 150, "price": 0.0000123, "stop": 0.00001},
                            {"kind": "sell", "symbol": "DOGE/USD", "why": "trailing stop", "pnl": 12.4}]
         status["positions"][0]["change_pct"] = 24
-        self.assertEqual(s.memecoin(trades_fn=lambda: trades, status_fn=lambda: status), 3)
-        self.assertEqual(s.memecoin(trades_fn=lambda: trades, status_fn=lambda: status), 0)
+        self.assertEqual(s.memecoin(trades_fn=lambda: trades, status_fn=lambda: status, hype_fn=lambda: None), 3)
+        self.assertEqual(s.memecoin(trades_fn=lambda: trades, status_fn=lambda: status, hype_fn=lambda: None), 0)
         self.assertEqual(self.sent, [
             "🪙 Memecoin bot bought PEPE/USD: $150 at $0.0000123, stop $0.0000100 (simulated).",
             "🪙 Memecoin bot sold DOGE/USD (trailing stop): +12.40 dollars (simulated).",
             "🪙 PEPE/USD is +24% since the memecoin bot bought it (simulated)."])
+
+    def test_a_coin_turning_hot_is_texted_once_per_hot_spell(self):
+        s = self.scanner()
+        ts = datetime.fromtimestamp(NOON).astimezone().isoformat()
+        reading = lambda levels: (lambda: {"ts": ts, "coins": {k: {"level": v, "trending": 3 if k == "PEPE/USD" else None,
+                                                                   "score": 2.4} for k, v in levels.items()}})
+        none = lambda: []
+        self.assertEqual(s.memecoin(trades_fn=none, status_fn=lambda: None, hype_fn=reading({"PEPE/USD": "hot"})), 0)  # baseline
+        s.memecoin(trades_fn=none, status_fn=lambda: None, hype_fn=reading({"PEPE/USD": "normal", "DOGE/USD": "normal"}))
+        self.assertEqual(s.memecoin(trades_fn=none, status_fn=lambda: None,
+                                    hype_fn=reading({"PEPE/USD": "hot", "DOGE/USD": "hot"})), 2)
+        self.assertEqual(s.memecoin(trades_fn=none, status_fn=lambda: None,
+                                    hype_fn=reading({"PEPE/USD": "hot", "DOGE/USD": "hot"})), 0)
+        self.assertIn("🔥 DOGE is getting hyped: 2.4x its usual buzz", self.sent[0])
+        self.assertIn("🔥 PEPE is getting hyped: #3 trending on CoinGecko", self.sent[1])
 
     def test_gumroad_sales_baseline_then_new_sale(self):
         s = self.scanner()

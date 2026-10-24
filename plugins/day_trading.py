@@ -12,9 +12,9 @@ import sys
 from pathlib import Path
 
 BOTS = Path(os.environ.get("OPTIONSBOTS_DIR", Path.home() / "optionsbots")) / "scripts" / "bots.py"
-ACTIONS = ("status", "each", "learned", "start", "stop", "pause", "resume", "crypto", "crypto_start", "crypto_stop", "portfolio")
+ACTIONS = ("status", "each", "learned", "start", "stop", "pause", "resume", "crypto", "crypto_start", "crypto_stop", "portfolio", "hype")
 ALIASES = {"bots": "each", "learn": "learned", "learning": "learned", "memecoins": "crypto", "memecoin": "crypto", "meme": "crypto",
-           "coins": "crypto", "crypto_status": "crypto", "start_crypto": "crypto_start", "stop_crypto": "crypto_stop", "everything": "portfolio"}
+           "coins": "crypto", "crypto_status": "crypto", "buzz": "hype", "sentiment": "hype", "start_crypto": "crypto_start", "stop_crypto": "crypto_stop", "everything": "portfolio"}
 
 PLUGIN = {
     "name": "day_trading",
@@ -28,8 +28,10 @@ PLUGIN = {
         "Also the PRACTICE MEMECOIN bot: it trades DOGE, SHIB, PEPE, BONK, WIF and TRUMP in its own Alpaca paper account, "
         "buying a coin that breaks above its 5-day high and selling on a trailing stop; it runs whenever the Mac is awake. Use "
         "crypto for 'how are the memecoins doing', crypto_start / crypto_stop to start or stop it, and portfolio for "
-        "'how is my whole portfolio doing' (options and memecoins together). "
-        "Actions: status (default), each, learned, start, stop, pause, resume, crypto, crypto_start, crypto_stop, portfolio. This tool can NOT trade real money and can NOT "
+        "'how is my whole portfolio doing' (options and memecoins together). The memecoin bot also reads internet hype every hour "
+        "(Reddit, 4chan /biz/, CoinGecko trending): a hyped coin is bought sooner, a coin nobody mentions is skipped. Use hype for "
+        "'what's the crypto hype', 'which memecoins are trending', 'is anyone talking about PEPE'. "
+        "Actions: status (default), each, learned, start, stop, pause, resume, crypto, crypto_start, crypto_stop, portfolio, hype. This tool can NOT trade real money and can NOT "
         "buy or sell a specific option on request; only the bots trade. Never close or open positions at Alpaca "
         "outside the bots: it blocks them from trading. Never present practice results as proof of future profit."
     ),
@@ -37,7 +39,7 @@ PLUGIN = {
         "type": "OBJECT",
         "properties": {
             "action": {"type": "STRING", "description": "status (default), each, learned, start, stop, pause, resume (options trader); "
-                                                        "crypto, crypto_start, crypto_stop (memecoin bot); portfolio (both)"},
+                                                        "crypto, crypto_start, crypto_stop (memecoin bot); hype (memecoin buzz); portfolio (both)"},
         },
         "required": [],
     },

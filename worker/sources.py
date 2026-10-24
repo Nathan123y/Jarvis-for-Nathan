@@ -95,6 +95,7 @@ OPTIONSBOTS = Path.home() / "optionsbots"
 BOTS = OPTIONSBOTS / "scripts" / "bots.py"
 LEARN_LATEST = OPTIONSBOTS / "data" / "learn" / "latest.json"
 MEMEBOT = OPTIONSBOTS / "data" / "memebot"
+HYPE = OPTIONSBOTS / "data" / "hype" / "latest.json"
 
 
 def trading_summary(run=subprocess.run) -> Optional[str]:
@@ -148,6 +149,14 @@ def meme_trades(folder: Path = MEMEBOT) -> list[dict]:
 def meme_status(folder: Path = MEMEBOT) -> Optional[dict]:
     try:
         return json.loads((folder / "status.json").read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def hype(path: Path = HYPE) -> Optional[dict]:
+    """The memecoin bot's latest hourly hype reading: {"ts", "coins": {symbol: {"level", "score", "trending"}}}."""
+    try:
+        return json.loads(path.read_text())
     except (OSError, ValueError):
         return None
 
