@@ -14,7 +14,7 @@ starts from "now" the first time, so turning this on never texts a backlog.
   calendar   every 2 min  an event starting within calendar_minutes; an Apple Reminder with a time
   canvas     every 15 min Canvas work due within canvas_hours
   grades     every 30 min a Canvas grade that was just posted (needs the Canvas API token)
-  memecoin   every pass   a memecoin bot buy or sell; an open coin up or down meme_move percent
+  memecoin   every pass   a memecoin bot buy or sell; an open coin up or down meme_move percent; a coin turning hot online
   bots       every pass   the options bots' nightly review, once it's written (weekdays ~1:35 PM)
   sales      every 10 min a new Gumroad sale
   fantasy    every 20 min an injury / status change on your teams, a starter who must be swapped out
@@ -478,7 +478,7 @@ class Scanner:
             return ""                                        # the first look is a baseline
         return self.alerts.scheduled("bots_review", f"🧠 The bots' nightly review: {review.get('speech') or 'done.'}")
 
-    def memecoin(self, trades_fn=None, status_fn=None) -> int:
+    def memecoin(self, trades_fn=None, status_fn=None, hype_fn=None) -> int:
         trades = (trades_fn or sources.meme_trades)()
         cur = self._cur()
         done = int(cur.get("meme_lines", -1))
@@ -511,6 +511,28 @@ class Scanner:
                                                f"bot bought it (simulated).")
                 n += 1
         self._put(meme_lines=len(trades), meme_moves={k: v for k, v in moves.items() if k in live} if fresh else moves)
+        return n + self._meme_hype(hype_fn or sources.hype)
+
+    def _meme_hype(self, hype_fn) -> int:
+        """Text once when a coin turns hot; again only after it has cooled off."""
+        reading = hype_fn()
+        if not reading or self.clock() - _ts(reading.get("ts")) > 3 * 3600:
+            return 0
+        cur = self._cur()
+        coins = reading.get("coins") or {}
+        hot = sorted(s for s, c in coins.items() if c.get("level") == "hot")
+        n = 0
+        if "meme_hot" in cur:
+            for s in hot:
+                if s in cur["meme_hot"]:
+                    continue
+                c = coins[s]
+                why = (f"#{c['trending']} trending on CoinGecko" if c.get("trending")
+                       else f"{c.get('score')}x its usual buzz on Reddit, 4chan and volume")
+                self.alerts.notify("memecoin", f"🔥 {s.split('/')[0]} is getting hyped: {why}. The memecoin bot will buy it "
+                                               "on a 1-day breakout instead of waiting for a 5-day one (simulated).")
+                n += 1
+        self._put(meme_hot=hot)
         return n
 
     @staticmethod
