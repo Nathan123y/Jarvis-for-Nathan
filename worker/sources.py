@@ -118,12 +118,14 @@ def trading_summary(run=subprocess.run) -> Optional[str]:
 
 
 # ── the morning text ─────────────────────────────────────────────────────────
-def morning_text(*, today: date, weather_line: Optional[str], events: list[dict], canvas: list[dict],
+def morning_text(*, today: date, weather_line: Optional[str], events: Optional[list[dict]], canvas: list[dict],
                  fantasy_swaps: list[str], packages: list[str], overnight: list[str]) -> str:
     lines = [f"Good morning! {today.strftime('%a %b %-d')}"]
     if weather_line:
         lines.append(f"☀️ {weather_line}")
-    if events:
+    if events is None:
+        lines.append("📅 Calendar unavailable (Jarvis's worker needs Full Disk Access).")
+    elif events:
         lines.append("📅 " + "; ".join(("All day " if e["all_day"] else clock(e["at"]) + " ") + e["title"]
                                        for e in events[:6]))
     else:
