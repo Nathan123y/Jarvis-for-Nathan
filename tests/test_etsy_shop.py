@@ -134,6 +134,8 @@ class ListingTests(_Base):
         self.assertTrue(tee["title"].endswith("T-Shirt"))
         self.assertIn("AI", tee["description"])
         self.assertEqual([v["id"] for v in created[1][2]["variants"]], [10])           # the 11oz mug
+        mug = created[1][2]["print_areas"][0]["placeholders"][0]["images"]
+        self.assertEqual([i["x"] for i in mug], [0.5])                                 # centred: the photo Etsy gets
         prices = [x for x in c.calls if x[0] == "PUT"]
         self.assertEqual(prices[0][2]["variants"][0]["price"], ws.price_for(1129, 8.0))
         self.assertEqual(len([x for x in c.calls if x[1].endswith("publish.json")]), 3)

@@ -203,6 +203,15 @@ def png_bytes(img) -> bytes:
     return buf.getvalue()
 
 
+def placements(kind: str, image_id: str, size: tuple, area: tuple) -> list:
+    """Where the design goes in the print area. Printify's scale is relative to the area's width.
+    Centred, even on a mug: the photo Printify sends to Etsy looks straight at the middle of the wrap,
+    and a copy on each side of the handle (tried 2026-10-24) puts a seam right there."""
+    (w, h), (pw, ph) = size, area
+    fill = PRODUCTS[kind]["fill"]
+    return [{"id": image_id, "x": 0.5, "y": 0.5, "scale": round(min(1.0, (ph / pw) * (w / h)) * fill, 3), "angle": 0}]
+
+
 # ── the services ─────────────────────────────────────────────────────────────
 class Clients:
     """Gemini, Cloudflare and Printify, each replaceable in tests."""
@@ -326,8 +335,7 @@ class Shop:
     def create(self, rec: dict, kind: str, shop_id: int, image_id: str) -> dict:
         p = PRODUCTS[kind]
         ids, (pw, ph) = self.variants(kind)
-        w, h = rec["size"]
-        scale = min(1.0, (ph / pw) * (w / h)) * p["fill"]       # Printify scale is relative to the print area's width
+        images = placements(kind, image_id, rec["size"], (pw, ph))
         title = f"{rec['title']} {p['name']}"[:140]
         desc = (f"{rec['description']}\n\n{rec['slogan'].title()}." if rec.get("slogan") else rec["description"]) + \
             ("\n\nDesigned in our studio with the help of AI image tools, then printed on demand and shipped by our "
@@ -336,7 +344,7 @@ class Shop:
                 "print_provider_id": p["provider"],
                 "variants": [{"id": i, "price": 2999, "is_enabled": True} for i in ids],
                 "print_areas": [{"variant_ids": ids, "placeholders": [
-                    {"position": "front", "images": [{"id": image_id, "x": 0.5, "y": 0.5, "scale": round(scale, 3), "angle": 0}]}]}]}
+                    {"position": "front", "images": images}]}]}
         product = self.c.printify("POST", f"shops/{shop_id}/products.json", body)
         priced = [{"id": v["id"], "price": price_for(int(v.get("cost") or 0), p["profit"]), "is_enabled": True}
                   for v in product.get("variants") or [] if v["id"] in ids]
