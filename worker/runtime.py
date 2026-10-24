@@ -89,6 +89,7 @@ def keep_awake_allowed(power: dict, min_battery: int) -> bool:
 
 
 LID_RULE = Path("/etc/sudoers.d/jarvis-lid-awake")
+LID_RETRY_S = 300.0
 LID_CMD = ["/usr/bin/sudo", "-n", "/usr/bin/pmset", "-a", "disablesleep"]
 
 
@@ -109,6 +110,7 @@ class KeepAwake:
     def __init__(self, popen=subprocess.Popen, run=subprocess.run):
         self._popen, self._run, self._proc = popen, run, None
         self._lid: Optional[bool] = None        # what we last set disablesleep to
+        self._lid_failed = 0.0                  # monotonic time turning it on last failed
 
     @property
     def active(self) -> bool:
@@ -121,15 +123,18 @@ class KeepAwake:
     def _set_lid(self, on: bool) -> None:
         if self._lid is on:
             return
+        if on and self._lid_failed and time.monotonic() - self._lid_failed < LID_RETRY_S:
+            return
         try:
             done = self._run([*LID_CMD, "1" if on else "0"], capture_output=True, timeout=10).returncode == 0
         except (OSError, subprocess.SubprocessError):
             done = False
-        if done:
-            self._lid = on
-        elif on:
+        if done or not on:
+            self._lid, self._lid_failed = on, 0.0     # a failed "off" has nothing to undo
+            return
+        if not self._lid_failed:
             log.warning("could not keep the Mac awake with the lid closed: the sudoers rule %s is missing", LID_RULE)
-            self._lid = False                   # do not retry every tick; a restart tries again
+        self._lid, self._lid_failed = False, time.monotonic()   # tried again after LID_RETRY_S
 
     def update(self, enabled: bool, power: dict, min_battery: int, pid: Optional[int] = None,
                lid: bool = False) -> bool:

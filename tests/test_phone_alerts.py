@@ -185,6 +185,18 @@ class LidAwakeTests(unittest.TestCase):
         k.update(True, {"ac": True}, 40, lid=False)
         self.assertEqual(run.call_args.args[0][-1], "0")
 
+    def test_missing_sudo_rule_is_retried_every_few_minutes_not_every_tick(self):
+        k, run = self._keep()
+        run.return_value = MagicMock(returncode=1)
+        with patch("worker.runtime.time.monotonic", return_value=1000.0):
+            k.update(True, {"ac": True}, 40, lid=True)
+            k.update(True, {"ac": True}, 40, lid=True)
+        self.assertEqual(run.call_count, 1)
+        run.return_value = MagicMock(returncode=0)           # the user ran the one-time setup
+        with patch("worker.runtime.time.monotonic", return_value=1400.0):
+            k.update(True, {"ac": True}, 40, lid=True)
+        self.assertTrue(k.lid_active)
+
     def test_lid_mode_never_touches_pmset_unless_asked(self):
         k, run = self._keep()
         k.update(True, {"ac": True}, 40)
