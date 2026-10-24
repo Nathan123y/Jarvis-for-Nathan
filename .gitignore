@@ -47,6 +47,8 @@ memory/espn_status.json
 memory/espn_status.tmp
 # Money tracker entries and budgets
 memory/money.json
+memory/etsy_shop.json
+memory/etsy_shop/
 # Package tracker: order email subjects and states
 config/packages_state.json
 # YouTube Music sign-in (browser cookies). Committing it hands over the account

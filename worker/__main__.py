@@ -87,9 +87,15 @@ def cmd_run(args) -> int:
     from worker.alerts import AlertService
     alerts = AlertService(w.events, logging.getLogger("jarvis.alerts").info)
     alerts.start()
+    # The Etsy print-on-demand shop: a design a day, listed through Printify (worker/shop.py).
+    from worker.shop import ShopService
+    shop = ShopService(logging.getLogger("jarvis.shop").info,
+                       notify=lambda kind, text: (alerts.alerts.scheduled if kind == "shop" else alerts.alerts.notify)(kind, text))
+    shop.start()
     try:
         w.run_forever()
     finally:
+        shop.stop()
         alerts.stop()
         if phone:
             phone.stop()
