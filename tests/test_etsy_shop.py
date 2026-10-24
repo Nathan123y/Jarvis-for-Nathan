@@ -126,7 +126,7 @@ class ListingTests(_Base):
         c.shops.append({"id": 9, "sales_channel": "etsy"})
         done = s.list_pending()
         self.assertEqual(len(done), 3)
-        self.assertIn("T-Shirt ($", done[0])
+        self.assertIn("T-Shirt on Etsy ($", done[0])
         created = [x for x in c.calls if x[0] == "POST" and x[1] == "shops/9/products.json"]
         self.assertEqual([b["blueprint_id"] for _, _, b in created], [12, 478, 400])
         tee = created[0][2]
@@ -141,6 +141,39 @@ class ListingTests(_Base):
         self.assertEqual(len([x for x in c.calls if x[1].endswith("publish.json")]), 3)
         self.assertEqual(s.list_pending(), [])                                         # nothing twice
         self.assertEqual(len([x for x in c.calls if x[1].endswith("publish.json")]), 3)
+
+    def test_every_design_goes_to_ebay_too_with_short_titles(self):
+        c = FakeClients(shops=[{"id": 9, "sales_channel": "etsy"}, {"id": 5, "sales_channel": "ebay"},
+                               {"id": 3, "sales_channel": "disconnected"}])
+        s = self.shop(c)
+        s.make_design()
+        done = s.list_pending()
+        self.assertEqual(len(done), 6)
+        self.assertTrue(any("on eBay" in d for d in done))
+        ebay = [b for m, p, b in c.calls if m == "POST" and p == "shops/5/products.json"]
+        self.assertEqual(len(ebay), 3)
+        self.assertTrue(all(len(b["title"]) <= 80 and b["title"].endswith(("T-Shirt", "Mug", "Sticker")) for b in ebay))
+        self.assertFalse([p for m, p, b in c.calls if p.startswith("shops/3/")])           # not a sales channel
+        rec = ws.load_state(self.dir / "s.json")["designs"][0]
+        self.assertEqual(set(rec["channels"]["ebay"]), {"tee", "mug", "sticker"})
+
+    def test_a_failing_channel_does_not_hold_up_the_other(self):
+        c = FakeClients(shops=[{"id": 9, "sales_channel": "etsy"}, {"id": 5, "sales_channel": "ebay"}])
+        s = self.shop(c)
+        s.make_design()
+        real = c.printify
+        c.printify = lambda m, p, b=None: (_ for _ in ()).throw(RuntimeError("eBay said no")) \
+            if p.startswith("shops/5/products/") and p.endswith("publish.json") else real(m, p, b)
+        done = s.list_pending()
+        self.assertEqual([d for d in done if "Etsy" in d].__len__(), 3)
+        self.assertFalse([d for d in done if "eBay" in d])
+
+    def test_listing_title_fits_the_channel(self):
+        long = "Funny Overwatered Plant Lover Gift Idea For Garden Fairy Houseplant Mom Birthday Present"
+        t = ws.listing_title(long, "T-Shirt", 80)
+        self.assertLessEqual(len(t), 80)
+        self.assertTrue(t.endswith(" T-Shirt"))
+        self.assertEqual(ws.listing_title("Short Title", "Mug", 80), "Short Title Mug")
 
     def test_a_failed_listing_waits_an_hour(self):
         c = FakeClients(shops=[{"id": 9, "sales_channel": "etsy"}])
@@ -184,7 +217,7 @@ class ScheduleTests(_Base):
             svc.run_once(s, now=datetime.fromtimestamp(1_792_900_000).replace(hour=12))
             self.assertEqual(len(ws.load_state(self.dir / "s.json")["designs"]), 1)       # once a day
             self.assertEqual(self.sent[0][0], "shop")
-            self.assertIn("Just listed on Etsy", self.sent[0][1])
+            self.assertIn("Just listed", self.sent[0][1])
             st = ws.load_state(self.dir / "s.json")
             st["make_now"] = True
             ws.save_state(st, self.dir / "s.json")

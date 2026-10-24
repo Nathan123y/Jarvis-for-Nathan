@@ -44,6 +44,8 @@ PRODUCTS = {
     "mug": {"name": "Mug", "blueprint": 478, "provider": 99, "profit": 6.0, "sizes": ("11oz",), "fill": 0.9},
     "sticker": {"name": "Sticker", "blueprint": 400, "provider": 99, "profit": 2.5, "fill": 1.0},
 }
+# Sales channels connected in Printify that every design is listed on. eBay titles stop at 80 characters.
+CHANNELS = {"etsy": {"name": "Etsy", "title_max": 140}, "ebay": {"name": "eBay", "title_max": 80}}
 DEFAULTS = {"enabled": True, "designs_per_day": 1, "time": "10:00", "products": ["tee", "mug", "sticker"]}
 
 BLOCKED = re.compile(r"(?<![a-z])(" + "|".join([
@@ -203,6 +205,21 @@ def png_bytes(img) -> bytes:
     return buf.getvalue()
 
 
+def listing_title(base: str, product: str, limit: int) -> str:
+    """'<title> <product>' within the channel's limit, cut at a word so the product name always fits."""
+    room = limit - len(product) - 1
+    if len(base) > room:
+        base = base[:room].rsplit(" ", 1)[0].rstrip(" ,-|&")
+    return f"{base} {product}"
+
+
+def products_in(rec: dict, channel: str) -> dict:
+    """A design's products in one channel. Etsy's live in rec["products"] (the shop started there)."""
+    if channel == "etsy":
+        return rec.setdefault("products", {})
+    return rec.setdefault("channels", {}).setdefault(channel, {})
+
+
 def placements(kind: str, image_id: str, size: tuple, area: tuple) -> list:
     """Where the design goes in the print area. Printify's scale is relative to the area's width.
     Centred, even on a mug: the photo Printify sends to Etsy looks straight at the middle of the wrap,
@@ -256,10 +273,17 @@ class Shop:
         self.notify = notify or (lambda kind, text: None)
         self._variants: dict = {}
 
-    # which Printify store is the Etsy one
+    # which Printify stores are connected to which sales channel
+    def stores(self) -> dict:
+        """{"etsy": store, "ebay": store} for the channels connected in Printify."""
+        out = {}
+        for shop in self.c.printify("GET", "shops.json"):
+            if shop.get("sales_channel") in CHANNELS:
+                out.setdefault(shop["sales_channel"], shop)
+        return out
+
     def etsy_shop(self) -> Optional[dict]:
-        shops = self.c.printify("GET", "shops.json")
-        return next((s for s in shops if s.get("sales_channel") == "etsy"), None)
+        return self.stores().get("etsy")
 
     def any_shop(self) -> dict:
         shop = self.etsy_shop()
@@ -332,11 +356,11 @@ class Shop:
                              {"file_name": Path(rec["file"]).name, "contents": base64.b64encode(data).decode()})
         return up["id"]
 
-    def create(self, rec: dict, kind: str, shop_id: int, image_id: str) -> dict:
+    def create(self, rec: dict, kind: str, shop_id: int, image_id: str, title_max: int = 140) -> dict:
         p = PRODUCTS[kind]
         ids, (pw, ph) = self.variants(kind)
         images = placements(kind, image_id, rec["size"], (pw, ph))
-        title = f"{rec['title']} {p['name']}"[:140]
+        title = listing_title(rec["title"], p["name"], title_max)
         desc = (f"{rec['description']}\n\n{rec['slogan'].title()}." if rec.get("slogan") else rec["description"]) + \
             ("\n\nDesigned in our studio with the help of AI image tools, then printed on demand and shipped by our "
              "production partner. Each item is made for you after you order.")
@@ -360,57 +384,68 @@ class Shop:
         product["published"] = True
 
     def list_pending(self) -> list:
-        """Put every queued design on the products it's still missing, and publish them, once Etsy is connected."""
-        shop = self.etsy_shop()
-        if not shop:
+        """Put every queued design on the products it's still missing in each connected channel, and publish
+        them. A channel that fails waits an hour without holding up the others."""
+        stores = self.stores()
+        if not stores:
             return []
         st = load_state(self.state_path)
         done = []
         for rec in st["designs"]:
-            if rec.get("failed") or self.clock() < rec.get("retry_at", 0):
+            if rec.get("failed"):
                 continue
-            for kind in self.cfg()["products"]:
-                if kind not in PRODUCTS:
+            for channel, shop in stores.items():
+                retry = rec.setdefault("retry_at_by", {})
+                if self.clock() < retry.get(channel, rec.get("retry_at", 0) if channel == "etsy" else 0):
                     continue
-                prod = rec["products"].get(kind)
-                try:
-                    if prod is None or prod.get("shop") != shop["id"]:
-                        rec["upload_id"] = self.upload(rec)
-                        prod = rec["products"][kind] = self.create(rec, kind, shop["id"], rec["upload_id"])
+                listed = products_in(rec, channel)
+                for kind in self.cfg()["products"]:
+                    if kind not in PRODUCTS:
+                        continue
+                    prod = listed.get(kind)
+                    try:
+                        if prod is None or prod.get("shop") != shop["id"]:
+                            rec["upload_id"] = self.upload(rec)
+                            prod = listed[kind] = self.create(rec, kind, shop["id"], rec["upload_id"],
+                                                              CHANNELS[channel]["title_max"])
+                            save_state(st, self.state_path)
+                        if not prod["published"]:
+                            self.publish(prod)
+                            prod["listed_at"] = self.clock()
+                            done.append(f"{rec['title'][:45]} {PRODUCTS[kind]['name']} on {CHANNELS[channel]['name']} "
+                                        f"(${prod['price'] / 100:.2f})")
+                    except Exception as exc:
+                        self.log(f"shop: {channel} {kind} for {rec['id']} failed: {exc}")
+                        rec.setdefault("errors", []).append(f"{channel} {kind}: {str(exc)[:200]}")
+                        retry[channel] = self.clock() + 3600         # an hour, not every pass
+                        if len(rec["errors"]) >= 12:
+                            rec["failed"] = True
                         save_state(st, self.state_path)
-                    if not prod["published"]:
-                        self.publish(prod)
-                        prod["listed_at"] = self.clock()
-                        done.append(f"{rec['title'][:50]} {PRODUCTS[kind]['name']} (${prod['price'] / 100:.2f})")
-                except Exception as exc:
-                    self.log(f"shop: {kind} for {rec['id']} failed: {exc}")
-                    rec.setdefault("errors", []).append(f"{kind}: {str(exc)[:200]}")
-                    rec["retry_at"] = self.clock() + 3600            # an hour, not every pass
-                    if len(rec["errors"]) >= 6:
-                        rec["failed"] = True
+                        break
                     save_state(st, self.state_path)
-                    break
-                save_state(st, self.state_path)
         return done
 
     def new_orders(self) -> list:
-        shop = self.etsy_shop()
-        if not shop:
+        stores = self.stores()
+        if not stores:
             return []
         st = load_state(self.state_path)
-        first = not st.get("orders_started")
-        data = self.c.printify("GET", f"shops/{shop['id']}/orders.json?limit=20")
+        started = st.setdefault("orders_started_by", {"etsy": True} if st.get("orders_started") else {})
         lines = []
-        for o in data.get("data") or []:
-            if o["id"] in st["orders_seen"]:
-                continue
-            st["orders_seen"].append(o["id"])
-            if first:
-                continue
-            items = ", ".join(str((li.get("metadata") or {}).get("title") or "an item")[:50] for li in o.get("line_items") or [])
-            total = (o.get("total_price") or 0) / 100
-            lines.append(f"🛍️ New Etsy order: {items}" + (f" (${total:.2f})" if total else "") +
-                         ". Printify will print and ship it.")
+        for channel, shop in stores.items():
+            data = self.c.printify("GET", f"shops/{shop['id']}/orders.json?limit=20")
+            for o in data.get("data") or []:
+                if o["id"] in st["orders_seen"]:
+                    continue
+                st["orders_seen"].append(o["id"])
+                if not started.get(channel):                    # the first look at a channel is a baseline
+                    continue
+                items = ", ".join(str((li.get("metadata") or {}).get("title") or "an item")[:50]
+                                  for li in o.get("line_items") or [])
+                total = (o.get("total_price") or 0) / 100
+                lines.append(f"🛍️ New {CHANNELS[channel]['name']} order: {items}" +
+                             (f" (${total:.2f})" if total else "") + ". Printify will print and ship it.")
+            started[channel] = True
         st["orders_started"] = True
         st["orders_seen"] = st["orders_seen"][-500:]
         save_state(st, self.state_path)
@@ -463,7 +498,8 @@ class ShopService:
                 return
         listed = shop.list_pending()
         if listed:
-            self.notify("shop", "🛍️ Just listed on Etsy: " + "; ".join(listed[:6]) + ".")
+            self.notify("shop", "🛍️ Just listed: " + "; ".join(listed[:6]) +
+                        (f"; and {len(listed) - 6} more" if len(listed) > 6 else "") + ".")
         for line in shop.new_orders():
             self.notify("shop", line)
 

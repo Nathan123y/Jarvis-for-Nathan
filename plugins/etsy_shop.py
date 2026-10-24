@@ -14,9 +14,9 @@ from worker import shop as ws
 PLUGIN = {
     "name": "etsy_shop",
     "description": (
-        "The user's Etsy print-on-demand shop, which Jarvis runs by itself: every day it invents a design "
+        "The user's Etsy and eBay print-on-demand shop, which Jarvis runs by itself: every day it invents a design "
         "(AI illustration and slogan), puts it on a T-shirt, a mug and a sticker through Printify, and lists "
-        "them on Etsy; Printify prints and ships orders. Use for 'how is my Etsy shop doing', 'any Etsy "
+        "them on Etsy and eBay; Printify prints and ships orders. Use for 'how is my Etsy shop doing', 'any Etsy "
         "orders', 'make a new product now' (make_now), 'pause the shop' (pause), 'resume the shop' (resume), "
         "'make 2 designs a day' (per_day, value=number), 'what did you list lately' (recent). "
         "Actions: status, make_now, pause, resume, per_day, recent."
@@ -48,7 +48,9 @@ def _status() -> str:
     cfg = ws.settings()
     st = ws.load_state()
     designs = st["designs"]
-    listed = sum(1 for d in designs for p in d.get("products", {}).values() if p.get("published"))
+    live = {ch: sum(1 for d in designs for p in ws.products_in(dict(d), ch).values() if p.get("published"))
+            for ch in ws.CHANNELS}
+    listed = sum(live.values())
     waiting = sum(1 for d in designs if not d.get("failed") and not any(p.get("published") for p in d.get("products", {}).values()))
     tokens = get_plugin_config("printify").get("token") and get_plugin_config("cloudflare").get("api_token")
     parts = []
@@ -56,7 +58,8 @@ def _status() -> str:
         parts.append("The shop needs the Printify and Cloudflare keys in Plugin Settings.")
     parts.append(f"The shop is {'running' if cfg['enabled'] else 'paused'}: {cfg['designs_per_day']} design"
                  f"{'s' if cfg['designs_per_day'] != 1 else ''} a day at {cfg['time']}, each as a shirt, mug and sticker.")
-    parts.append(f"{len(designs)} designs made, {listed} listings live on Etsy" +
+    where = " and ".join(f"{n} on {ws.CHANNELS[ch]['name']}" for ch, n in live.items() if n) or "none live yet"
+    parts.append(f"{len(designs)} designs made, {listed} listings: {where}" +
                  (f", {waiting} waiting to be listed." if waiting else "."))
     orders = len(st.get("orders_seen") or []) if st.get("orders_started") else 0
     parts.append(f"{orders} order{'s' if orders != 1 else ''} so far." if orders else "No orders yet.")
