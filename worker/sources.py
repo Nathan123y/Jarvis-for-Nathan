@@ -117,6 +117,33 @@ def trading_summary(run=subprocess.run) -> Optional[str]:
     return text or None
 
 
+# ── fantasy football ─────────────────────────────────────────────────────────
+def fantasy_summary() -> Optional[str]:
+    """This week's score and projection in each league, then players to swap out or watch."""
+    from plugins import espn_fantasy as espn
+    lines = []
+    for lg in espn._leagues():
+        try:
+            me, them = espn._week_sides(lg)
+        except ValueError:
+            continue
+        lead = me[2] - them[2]
+        call = f"projected to win by {lead:.1f}" if lead > 0 else \
+            f"projected to lose by {-lead:.1f}" if lead < 0 else "projected even"
+        lines.append(f"{_short(espn._name(lg), 25)}: you {me[1]:.1f} vs {_short(them[0].team_name, 25)} "
+                     f"{them[1]:.1f}, {call}.")
+    if not lines:
+        return None
+    found = espn.roster_alerts()
+    if found.get("swap"):
+        lines.append("Swap out: " + "; ".join(found["swap"][:4]))
+    if found.get("watch"):
+        lines.append("Questionable: " + "; ".join(found["watch"][:4]))
+    if not found.get("swap") and not found.get("watch"):
+        lines.append("No injured or bye-week starters.")
+    return "\n".join(lines)
+
+
 # ── the morning text ─────────────────────────────────────────────────────────
 def morning_text(*, today: date, weather_line: Optional[str], events: Optional[list[dict]], canvas: list[dict],
                  fantasy_swaps: list[str], packages: list[str], overnight: list[str]) -> str:

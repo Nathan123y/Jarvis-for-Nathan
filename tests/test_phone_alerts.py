@@ -246,6 +246,15 @@ class ScannerTests(_Base):
         self.now = datetime(2026, 10, 24, 13, 31).timestamp()             # Saturday
         self.assertEqual(s.trading_daily(summary_fn=summary), "")
 
+    def test_send_later_waits_for_its_time(self):
+        s = self.scanner()
+        self.store.set(pa.NOW_FLAG, {"kind": "fantasy", "at": NOON + 180})
+        with patch("worker.sources.fantasy_summary", return_value="League A: you 88.0 vs Bob 70.0"):
+            self.assertEqual(s.on_request(), "")
+            self.now = NOON + 181
+            self.assertEqual(s.on_request(), "sent")
+        self.assertEqual(self.sent, ["🏈 Fantasy this week:\nLeague A: you 88.0 vs Bob 70.0"])
+
     def test_send_now_from_the_plugin_ignores_the_schedule(self):
         s = self.scanner(off=["morning"])
         self.store.set(pa.NOW_FLAG, "morning")

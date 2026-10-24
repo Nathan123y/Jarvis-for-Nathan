@@ -316,11 +316,20 @@ class Scanner:
     def on_request(self) -> str:
         """'Text me my morning summary now' / 'text me the trading summary now', from the plugin."""
         from core.phone_alerts import NOW_FLAG
-        what = self.store.get(NOW_FLAG)
-        if not what:
+        req = self.store.get(NOW_FLAG)
+        if not req:
+            return ""
+        what, at = (req.get("kind"), float(req.get("at") or 0)) if isinstance(req, dict) else (req, 0.0)
+        if self.clock() < at:                                   # "…in 3 minutes"
             return ""
         self.store.set(NOW_FLAG, "")
-        return self.morning(force=True) if what == "morning" else self.trading_daily(force=True)
+        if what == "morning":
+            return self.morning(force=True)
+        if what == "fantasy":
+            text = sources.fantasy_summary()
+            return self.alerts.scheduled("fantasy", "🏈 Fantasy this week:\n" + (text or "No league is connected."),
+                                         force=True)
+        return self.trading_daily(force=True)
 
     # ── Canvas ───────────────────────────────────────────────────────────────
     def canvas(self, fetch=None) -> int:
