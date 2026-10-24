@@ -18,13 +18,16 @@ PLUGIN = {
         "(AI illustration and slogan), puts it on a T-shirt, a mug and a sticker through Printify, and lists "
         "them on Etsy and eBay; Printify prints and ships orders. Use for 'how is my Etsy shop doing', 'any Etsy "
         "orders', 'make a new product now' (make_now), 'pause the shop' (pause), 'resume the shop' (resume), "
-        "'make 2 designs a day' (per_day, value=number), 'what did you list lately' (recent). "
-        "Actions: status, make_now, pause, resume, per_day, recent."
+        "'make 2 designs a day' (per_day, value=number), 'what did you list lately' (recent), "
+        "'connect Jarvis to Etsy' for the extra listing photos (connect_etsy), and when the user pastes the "
+        "localhost address Etsy sent them to (finish_etsy, url=that address). "
+        "Actions: status, make_now, pause, resume, per_day, recent, connect_etsy, finish_etsy."
     ),
     "parameters": {
         "type": "OBJECT",
         "properties": {
-            "action": {"type": "STRING", "enum": ["status", "make_now", "pause", "resume", "per_day", "recent"]},
+            "action": {"type": "STRING", "enum": ["status", "make_now", "pause", "resume", "per_day", "recent", "connect_etsy", "finish_etsy"]},
+            "url": {"type": "STRING", "description": "For finish_etsy: the whole https://localhost:3003/callback?... address"},
             "value": {"type": "INTEGER", "description": "For per_day: designs a day (0-5); each becomes 3 listings"},
         },
         "required": [],
@@ -59,7 +62,7 @@ def _status() -> str:
     parts.append(f"The shop is {'running' if cfg['enabled'] else 'paused'}: {cfg['designs_per_day']} design"
                  f"{'s' if cfg['designs_per_day'] != 1 else ''} a day at {cfg['time']}, each as a shirt, mug and sticker.")
     where = " and ".join(f"{n} on {ws.CHANNELS[ch]['name']}" for ch, n in live.items() if n) or "none live yet"
-    parts.append(f"{len(designs)} designs made, {listed} listings: {where}" +
+    parts.append(f"{len(designs)} design{'s' if len(designs) != 1 else ''} made, {listed} listings: {where}" +
                  (f", {waiting} waiting to be listed." if waiting else "."))
     orders = len(st.get("orders_seen") or []) if st.get("orders_started") else 0
     parts.append(f"{orders} order{'s' if orders != 1 else ''} so far." if orders else "No orders yet.")
@@ -110,6 +113,26 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
                 except Exception:
                     pass
             return "Latest designs: " + "; ".join(lines)
-        return "Etsy shop actions: status, make_now, pause, resume, per_day, recent."
+        if action == "connect_etsy":
+            from worker import etsy_api
+            ok, why = etsy_api.ping()
+            if not ok:
+                return ("Etsy hasn't activated your app yet (new apps wait for Etsy's approval; check "
+                        "etsy.com/developers/your-apps). I'll be ready the moment it's active. Etsy says: " + why)
+            link = etsy_api.connect_url()
+            if player:
+                try:
+                    player.show_content("CONNECT JARVIS TO ETSY", "Open this link, approve, then copy the whole address "
+                                        "of the page it sends you to (it won't load; that's fine) and paste it to me:\n\n" + link)
+                except Exception:
+                    pass
+            return ("Open the link I put on screen and approve. Etsy will send you to a page that doesn't load; "
+                    "copy its whole address and give it to me.\n" + link)
+        if action == "finish_etsy":
+            from worker import etsy_api
+            shop_id = etsy_api.finish(str(args.get("url") or ""))
+            return (f"Connected to your Etsy shop ({shop_id}). I'll add the extra photos to every listing "
+                    "within a few minutes, and to each new one as it goes up.")
+        return "Etsy shop actions: status, make_now, pause, resume, per_day, recent, connect_etsy, finish_etsy."
     except Exception as exc:
         return f"The Etsy shop {action} failed ({type(exc).__name__}: {str(exc)[:120]})."

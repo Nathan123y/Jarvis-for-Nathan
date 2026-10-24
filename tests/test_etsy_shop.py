@@ -210,7 +210,7 @@ class ScheduleTests(_Base):
         c = FakeClients(shops=[{"id": 9, "sales_channel": "etsy"}])
         s = self.shop(c)
         svc = ws.ShopService(log=lambda m: None, notify=lambda k, t: self.sent.append((k, t)))
-        with patch.object(ws, "settings", lambda: dict(ws.DEFAULTS)):
+        with patch.object(ws, "settings", lambda: dict(ws.DEFAULTS)), patch("worker.storefront.publish", lambda *a, **k: ""):
             svc.run_once(s, now=datetime.fromtimestamp(1_792_900_000).replace(hour=9))
             self.assertEqual(len(ws.load_state(self.dir / "s.json")["designs"]), 0)       # before 10:00
             svc.run_once(s, now=datetime.fromtimestamp(1_792_900_000).replace(hour=11))
@@ -227,3 +227,66 @@ class ScheduleTests(_Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StorefrontTests(_Base):
+    def test_site_has_a_page_per_listed_design_buy_links_and_a_feed(self):
+        from worker import storefront as sf
+        c = FakeClients(shops=[{"id": 9, "sales_channel": "etsy"}])
+        s = self.shop(c)
+        s.make_design()
+        s.list_pending()
+        real = c.printify
+
+        def printify(m, p, b=None):
+            if m == "GET" and p.startswith("shops/9/products/"):
+                pid = p.split("/")[3].split(".")[0]
+                return {"external": {"handle": f"https://www.etsy.com/listing/{pid}"},
+                        "images": [{"src": f"https://img/{pid}?camera_label=front"}]}
+            return real(m, p, b)
+        designs = ws.load_state(self.dir / "s.json")["designs"]
+        out = self.dir / "site"
+        n = sf.build(designs, printify, out, {**sf.DEFAULTS, "pinterest_tag": "abc123"},
+                     download=lambda url, dest: dest.write_bytes(b"jpg") or True)
+        self.assertEqual(n, 1)
+        page = (out / "p" / f"{designs[0]['id']}.html").read_text()
+        self.assertIn("https://www.etsy.com/listing/p1", page)
+        self.assertIn("T-Shirt on Etsy", page)
+        self.assertIn('name="p:domain_verify" content="abc123"', page)
+        feed = (out / "feed.xml").read_text()
+        self.assertIn(f"https://nathan123y.github.io/p/{designs[0]['id']}.html", feed)
+        self.assertIn("<enclosure", feed)
+
+    def test_site_url_for_user_and_project_pages(self):
+        from worker import storefront as sf
+        self.assertEqual(sf.site_url("Nathan123y/Nathan123y.github.io"), "https://nathan123y.github.io/")
+        self.assertEqual(sf.site_url("Nathan123y/shop"), "https://nathan123y.github.io/shop/")
+
+
+class EtsyPhotoTests(_Base):
+    def test_extra_photos_go_to_each_etsy_listing_once(self):
+        c = FakeClients(shops=[{"id": 9, "sales_channel": "etsy"}])
+        s = self.shop(c)
+        s.make_design()
+        s.list_pending()
+        st = ws.load_state(self.dir / "s.json")
+        for prod in st["designs"][0]["products"].values():
+            prod["url"] = f"https://www.etsy.com/listing/{prod['id'][1:]}00/funny"
+            self.assertTrue(any(p.endswith("-design.jpg") for p in prod["extra_photos"]))   # close-up saved
+        ws.save_state(st, self.dir / "s.json")
+        uploads = []
+        svc = ws.ShopService(log=lambda m: None)
+        with patch("worker.etsy_api.connected", lambda: True), \
+                patch("worker.etsy_api.add_photos", lambda listing, paths: uploads.append(listing) or len(paths)):
+            svc.etsy_photos(s)
+            svc.etsy_photos(s)
+        self.assertEqual(sorted(uploads), ["100", "200", "300"])
+
+    def test_listing_id_and_a_stale_approval_is_refused(self):
+        from worker import etsy_api
+        self.assertEqual(etsy_api.listing_id("https://www.etsy.com/listing/4602580828/funny"), "4602580828")
+        with patch("worker.etsy_api._cfg", lambda: {"keystring": "k", "pkce_state": "new", "pkce_verifier": "v"}):
+            with self.assertRaises(RuntimeError):
+                etsy_api.finish("https://localhost:3003/callback?code=abc&state=old")
+            with self.assertRaises(RuntimeError):
+                etsy_api.finish("https://localhost:3003/callback?state=new")

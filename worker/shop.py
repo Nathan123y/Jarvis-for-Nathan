@@ -46,6 +46,13 @@ PRODUCTS = {
 }
 # Sales channels connected in Printify that every design is listed on. eBay titles stop at 80 characters.
 CHANNELS = {"etsy": {"name": "Etsy", "title_max": 140}, "ebay": {"name": "eBay", "title_max": 80}}
+# Printify renders dozens of product photos but sends Etsy one or two, and only says what they are when the
+# product is created; these are saved then, for the listing (once Jarvis can reach Etsy) and the storefront.
+# Left out: the folded shirt (it hides the design) and the mug scenes (they look at the side of the mug,
+# where a centred design wraps out of sight). Every listing also gets a close-up of the design itself.
+EXTRA_PHOTOS = {"tee": ("person-1", "person-2", "lifestyle", "hanging-1", "duo"),
+                "mug": (),
+                "sticker": ("context-1", "context-2")}
 DEFAULTS = {"enabled": True, "designs_per_day": 1, "time": "10:00", "products": ["tee", "mug", "sticker"]}
 
 BLOCKED = re.compile(r"(?<![a-z])(" + "|".join([
@@ -197,6 +204,26 @@ def _wrap(text: str, font, draw, width: int) -> list:
             lines.append(cur)
             cur = word
     return lines + ([cur] if cur else [])
+
+
+def design_closeup(design: Path, dest: Path, size: int = 2000, detail: bool = False) -> None:
+    """The design on a soft square backdrop: a clear look at the artwork for the listing photos.
+    `detail` zooms in on the middle of the illustration, from the original drawing."""
+    from PIL import Image
+    art = Image.open(design).convert("RGBA")
+    raw = design.with_name(design.stem + "-raw.jpg")
+    if detail and raw.exists():
+        art = cut_background(Image.open(raw))                    # the drawing alone, no slogan
+        w, h = art.size                                          # then the middle 70 %, filling the frame
+        art = art.crop((int(w * 0.15), int(h * 0.12), int(w * 0.85), int(h * 0.82)))
+        art = art.resize((size, round(art.height * size / art.width)), Image.LANCZOS)
+        backdrop = (226, 236, 228, 255)
+    else:
+        art.thumbnail((int(size * 0.8), int(size * 0.8)), Image.LANCZOS)
+        backdrop = (244, 239, 230, 255)
+    canvas = Image.new("RGBA", (size, size), backdrop)
+    canvas.paste(art, ((size - art.width) // 2, (size - art.height) // 2), art)
+    canvas.convert("RGB").save(dest, "JPEG", quality=90)
 
 
 def png_bytes(img) -> bytes:
@@ -370,12 +397,45 @@ class Shop:
                 "print_areas": [{"variant_ids": ids, "placeholders": [
                     {"position": "front", "images": images}]}]}
         product = self.c.printify("POST", f"shops/{shop_id}/products.json", body)
+        extra = self.save_photos(rec, kind, product.get("images") or [])
         priced = [{"id": v["id"], "price": price_for(int(v.get("cost") or 0), p["profit"]), "is_enabled": True}
                   for v in product.get("variants") or [] if v["id"] in ids]
         if priced and all(v.get("cost") for v in product["variants"] if v["id"] in ids):
             self.c.printify("PUT", f"shops/{shop_id}/products/{product['id']}.json", {"variants": priced})
         return {"id": product["id"], "shop": shop_id, "price": min((v["price"] for v in priced), default=2999),
-                "published": False}
+                "published": False, "extra_photos": extra}
+
+    def save_photos(self, rec: dict, kind: str, images: list) -> list:
+        """Download the chosen extra photos (of the first variant) to memory/etsy_shop/photos/, plus the
+        design close-up."""
+        import requests
+        first = next((i["variant_ids"][0] for i in images if i.get("variant_ids")), None)
+        folder = self.art_dir / "photos"
+        saved = []
+        for name, detail in (("design", False), ("detail", True)):
+            closeup = folder / f"{rec['id']}-{name}.jpg"
+            if not closeup.exists() and Path(rec.get("file", "")).is_file():
+                folder.mkdir(parents=True, exist_ok=True)
+                design_closeup(Path(rec["file"]), closeup, detail=detail)
+            if closeup.exists():
+                saved.append(str(closeup))
+        for cam in EXTRA_PHOTOS.get(kind, ()):
+            img = next((i for i in images if i["src"].endswith(f"camera_label={cam}")
+                        and (first is None or first in i.get("variant_ids", []))), None)
+            if not img:
+                continue
+            dest = folder / f"{rec['id']}-{kind}-{cam}.jpg"
+            if not dest.exists():
+                try:
+                    r = requests.get(img["src"], headers={"User-Agent": "Mozilla/5.0"}, timeout=60)
+                    if r.status_code != 200 or len(r.content) < 5000:
+                        continue
+                    folder.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(r.content)
+                except Exception:
+                    continue
+            saved.append(str(dest))
+        return saved
 
     def publish(self, product: dict) -> None:
         self.c.printify("POST", f"shops/{product['shop']}/products/{product['id']}/publish.json",
@@ -502,6 +562,52 @@ class ShopService:
                         (f"; and {len(listed) - 6} more" if len(listed) > 6 else "") + ".")
         for line in shop.new_orders():
             self.notify("shop", line)
+        self.storefront(shop, today, force=bool(listed))
+        self.etsy_photos(shop)
+
+    def etsy_photos(self, shop: "Shop") -> None:
+        """Add the saved extra photos to each Etsy listing, once Jarvis is connected to Etsy itself."""
+        from worker import etsy_api
+        if not etsy_api.connected():
+            return
+        st = load_state(shop.state_path)
+        n = 0
+        for rec in st["designs"]:
+            for kind, prod in rec.get("products", {}).items():
+                if not prod.get("published") or prod.get("photos_added") or not prod.get("extra_photos"):
+                    continue
+                if not prod.get("url"):
+                    try:
+                        p = shop.c.printify("GET", f"shops/{prod['shop']}/products/{prod['id']}.json")
+                        prod["url"] = (p.get("external") or {}).get("handle") or ""
+                    except Exception:
+                        continue
+                listing = etsy_api.listing_id(prod.get("url"))
+                if not listing:
+                    continue                                   # Etsy hasn't got it yet; next pass
+                try:
+                    n += etsy_api.add_photos(listing, prod["extra_photos"])
+                    prod["photos_added"] = True
+                except Exception as exc:
+                    self.log(f"shop: photos for Etsy listing {listing} failed: {exc}")
+                    save_state(st, shop.state_path)
+                    return                                     # try again next pass
+                save_state(st, shop.state_path)
+        if n:
+            self.log(f"shop: added {n} photos to Etsy listings")
+
+    def storefront(self, shop: "Shop", today: str, force: bool = False) -> None:
+        """Rebuild the public storefront (worker/storefront.py) after new listings, else once a day."""
+        st = load_state(shop.state_path)
+        if not force and st.get("storefront_day") == today:
+            return
+        st["storefront_day"] = today
+        try:
+            from worker import storefront
+            storefront.publish(st["designs"], shop.c.printify, self.log)    # caches each listing's link and photos
+        except Exception as exc:
+            self.log(f"storefront: {exc}")
+        save_state(st, shop.state_path)
 
     def _run(self) -> None:
         while not self._stop.is_set():
