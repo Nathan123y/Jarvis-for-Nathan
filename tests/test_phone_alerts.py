@@ -279,6 +279,85 @@ class ScannerTests(_Base):
         self.assertEqual(s.canvas(fetch=lambda tf: (items, None)), 1)
         self.assertIn("Due at 11:59 PM: Tonight (Math)", self.sent[1])
 
+    def test_due_tonight_once_at_eight_and_no_second_canvas_warning(self):
+        s = self.scanner()
+        items = [{"name": "Lab 4", "course": "EE 97", "due": "2026-10-23", "due_at": "", "overdue": False},
+                 {"name": "Quiz", "course": "Math", "due": "2026-10-23", "due_at": "2026-10-23T19:00", "overdue": False},
+                 {"name": "Essay", "course": "English", "due": "2026-10-24", "due_at": "", "overdue": False}]
+        fetch = lambda tf: (items, None)
+        self.assertEqual(s.canvas_tonight(fetch=fetch), "")                  # noon: not yet
+        self.now = datetime(2026, 10, 23, 20, 1).timestamp()
+        self.away = False                                                     # comes at the Mac too
+        with patch("memory.config_manager.get_plugin_config", return_value={}):
+            self.assertEqual(s.canvas_tonight(fetch=fetch), "sent")
+            self.assertEqual(s.canvas_tonight(fetch=fetch), "")
+        self.assertEqual(self.sent, ["📚 Still due tonight (I can't see what you've turned in):\n"
+                                     "• 11:59 PM: Lab 4 (EE 97)"])
+        self.away = True
+        self.now = datetime(2026, 10, 23, 21, 30).timestamp()
+        self.assertEqual(s.canvas(fetch=fetch), 0)
+
+    def test_grades_baseline_then_new_grades_texted_once(self):
+        s = self.scanner()
+        grade = {"id": "9", "course": "EE 97", "name": "Lab 3", "score": 18, "possible": 20, "grade": "18"}
+        self.assertEqual(s.grades(fetch=lambda since: ([grade], None)), 0)
+        self.assertEqual(s.grades(fetch=lambda since: ([grade], None)), 1)
+        self.assertEqual(s.grades(fetch=lambda since: ([grade], None)), 0)
+        self.assertEqual(self.sent, ["🎓 Grade posted in EE 97: Lab 3, 18/20 (90%)."])
+        self.assertEqual(s._cur()["grades_week"][0][1], "Lab 3 18/20 (90%)")
+
+    def test_bots_review_texts_each_new_review_once(self):
+        s = self.scanner()
+        r1 = {"generated": "2026-10-22T16:36", "speech": "No changes."}
+        r2 = {"generated": "2026-10-23T16:36", "speech": "qqq-orb-day tightened its stop."}
+        self.assertEqual(s.bots_review(read=lambda: r1), "")                 # baseline
+        self.assertEqual(s.bots_review(read=lambda: r1), "")
+        self.assertEqual(s.bots_review(read=lambda: r2), "sent")
+        self.assertEqual(s.bots_review(read=lambda: r2), "")
+        self.assertEqual(self.sent, ["🧠 The bots' nightly review: qqq-orb-day tightened its stop."])
+
+    def test_memecoin_trades_and_big_moves(self):
+        s = self.scanner(meme_move=20)
+        beat = datetime.fromtimestamp(NOON).astimezone().isoformat()
+        trades = [{"kind": "buy", "symbol": "DOGE/USD", "usd": 100, "price": 0.21, "stop": 0.19}]
+        status = {"heartbeat": beat, "positions": [{"symbol": "PEPE/USD", "opened": "x", "change_pct": 12}]}
+        self.assertEqual(s.memecoin(trades_fn=lambda: trades, status_fn=lambda: status), 0)   # baseline
+        trades = trades + [{"kind": "buy", "symbol": "PEPE/USD", "usd": 150, "price": 0.0000123, "stop": 0.00001},
+                           {"kind": "sell", "symbol": "DOGE/USD", "why": "trailing stop", "pnl": 12.4}]
+        status["positions"][0]["change_pct"] = 24
+        self.assertEqual(s.memecoin(trades_fn=lambda: trades, status_fn=lambda: status), 3)
+        self.assertEqual(s.memecoin(trades_fn=lambda: trades, status_fn=lambda: status), 0)
+        self.assertEqual(self.sent, [
+            "🪙 Memecoin bot bought PEPE/USD: $150 at $0.0000123, stop $0.0000100 (simulated).",
+            "🪙 Memecoin bot sold DOGE/USD (trailing stop): +12.40 dollars (simulated).",
+            "🪙 PEPE/USD is +24% since the memecoin bot bought it (simulated)."])
+
+    def test_gumroad_sales_baseline_then_new_sale(self):
+        s = self.scanner()
+        old = {"id": "a", "product": "Soccer Coach Organizer", "price": "$12", "refunded": False}
+        new = {"id": "b", "product": "Soccer Coach Organizer", "price": "$12", "refunded": False}
+        self.assertEqual(s.sales(fetch=lambda after: [old]), 0)
+        self.assertEqual(s.sales(fetch=lambda after: [old, new]), 1)
+        self.assertEqual(self.sent, ["💰 Gumroad sale: Soccer Coach Organizer, $12."])
+
+    def test_sunday_recap_once_on_sunday_evening(self):
+        s = self.scanner()
+        parts = {"trading": "Options bots: +240 dollars on 9 closed trades, 6 won (simulated).", "memecoin": None,
+                 "grades": ["Lab 3 18/20 (90%)"], "money": "Spent $80 this week, $20 less than usual.",
+                 "workouts": [{"title": "Push", "day": "Mon"}], "sales": 1,
+                 "canvas": [{"name": "Essay", "course": "English", "due": "2026-10-27", "overdue": False}],
+                 "events": []}
+        self.now = datetime(2026, 10, 24, 18, 5).timestamp()                # Saturday
+        self.assertEqual(s.weekly(gather=lambda now: parts), "")
+        self.now = datetime(2026, 10, 25, 18, 5).timestamp()                # Sunday
+        self.assertEqual(s.weekly(gather=lambda now: parts), "sent")
+        self.assertEqual(s.weekly(gather=lambda now: parts), "")
+        text = self.sent[0]
+        self.assertTrue(text.startswith("Your week, through Sun Oct 25"))
+        for bit in ("📈 Options bots: +240", "💰 1 Gumroad sale this week.", "💵 Spent $80", "🏋️ 1 workout: Push (Mon)",
+                    "🎓 Grades: Lab 3 18/20 (90%)", "📚 Due this week (1): Essay (Tue)"):
+            self.assertIn(bit, text)
+
 
 class SourceTests(unittest.TestCase):
     def test_calendar_reads_expanded_occurrences_and_skips_birthdays(self):

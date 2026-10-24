@@ -1,4 +1,5 @@
-"""Read-only data for the phone texts: calendar, weather, the trading day, the morning text.
+"""Read-only data for the phone texts: calendar, weather, the trading day, the bots' nightly review,
+the memecoin bot, Gumroad sales, spending, workouts, the morning text and the Sunday recap.
 
 Calendar comes from Calendar's own database on this Mac, whose occurrence cache
 already expands repeating events (AppleScript's Calendar search skips repeats, and
@@ -8,6 +9,7 @@ Reminders" calendar carries Apple Reminders that have a time.
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import subprocess
 import sys
@@ -89,7 +91,10 @@ def weather(city: str, get=_get_json) -> Optional[str]:
 
 
 # ── trading ──────────────────────────────────────────────────────────────────
-BOTS = Path.home() / "optionsbots" / "scripts" / "bots.py"
+OPTIONSBOTS = Path.home() / "optionsbots"
+BOTS = OPTIONSBOTS / "scripts" / "bots.py"
+LEARN_LATEST = OPTIONSBOTS / "data" / "learn" / "latest.json"
+MEMEBOT = OPTIONSBOTS / "data" / "memebot"
 
 
 def trading_summary(run=subprocess.run) -> Optional[str]:
@@ -115,6 +120,100 @@ def trading_summary(run=subprocess.run) -> Optional[str]:
         worst = min(by_bot, key=by_bot.get)
         text += f" Best bot: {best} ({by_bot[best]:+,.0f}). Worst: {worst} ({by_bot[worst]:+,.0f})."
     return text or None
+
+
+def bots_review(path: Path = LEARN_LATEST) -> Optional[dict]:
+    """The last nightly review: {"generated", "speech", "changed", ...}, or None before the first one."""
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def meme_trades(folder: Path = MEMEBOT) -> list[dict]:
+    """Every buy and sell the memecoin bot made, oldest first (its trades.jsonl)."""
+    try:
+        lines = (folder / "trades.jsonl").read_text().splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            out.append({})                   # keep the count of lines right for the cursor
+    return out
+
+
+def meme_status(folder: Path = MEMEBOT) -> Optional[dict]:
+    try:
+        return json.loads((folder / "status.json").read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def meme_price(value) -> str:
+    """Memecoins cost fractions of a cent: '$0.0000123', '$0.21', '$14.50'."""
+    v = float(value)
+    if v >= 1 or v <= 0:
+        return f"${v:,.2f}"
+    return f"${v:.{2 - math.floor(math.log10(v))}f}"               # three significant digits
+
+
+# ── Gumroad ──────────────────────────────────────────────────────────────────
+def gumroad_sales(after: date) -> list[dict]:
+    """Real (not test) Gumroad sales since `after`: [{"id", "product", "price", "refunded"}]."""
+    from plugins.product_sales import _cli_json
+    data = _cli_json(["sales", "list", "--after", after.isoformat()])
+    out = []
+    for sale in data.get("sales") or []:
+        if not isinstance(sale, dict) or not sale.get("id") or sale.get("is_test_purchase") is True \
+                or sale.get("test") is True:
+            continue
+        out.append({"id": str(sale["id"]), "product": _short(sale.get("product_name") or "a product", 50),
+                    "price": _short(sale.get("formatted_total_price"), 20), "refunded": sale.get("refunded") is True})
+    return out
+
+
+# ── spending and workouts, for the Sunday recap ──────────────────────────────
+def money_week(today: date) -> Optional[str]:
+    """This week's logged spending against the four weeks before, and any budget it broke."""
+    from plugins import money_tracker as mt
+    data = mt._load()
+    if not data["entries"]:
+        return None
+    start = mt._start("week", today)
+    spent = mt._spent(data["entries"], None, start)
+    before = [mt._spent(data["entries"], None, start - timedelta(weeks=w))
+              - mt._spent(data["entries"], None, start - timedelta(weeks=w - 1)) for w in range(1, 5)]
+    line = f"Spent {mt._money(spent)} this week"
+    used = [b for b in before if b]
+    if used:
+        avg = sum(used) / len(used)
+        diff = spent - avg
+        line += f", {mt._money(abs(diff))} {'more' if diff > 0 else 'less'} than usual" if abs(diff) >= 1 else ", about usual"
+    over = [c for c, b in data["budgets"].items() if mt._spent(data["entries"], c, mt._start(b["period"], today)) > b["amount"]]
+    if over:
+        line += ". Over budget: " + ", ".join(over)
+    return line + "."
+
+
+def workouts_since(since: datetime) -> Optional[list[dict]]:
+    """Hevy workouts started since `since`: [{"title", "day"}], or None when Hevy isn't connected."""
+    from memory.config_manager import get_plugin_config
+    from plugins import hevy_workouts
+    key = str(get_plugin_config("hevy").get("api_key") or "").strip()
+    if not key:
+        return None
+    out = []
+    for w in hevy_workouts._fetch(key, max_pages=1):
+        try:
+            at = datetime.fromisoformat(str(w.get("start_time")).replace("Z", "+00:00")).astimezone().replace(tzinfo=None)
+        except ValueError:
+            continue
+        if at >= since:
+            out.append({"title": _short(w.get("title") or "Workout", 30), "day": at.strftime("%a")})
+    return out
 
 
 # ── fantasy football ─────────────────────────────────────────────────────────
@@ -176,4 +275,40 @@ def morning_text(*, today: date, weather_line: Optional[str], events: Optional[l
         lines.append("📦 " + "; ".join(packages[:3]))
     if overnight:
         lines.append("🌙 Overnight: " + " | ".join(overnight[:5]))
+    return "\n".join(lines)
+
+
+# ── the Sunday recap ─────────────────────────────────────────────────────────
+def weekly_text(*, today: date, trading: Optional[str], memecoin: Optional[str], grades: list[str],
+                canvas: list[dict], money: Optional[str], workouts: Optional[list[dict]], sales: Optional[int],
+                events: Optional[list[dict]]) -> str:
+    lines = [f"Your week, through {today.strftime('%a %b %-d')}"]
+    if trading:
+        lines.append(f"📈 {trading}")
+    if memecoin:
+        lines.append(f"🪙 {memecoin}")
+    if sales:
+        lines.append(f"💰 {sales} Gumroad sale{'s' if sales != 1 else ''} this week.")
+    if money:
+        lines.append(f"💵 {money}")
+    if workouts is not None:
+        lines.append(f"🏋️ {len(workouts)} workout{'s' if len(workouts) != 1 else ''}" +
+                     (": " + ", ".join(f"{w['title']} ({w['day']})" for w in workouts[:5]) if workouts else "."))
+    if grades:
+        lines.append("🎓 Grades: " + "; ".join(grades[:5]))
+    end = (today + timedelta(days=7)).isoformat()
+    due = [c for c in canvas if c.get("overdue") or (today.isoformat() < (c.get("due") or "") <= end)]
+    overdue = [c for c in due if c.get("overdue")]
+    if overdue:
+        lines.append("📚 Overdue: " + "; ".join(f"{_short(c['name'], 40)} ({_short(c['course'], 20)})" for c in overdue[:3]))
+    upcoming = [c for c in due if not c.get("overdue")]
+    if upcoming:
+        lines.append(f"📚 Due this week ({len(upcoming)}): " + "; ".join(
+            f"{_short(c['name'], 35)} ({date.fromisoformat(c['due']).strftime('%a')})" for c in upcoming[:5]))
+    elif not overdue:
+        lines.append("📚 Nothing due on Canvas this week.")
+    timed = [e for e in events or [] if not e["all_day"]]
+    if timed:
+        lines.append(f"📅 Next week: {len(timed)} event{'s' if len(timed) != 1 else ''}, starting with " +
+                     "; ".join(f"{e['at'].strftime('%a')} {clock(e['at'])} {e['title']}" for e in timed[:3]))
     return "\n".join(lines)

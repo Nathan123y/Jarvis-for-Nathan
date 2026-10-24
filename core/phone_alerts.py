@@ -3,7 +3,7 @@
 The background worker (worker/alerts.py) finds the news: a Jarvis reminder that
 just came due, an important unread email, a website customer who wants a call or
 paid, a background job that broke, a big paper-trading loss, Canvas work due
-within a few hours. Everything goes through notify() here, which decides whether
+within a few hours, a Canvas grade, a memecoin bot trade, a Gumroad sale. Everything goes through notify() here, which decides whether
 it becomes a text:
 
   * only while the user is away from the Mac (screen locked, or no keyboard or
@@ -32,13 +32,19 @@ KINDS = {
     "business": "the website business",
     "trading": "big trading losses",
     "trading_daily": "the daily trading summary",
+    "bots_review": "the bots' nightly review",
+    "memecoin": "memecoin bot trades and big moves",
+    "sales": "Gumroad sales",
     "canvas": "Canvas work due soon",
+    "canvas_tonight": "the 8 PM 'due tonight' check",
+    "grades": "Canvas grades posted",
     "fantasy": "fantasy football injuries and lineup problems",
     "packages": "packages",
     "morning": "the morning text",
+    "weekly": "the Sunday recap",
     "system": "Jarvis problems",
 }
-SCHEDULED = ("morning", "trading_daily")   # summaries you asked for: sent at the Mac too
+SCHEDULED = ("morning", "trading_daily", "canvas_tonight", "bots_review", "weekly")   # summaries you asked for: sent at the Mac too
 DEFAULTS = {
     "enabled": True,
     "my_number": "",
@@ -54,11 +60,14 @@ DEFAULTS = {
     "morning_time": "07:00",
     "trading_time": "13:30",  # weekdays, after the 1:00 PM Pacific close
     "calendar_minutes": 15,
+    "tonight_time": "20:00",  # "due tonight" check
+    "weekly_time": "18:00",   # Sundays
+    "meme_move": 20,          # percent a memecoin position moves before a text
 }
 PREFIX = "JARVIS: "
 _STATE = "phone_alerts_state"
 TEST_FLAG = "phone_alerts_test"
-NOW_FLAG = "phone_alerts_now"        # "morning" or "trading_daily": send that summary now     # set by the plugin; the worker sends a test text
+NOW_FLAG = "phone_alerts_now"        # {"kind": "morning" | "trading_daily" | "fantasy" | "weekly", "at": time}: send that summary
 _MAX_TEXT = 1200
 
 

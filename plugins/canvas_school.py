@@ -296,6 +296,38 @@ def fetch_assignments(timeframe="upcoming"):
     return results[:20], None
 
 
+def fetch_grades(since):
+    """Submissions graded after `since` (an aware datetime), as (items, notice). Needs the API token;
+    the calendar feed has no grades."""
+    config = get_plugin_config("canvas")
+    token = str(config.get("token") or "").strip()
+    if not token:
+        return [], "Canvas grades need a personal access token in Plugin Settings; the calendar feed has no grades."
+    try:
+        base = _base_url(config.get("domain"))
+        courses = _request_pages(base, token, "/api/v1/courses",
+                                 {"enrollment_state": "active", "per_page": 50})
+        results = []
+        for course in courses[:15]:
+            if course.get("id") is None:
+                continue
+            for sub in _request_pages(base, token, f"/api/v1/courses/{int(course['id'])}/students/submissions", {
+                    "student_ids[]": "self", "graded_since": since.isoformat(),
+                    "include[]": "assignment", "per_page": 50}):
+                if sub.get("excused") or sub.get("workflow_state") != "graded" or sub.get("id") is None:
+                    continue
+                work = sub.get("assignment") if isinstance(sub.get("assignment"), dict) else {}
+                results.append({"id": str(sub["id"]), "course": _clean(course.get("name") or "School", 45),
+                                "name": _clean(work.get("name") or "Assignment"),
+                                "score": sub.get("score"), "possible": work.get("points_possible"),
+                                "grade": _clean(sub.get("grade"), 20), "graded_at": _local_time(sub.get("graded_at"))})
+    except ValueError as exc:
+        return [], str(exc)
+    except Exception:
+        return [], "Canvas couldn't be reached right now."
+    return results, None
+
+
 def run(parameters: dict, player=None, session_memory=None) -> str:
     action = str((parameters or {}).get("action") or "assignments").lower().strip()
     timeframe = str((parameters or {}).get("timeframe") or "upcoming").lower().strip()
