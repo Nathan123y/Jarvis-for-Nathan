@@ -44,6 +44,7 @@ SCOUT_AT = (5, 45)                   # before the first application of the day
 DIGEST_AT = (8, 0)                   # the morning "apply to these yourself" text
 MANUAL_PER_DAY = 3
 REPLIES_EVERY = 600
+UPLOAD = re.compile(r"upload|attach|transcript|cover letter|portfolio|writing sample|\bcv\b", re.I)
 REPLY_HOURS = (7, 23)                # reply texts wait for the morning instead of buzzing at night
 
 CA = re.compile(r",\s*CA\b|california", re.I)
@@ -116,7 +117,8 @@ def profile_gaps(profile_path: Path = PROFILE, resume: Path = RESUME) -> list[st
         f = profile_fields(profile_path.read_text())
     except OSError:
         return ["the info file"]
-    gaps = [k for k in REQUIRED_KEYS if not f.get(k)]
+    answered = {k for k, v in f.items() if v}            # labels carry hints like "(yes / no)": match on the start
+    gaps = [k for k in REQUIRED_KEYS if not any(a == k or a.startswith(k + " (") for a in answered)]
     if not resume.exists():
         gaps.append("resume.pdf")
     return gaps
@@ -127,7 +129,7 @@ def add_questions(questions: list[str], profile_path: Path = PROFILE) -> list[st
     text = profile_path.read_text()
     head = "## Extra answers (questions applications asked that this file didn't cover)"
     have = {k for k in profile_fields(text)}
-    new = [q for q in dict.fromkeys(" ".join(q.split()).rstrip(":?* ") for q in questions) if q.lower() not in have]
+    new = [q for q in dict.fromkeys(" ".join(q.split()).rstrip(":?*. ") for q in questions) if q.lower() not in have]
     if new:
         if head not in text:
             text = text.rstrip() + f"\n\n{head}\n"
@@ -366,7 +368,7 @@ class InternshipService:
 
     def _refresh_needs_info(self, st: dict) -> None:
         """When the user edits the info file, the jobs that were waiting on it get another try."""
-        changed = PROFILE.stat().st_mtime
+        changed = max(p.stat().st_mtime for p in (PROFILE, RESUME, TRANSCRIPT) if p.exists())
         again = [j for j in st["jobs"].values() if j["status"] == "needs_info" and j.get("asked_at", 0) < changed]
         for j in again:
             j["status"] = "new"
@@ -423,10 +425,17 @@ class InternshipService:
                            practice=practice)
         except ia.NeedsInfo as e:
             job.update(status="needs_info", asked_at=self.clock(), missing=e.questions)
-            added = add_questions(e.questions)
-            self.notify(f"❓ {job['company']} ({job['title'][:60]}) asks things your info file doesn't cover: "
-                        + "; ".join(e.questions[:5]) + (". I added them to the bottom of the file; fill them in and I'll apply."
-                                                       if added else ". Fill them in at the bottom of the file and I'll apply."))
+            files = [q for q in e.questions if UPLOAD.search(q)]          # a document to add, not a line to fill in
+            asks = [q for q in e.questions if q not in files]
+            add_questions(asks)
+            lines = []
+            if asks:
+                lines.append("it asks things your info file doesn't cover (" + "; ".join(q.rstrip(".") for q in asks[:5])
+                             + "). They're at the bottom of the file now: fill them in")
+            if files:
+                lines.append("it needs a file: " + "; ".join(q.rstrip(".") for q in files[:3])
+                             + (" (save it as transcript.pdf in the internships folder)" if any("transcript" in q.lower() for q in files) else ""))
+            self.notify(f"❓ {job['company']} ({job['title'][:60]}): " + ", and ".join(lines) + ", and I'll apply.")
             return "needs_info"
         except ia.Blocked as e:
             job.update(status="manual", why=str(e))

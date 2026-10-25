@@ -82,6 +82,11 @@ FILLED_JS = r"""(f) => {
 }"""
 
 
+def by_id(i: str) -> str:
+    """A selector for an element id; ids like "864" aren't valid after "#"."""
+    return '[id="' + i.replace('"', '\\"') + '"]'
+
+
 def norm(s: str) -> str:
     return " ".join(str(s).replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"').lower().split())
 
@@ -103,7 +108,7 @@ def _options(page, el) -> list[str]:
     lb = el.get_attribute("aria-controls")
     if not lb:
         return []
-    return [o.inner_text().strip() for o in page.query_selector_all(f"#{lb} [role=option]")]
+    return [o.inner_text().strip() for o in page.query_selector_all(f"{by_id(lb)} [role=option]")]
 
 
 def read_form(page) -> list[dict]:
@@ -111,7 +116,7 @@ def read_form(page) -> list[dict]:
     for f in fields:
         if f["kind"] != "select":
             continue
-        el = page.query_selector(f"#{f['id']}")
+        el = page.query_selector(by_id(f["id"]))
         try:
             el.click()
             page.wait_for_timeout(400)
@@ -146,6 +151,8 @@ Rules per field kind:
 - Voluntary self-identification (gender, race, Hispanic/Latino, veteran, disability): use the info file; when it says
   decline or is blank, pick the decline / "don't wish to answer" option.
 - "How did you hear about us": the info file's default (pick the closest option).
+- A required acknowledgement of a privacy notice or of how the application is processed: acknowledge / agree (the
+  applicant agreed to apply). Opt-ins to marketing, SMS or WhatsApp messages, or talent newsletters: no.
 - Essay / free-text questions: 60-140 words, first person, plain and specific, built only from the info file and
   résumé, tied to this company and role where the facts allow. No clichés, no claims that aren't in the facts.
 - Optional fields you can't answer from the facts: leave them out. Required ones: list their labels in "unknown".
@@ -177,7 +184,7 @@ def answer(fields: list[dict], job: dict, profile: str, resume: str, ask: Callab
 
 # ── filling ──────────────────────────────────────────────────────────────────
 def _select(page, f: dict, value: str) -> bool:
-    el = page.query_selector(f"#{f['id']}")
+    el = page.query_selector(by_id(f["id"]))
     if not el:
         return False
     el.click()
@@ -191,7 +198,7 @@ def _select(page, f: dict, value: str) -> bool:
         page.keyboard.press("Escape")
         return False
     lb = el.get_attribute("aria-controls")
-    for o in page.query_selector_all(f"#{lb} [role=option]"):
+    for o in page.query_selector_all(f"{by_id(lb)} [role=option]"):
         if o.inner_text().strip() == choice:
             o.click()
             page.wait_for_timeout(250)
@@ -209,7 +216,7 @@ def fill(page, fields: list[dict], answers: dict, docs: dict) -> list[str]:
             if f["kind"] == "file":
                 doc = docs.get(v if isinstance(v, str) else ("resume" if f["id"] == "resume" else ""))
                 if doc and Path(doc).exists():
-                    page.set_input_files(f"#{f['id']}", str(doc))
+                    page.set_input_files(by_id(f["id"]), str(doc))
                     page.wait_for_timeout(1500)
             elif f["kind"] == "select":
                 _select(page, f, str(v))
@@ -218,9 +225,9 @@ def fill(page, fields: list[dict], answers: dict, docs: dict) -> list[str]:
                     if any(norm(label) == norm(x) for x in (v if isinstance(v, list) else [v])):
                         page.check(f"[id='{cid}']")
             elif f["kind"] == "phone":
-                page.fill(f"#{f['id']}", re.sub(r"\D", "", str(v))[-10:])
+                page.fill(by_id(f["id"]), re.sub(r"\D", "", str(v))[-10:])
             else:
-                page.fill(f"#{f['id']}", str(v))
+                page.fill(by_id(f["id"]), str(v))
         except Exception:
             pass                                   # judged by the required-field check below
     return [f["label"] for f in fields if f["required"] and not page.evaluate(FILLED_JS, f)]
