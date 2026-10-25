@@ -240,8 +240,11 @@ class ScannerTests(_Base):
         self.now = datetime(2026, 10, 23, 13, 0).timestamp()
         self.assertEqual(s.trading_daily(summary_fn=summary), "")
         self.now = datetime(2026, 10, 23, 13, 31).timestamp()
-        self.assertEqual(s.trading_daily(summary_fn=summary), "sent")
-        self.assertEqual(self.sent, ["📈 Paper trading today: Options: up $120 today."])
+        with patch("worker.sources.meme_status", return_value={"equity": 1040, "first_equity": 1000, "positions": []}), \
+                patch("worker.sources.meme_trades", return_value=[]):
+            self.assertEqual(s.trading_daily(summary_fn=summary), "sent")
+        self.assertEqual(self.sent, ["📈 Paper trading today: Options: up $120 today.\n"
+                                     "🪙 Memecoin account $1,040.00 (+40.00 since it started) (simulated)."])
         self.assertEqual(s.trading_daily(summary_fn=summary), "")
         self.now = datetime(2026, 10, 24, 13, 31).timestamp()             # Saturday
         self.assertEqual(s.trading_daily(summary_fn=summary), "")
@@ -331,6 +334,19 @@ class ScannerTests(_Base):
             "🪙 Memecoin bot bought PEPE/USD: $150 at $0.0000123, stop $0.0000100 (simulated).",
             "🪙 Memecoin bot sold DOGE/USD (trailing stop): +12.40 dollars (simulated).",
             "🪙 PEPE/USD is +24% since the memecoin bot bought it (simulated)."])
+
+    def test_memecoin_profit_steps_are_texted(self):
+        s = self.scanner(meme_profit_step=25)
+        beat = datetime.fromtimestamp(NOON).astimezone().isoformat()
+        st = lambda eq: (lambda: {"heartbeat": beat, "equity": eq, "first_equity": 1000, "positions": []})
+        none = lambda: []
+        for eq in (1010, 1030, 1040, 1052, 1020, 1027, 960):
+            s.memecoin(trades_fn=none, status_fn=st(eq), hype_fn=lambda: None)
+        self.assertEqual(self.sent, [
+            "💰 The memecoin account is up $30.00 since it started (now $1,030.00, simulated).",
+            "💰 The memecoin account is up $52.00 since it started (now $1,052.00, simulated).",
+            "💰 The memecoin account is up $27.00 since it started (now $1,027.00, simulated).",
+            "📉 The memecoin account is down $40.00 since it started (now $960.00, simulated)."])
 
     def test_a_coin_turning_hot_is_texted_once_per_hot_spell(self):
         s = self.scanner()

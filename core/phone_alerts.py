@@ -47,6 +47,7 @@ KINDS = {
     "weekly": "the Sunday recap",
     "system": "Jarvis problems",
 }
+ALWAYS = ("memecoin",)       # the 24/7 memecoin bot: every trade and profit step is texted, at the Mac or not, day or night
 SCHEDULED = ("morning", "trading_daily", "canvas_tonight", "bots_review", "weekly")   # summaries you asked for: sent at the Mac too
 DEFAULTS = {
     "enabled": True,
@@ -65,7 +66,8 @@ DEFAULTS = {
     "calendar_minutes": 15,
     "tonight_time": "20:00",  # "due tonight" check
     "weekly_time": "18:00",   # Sundays
-    "meme_move": 20,          # percent a memecoin position moves before a text
+    "meme_move": 20,
+    "meme_profit_step": 25,   # dollars: a text each time the memecoin account's total profit (or loss) crosses another step          # percent a memecoin position moves before a text
 }
 PREFIX = "JARVIS: "
 _STATE = "phone_alerts_state"
@@ -202,11 +204,12 @@ class Alerts:
         cfg, now = self.cfg(), self.clock()
         if not cfg["enabled"] or kind in cfg["off"]:
             return "off"
-        if not self._away(cfg["away_minutes"]):
+        always = kind in ALWAYS
+        if not always and not self._away(cfg["away_minutes"]):
             return "present"
         st = self._state()
         recent = [t for t in st["sent"] if now - t < 3600]
-        quiet = kind != "reminders" and in_quiet_hours(datetime.fromtimestamp(now), cfg["quiet_start"], cfg["quiet_end"])
+        quiet = kind != "reminders" and not always and in_quiet_hours(datetime.fromtimestamp(now), cfg["quiet_start"], cfg["quiet_end"])
         if quiet or len(recent) >= cfg["max_per_hour"]:
             st["held"] = (st["held"] + [text])[-20:]
             self._save(st)

@@ -153,8 +153,15 @@ def meme_status(folder: Path = MEMEBOT) -> Optional[dict]:
         return None
 
 
-def hype(path: Path = HYPE) -> Optional[dict]:
-    """The memecoin bot's latest hourly hype reading: {"ts", "coins": {symbol: {"level", "score", "trending"}}}."""
+def hype(path: Path = HYPE, crew: Path = MEMEBOT / "agents.json") -> Optional[dict]:
+    """The latest hype reading: {"ts", "coins": {symbol: {"level", "score", "trending", "why"}}}. The Verifier agent's verdicts
+    (what the bot trades on) when it has made any, else the Scout's raw hourly reading."""
+    try:
+        board = json.loads(crew.read_text())
+        if board.get("verdicts") and (board.get("agents") or {}).get("verifier", {}).get("at"):
+            return {"ts": board["agents"]["verifier"]["at"], "coins": board["verdicts"], "verified": True}
+    except (OSError, ValueError, AttributeError):
+        pass
     try:
         return json.loads(path.read_text())
     except (OSError, ValueError):

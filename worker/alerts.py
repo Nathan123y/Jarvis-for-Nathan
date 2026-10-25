@@ -346,6 +346,13 @@ class Scanner:
             if not cfg["enabled"] or "trading_daily" in cfg["off"]:
                 return "off"
         text = (summary_fn or sources.trading_summary)()
+        meme = None
+        try:
+            meme = self._meme_since(now - timedelta(days=1), "today")
+        except Exception as exc:
+            self.log(f"phone alerts: daily summary skipped the memecoin line: {exc!r}")
+        if meme:
+            text = f"{text}\n🪙 {meme}" if text else f"🪙 {meme}"
         return self.alerts.scheduled("trading_daily", f"📈 Paper trading today: {text}", force=force) if text else ""
 
     def on_request(self) -> str:
@@ -515,7 +522,32 @@ class Scanner:
                                                f"bot bought it (simulated).")
                 n += 1
         self._put(meme_lines=len(trades), meme_moves={k: v for k, v in moves.items() if k in live} if fresh else moves)
-        return n + self._meme_hype(hype_fn or sources.hype)
+        return n + self._meme_profit(status if fresh else None) + self._meme_hype(hype_fn or sources.hype)
+
+    def _meme_profit(self, status: Optional[dict]) -> int:
+        """A text each time the account's total profit or loss since it started crosses another meme_profit_step dollars."""
+        try:
+            pnl = float(status["equity"]) - float(status["first_equity"])
+        except (KeyError, TypeError, ValueError):
+            return 0
+        step_usd = float(self.cfg().get("meme_profit_step") or 25)
+        step = int(abs(pnl) // step_usd) * (1 if pnl > 0 else -1)
+        cur = self._cur()
+        if "meme_profit" not in cur:                       # first look: a baseline, not a text
+            self._put(meme_profit=step)
+            return 0
+        prev = int(cur["meme_profit"])
+        if step == prev or (abs(step) < abs(prev) and step * prev >= 0):
+            if abs(step) < abs(prev):
+                self._put(meme_profit=step)                # gave some back: the next step up texts again
+            return 0
+        self._put(meme_profit=step)
+        if step == 0:
+            return 0
+        word = "up" if pnl > 0 else "down"
+        self.alerts.notify("memecoin", f"{'💰' if pnl > 0 else '📉'} The memecoin account is {word} ${abs(pnl):,.2f} since it started "
+                                       f"(now ${float(status['equity']):,.2f}, simulated).")
+        return 1
 
     def _meme_hype(self, hype_fn) -> int:
         """Text once when a coin turns hot; again only after it has cooled off."""
@@ -531,9 +563,10 @@ class Scanner:
                 if s in cur["meme_hot"]:
                     continue
                 c = coins[s]
-                why = (f"#{c['trending']} trending on CoinGecko" if c.get("trending")
-                       else f"{c.get('score')}x its usual buzz on Reddit, 4chan and volume")
-                self.alerts.notify("memecoin", f"🔥 {s.split('/')[0]} is getting hyped: {why}. The memecoin bot will buy it "
+                why = c.get("why") or (f"#{c['trending']} trending on CoinGecko" if c.get("trending")
+                                       else f"{c.get('score')}x its usual buzz on Reddit, 4chan and volume")
+                who = "confirmed hot by the Verifier" if reading.get("verified") else "getting hyped"
+                self.alerts.notify("memecoin", f"🔥 {s.split('/')[0]} is {who}: {why}. The memecoin bot will buy it "
                                                "on a 1-day breakout instead of waiting for a 5-day one (simulated).")
                 n += 1
         self._put(meme_hot=hot)
