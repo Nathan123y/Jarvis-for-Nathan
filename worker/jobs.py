@@ -551,7 +551,11 @@ class JobDB:
                 else:
                     slot = f"{s['name']}@{int(slot_time)}"
                     expires = slot_time + s["max_lateness_s"] if s["catchup"] == "skip_expired" else None
-                    if not con.execute("SELECT 1 FROM jobs WHERE unique_key=?", (slot,)).fetchone():
+                    # one waiting run per schedule: while a run is held back (Gmail signed out, say), the
+                    # next slots must not pile up behind it and then all hit the service at once
+                    waiting = con.execute("SELECT 1 FROM jobs WHERE unique_key LIKE ? ESCAPE '\\' AND state='queued'",
+                                          (s["name"].replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "@%",)).fetchone()
+                    if not waiting and not con.execute("SELECT 1 FROM jobs WHERE unique_key=?", (slot,)).fetchone():
                         cur = con.execute(
                             "INSERT INTO jobs (kind, campaign_id, payload, run_after, created, updated, unique_key,"
                             " expires_at) VALUES (?,?,?,?,?,?,?,?)",

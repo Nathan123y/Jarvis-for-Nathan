@@ -117,7 +117,21 @@ class ScheduleTests(Base):
         self.db.schedule("collect", "collect", 900, now=0, start_at=0)
         self.assertEqual(len(self.db.tick_schedules(now=1)["enqueued"]), 1)
         self.assertEqual(self.db.tick_schedules(now=2)["enqueued"], [])
+        self.db.complete(self.db.claim("w", now=3)["id"], now=4)
         self.assertEqual(len(self.db.tick_schedules(now=901)["enqueued"]), 1)
+
+    def test_slots_do_not_pile_up_behind_a_run_that_is_still_waiting(self):
+        self.db.schedule("campaign_replies", "campaign_replies", 600, now=0, start_at=0)
+        self.db.schedule("collect", "collect", 600, now=0, start_at=0)
+        self.assertEqual(len(self.db.tick_schedules(now=1)["enqueued"]), 2)
+        self.db.complete(next(j for j in [self.db.claim("w", now=2)] if j)["id"], now=3)
+        made = self.db.tick_schedules(now=601)["enqueued"]                 # one of the two is still waiting
+        self.assertEqual(len(made), 1)
+        for t in (1201, 1801, 2401):
+            self.db.tick_schedules(now=t)
+        self.assertIsNotNone(self.db.claim("w", now=2500))
+        self.assertIsNotNone(self.db.claim("w", now=2500))
+        self.assertIsNone(self.db.claim("w", now=2500))                    # only one waiting run each, not one per slot
 
     def test_downtime_fires_once_not_once_per_missed_slot(self):
         self.db.schedule("collect", "collect", 900, now=0, start_at=0)
