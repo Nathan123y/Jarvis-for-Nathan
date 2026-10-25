@@ -64,7 +64,7 @@ BLOCKED = re.compile(r"(?<![a-z])(" + "|".join([
     "nfl", "nba", "mlb", "nhl", "fifa", "ncaa", "olympic", "taylor swift", "swiftie", "beyonce", "elvis", "beatles",
     "friends tv", "the office", "stranger things", "game of thrones", "lord of the rings", "hobbit", "grinch",
     "dr\\.? seuss", "winnie", "bluey", "paw patrol", "peppa", "baby shark", "yoda", "grogu", "trump", "biden",
-    "harley", "jeep", "ford", "chevy", "john deere", "yeti", "stanley cup", "lego", "crocs",
+    "harley", "jeep", "jordans?", "air jordan", "skibidi", "ford", "chevy", "john deere", "yeti", "stanley cup", "lego", "crocs",
 ]) + r")(?![a-z])", re.I)
 
 IDEA_PROMPT = """You design products for an Etsy print-on-demand shop that sells T-shirts, mugs and stickers to
@@ -75,25 +75,39 @@ not "Live Laugh Love". Invent ONE new design.
 Good directions: internet and meme humour (original jokes in the style of current memes and slang), unhinged or
 chaotic energy, brutal honesty about work, school, money, dating, sleep, anxiety, gym, gaming and adulting,
 dark-but-harmless humour, absurd deadpan statements, ironic fake motivation, cursed-looking cute animals.
-Mild swearing is fine (damn, hell, crap, "f*ck"-style censored words); keep it clever, not just crude.
+Swearing is fine, uncensored (shit, damn, f*ck, hell, ass, etc.) when it makes the joke land; crude is fine
+too, but it still has to be funny and quotable.
+
+{trends}
 
 Rules, all required:
-- Never: slurs, hate or jokes punching down at a group, sexual or explicit content, drugs, violence against
+- Never: slurs, hate or jokes punching down at a group, sexual acts or nudity, drugs, violence against
   real people, self-harm encouragement, politics or religion.
+- Never name or depict a real person (celebrities, streamers, athletes, politicians, people from viral
+  clips), and never use song lyrics, song titles or artist names: those get listings taken down.
 - No brands, trademarks, logos, characters, celebrities, sports teams, movies, TV, games, songs, quotes or
   slogans someone else owns, and no famous meme images or meme characters (Pepe, Doge, This Is Fine dog,
   Wojak, etc.) - the joke and the drawing must be original.
 - The illustration: one funny, weird or deadpan character or object (e.g. a raccoon in a hoodie, a burnt-out
   coffee cup, a smug cat, a skeleton at a laptop), bold streetwear-style vector art, thick dark outlines,
   a few punchy colours, centred, isolated on a plain pure white background, no text, letters or numbers.
-- The slogan is printed under the picture by us: 2 to 7 words, ALL CAPS, plain ASCII, punchy and quotable.
+- The slogan is printed under the picture by us: 2 to 7 words (never more), ALL CAPS, plain ASCII, punchy and quotable.
 - Title: what buyers type into Etsy search (e.g. "funny sarcastic shirt", "meme shirt", "gen z humor"),
   60-120 characters, no product type (we add "T-Shirt" etc.).
 - Exactly 13 tags, each 20 characters or fewer, lowercase, what buyers search for.
 - Don't repeat the theme or joke of these recent designs; pick a different topic: {recent}
+- "niche" names the meme or trend you riffed on, or the topic if none fit.
 
 Reply with JSON only:
 {{"niche": "...", "image_prompt": "...", "slogan": "...", "title": "...", "description": "2-3 sentences in the shop's voice for the listing", "tags": ["...", ...]}}"""
+
+TRENDS_NOTE = """What the internet is talking about TODAY (from Know Your Meme and Reddit):
+{}
+
+Pick the funniest meme, catchphrase, slang term or running joke from that list that works on a shirt (skip
+news, sports and anything about a real person) and riff on it: use its phrase or format so people who are
+online get it instantly, but write your own joke and draw your own original picture. If nothing there works,
+use a meme or slang phrase that's been big online in the last few months instead."""
 
 
 # ── small pieces ─────────────────────────────────────────────────────────────
@@ -151,8 +165,10 @@ def clean_idea(idea: dict) -> dict:
             seen.add(t)
             tags.append(t)
     slogan = re.sub(r"[^A-Z0-9 '!?&.,*-]", "", str(idea.get("slogan") or "").upper()).strip()
+    if len(slogan.split()) > 8:
+        raise ValueError("the slogan is too long to print")
     return {"niche": str(idea.get("niche") or "")[:80], "image_prompt": str(idea["image_prompt"])[:900],
-            "slogan": " ".join(slogan.split()[:7]), "title": " ".join(str(idea["title"]).split())[:110],
+            "slogan": " ".join(slogan.split()), "title": " ".join(str(idea["title"]).split())[:110],
             "description": " ".join(str(idea.get("description") or "").split())[:600], "tags": tags[:13]}
 
 
@@ -299,9 +315,11 @@ class Clients:
         cf = get_plugin_config("cloudflare")
         self.cf_account, self.cf_token = str(cf.get("account_id") or "").strip(), str(cf.get("api_token") or "").strip()
 
-    def idea(self, recent: list) -> dict:
+    def idea(self, recent: list, trending: str = "") -> dict:
         from core import gemini
-        out = gemini.as_json(IDEA_PROMPT.format(recent="; ".join(recent[-40:]) or "none yet"), tier=gemini.SMART)
+        out = gemini.as_json(IDEA_PROMPT.format(recent="; ".join(recent[-40:]) or "none yet",
+                                                trends=TRENDS_NOTE.format(trending) if trending else ""),
+                             tier=gemini.SMART)
         if out is None:
             raise RuntimeError("Gemini didn't answer (out of free quota?)")
         return out
@@ -327,8 +345,10 @@ class Clients:
 class Shop:
     def __init__(self, clients=None, *, state_path: Path = STATE, art_dir: Path = ART,
                  cfg: Callable[[], dict] = settings, log: Callable[[str], None] = print,
-                 notify: Optional[Callable[[str, str], None]] = None, clock: Callable[[], float] = time.time):
+                 notify: Optional[Callable[[str, str], None]] = None, clock: Callable[[], float] = time.time,
+                 trends_fetch: Optional[Callable[[], dict]] = None):
         self.c = clients or Clients()
+        self.trends_fetch = trends_fetch
         self.state_path, self.art_dir, self.cfg, self.log, self.clock = state_path, art_dir, cfg, log, clock
         self.notify = notify or (lambda kind, text: None)
         self._variants: dict = {}
@@ -379,15 +399,28 @@ class Shop:
         self._variants[kind] = ([v["id"] for v in chosen][:100], (front["width"], front["height"]))
         return self._variants[kind]
 
+    def trending(self, st: dict) -> str:
+        """Today's memes and internet talk, fetched once a day (saved into st, which the caller saves)."""
+        today = datetime.fromtimestamp(self.clock()).date().isoformat()
+        cached = st.get("trends") or {}
+        if cached.get("day") != today:
+            from worker import trends
+            found = self.trends_fetch() if self.trends_fetch else trends.fetch()
+            cached = {"day": today, "text": trends.brief(found)}
+            if found:
+                st["trends"] = cached
+        return cached.get("text", "")
+
     # one design, start to finish
     def make_design(self, only: Optional[list] = None) -> dict:
         """only: the product kinds this design goes on (e.g. ["tee"]); None means the usual set."""
         st = load_state(self.state_path)
         recent = [d.get("niche", "") + ": " + d.get("slogan", "") for d in st["designs"]]
+        trending = self.trending(st)
         last_error = None
         for _ in range(3):                                      # a refused idea gets another try
             try:
-                idea = clean_idea(self.c.idea(recent))
+                idea = clean_idea(self.c.idea(recent, trending))
                 break
             except ValueError as exc:
                 last_error = exc

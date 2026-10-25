@@ -34,7 +34,8 @@ class FakeClients:
         self.ideas, self.calls, self.next_id = [idea], [], 0
         self.orders = []
 
-    def idea(self, recent):
+    def idea(self, recent, trending=""):
+        self.trending = trending
         return self.ideas.pop(0) if len(self.ideas) > 1 else self.ideas[0]
 
     def draw(self, prompt):
@@ -79,9 +80,11 @@ class _Base(unittest.TestCase):
         self.sent = []
 
     def shop(self, clients, **cfg):
+        fetch = cfg.pop("trends_fetch", None)
         settings = dict(ws.DEFAULTS, **cfg)
         return ws.Shop(clients, state_path=self.dir / "s.json", art_dir=self.dir / "art", cfg=lambda: settings,
-                       log=lambda m: None, notify=lambda k, t: self.sent.append((k, t)), clock=lambda: 1_792_900_000)
+                       log=lambda m: None, notify=lambda k, t: self.sent.append((k, t)), clock=lambda: 1_792_900_000,
+                       trends_fetch=fetch or (lambda: {}))
 
 
 class IdeaAndArtTests(unittest.TestCase):
@@ -189,6 +192,21 @@ class ListingTests(_Base):
         c.printify = real
         s.clock = lambda: 1_792_900_000 + 3601
         self.assertEqual(len(s.list_pending()), 3)
+
+    def test_designs_riff_on_todays_trends_fetched_once_a_day(self):
+        fetched = []
+        c = FakeClients()
+        s = self.shop(c, trends_fetch=lambda: fetched.append(1) or {"Know Your Meme (new memes)": ["Black Cat Clapping"]})
+        s.make_design()
+        s.make_design()
+        self.assertEqual(len(fetched), 1)
+        self.assertIn("Black Cat Clapping", c.trending)
+
+    def test_feed_titles(self):
+        from worker import trends
+        xml = ("<rss><channel><title>Feed</title><item><title>What's up with &quot;6 7&quot;?</title></item>"
+               "<item><title><![CDATA[Black Cat Clapping]]></title></item><item><title>me_irl</title></item></channel></rss>")
+        self.assertEqual(trends.titles(xml), ['"6 7"?', "Black Cat Clapping"])
 
     def test_a_refused_idea_is_retried(self):
         c = FakeClients()
