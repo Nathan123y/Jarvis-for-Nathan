@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Callable, Optional
 
 from core.events import Store
@@ -36,6 +37,7 @@ KINDS = {
     "memecoin": "memecoin bot trades and big moves",
     "sales": "Gumroad sales",
     "shop": "Etsy shop listings and orders",
+    "videos": "the daily shop videos (sent to you to post until Instagram posts them itself)",
     "canvas": "Canvas work due soon",
     "canvas_tonight": "the 8 PM 'due tonight' check",
     "grades": "Canvas grades posted",
@@ -135,6 +137,37 @@ def my_handle(cfg: Optional[dict] = None) -> str:
 def send_text(text: str, cfg: Optional[dict] = None) -> None:
     from core.macos_communications import Contact, send_message
     send_message(Contact("Me", my_handle(cfg)), (PREFIX + text)[:_MAX_TEXT])
+
+
+_FILE_SCRIPT = '''
+on run argv
+    set theFile to POSIX file (item 2 of argv)
+    tell application "Messages"
+        set usableServices to every service whose service type is iMessage
+        if (count of usableServices) is 0 then error "No iMessage service is signed in."
+        set targetBuddy to buddy (item 1 of argv) of (item 1 of usableServices)
+        if (item 3 of argv) is not "" then send (item 3 of argv) to targetBuddy
+        send theFile to targetBuddy
+    end tell
+    return "OK"
+end run
+'''
+FILE_DIR = Path.home() / "Pictures" / "Jarvis Videos"   # Messages is sandboxed: it only sends files from places like this
+
+
+def send_file(path, note: str = "", cfg: Optional[dict] = None) -> None:
+    """Text a file (a video) to the user's own phone, with an optional note before it."""
+    import shutil
+    import subprocess
+    src = Path(path)
+    FILE_DIR.mkdir(parents=True, exist_ok=True)
+    dest = FILE_DIR / src.name
+    if src.resolve() != dest.resolve():
+        shutil.copy2(src, dest)
+    out = subprocess.run(["osascript", "-", my_handle(cfg), str(dest), (PREFIX + note) if note else ""],
+                         input=_FILE_SCRIPT, capture_output=True, text=True, timeout=120)
+    if out.returncode != 0:
+        raise RuntimeError((out.stderr or out.stdout or "Messages couldn't send the file").strip()[:200])
 
 
 class Alerts:

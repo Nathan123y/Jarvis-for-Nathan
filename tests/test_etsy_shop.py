@@ -297,3 +297,62 @@ class EtsyPhotoTests(_Base):
                 etsy_api.finish("https://localhost:3003/callback?code=abc&state=old")
             with self.assertRaises(RuntimeError):
                 etsy_api.finish("https://localhost:3003/callback?state=new")
+
+
+class VideoTests(_Base):
+    def _listed_shop(self):
+        c = FakeClients(shops=[{"id": 9, "sales_channel": "etsy"}])
+        s = self.shop(c)
+        s.make_design()
+        s.list_pending()
+        return s
+
+    def test_three_videos_a_day_one_per_time_each_a_different_format(self):
+        s = self._listed_shop()
+        made, texted = [], []
+        svc = ws.ShopService(log=lambda m: None)
+
+        def fake_make(rec, fmt, out_dir, name, ask=None, printify=None):
+            rec["video"] = {"hook": "h"}
+            made.append(fmt)
+            return {"file": str(self.dir / f"{fmt}.mp4"), "caption": "c #tag", "format": fmt, "design": rec["id"]}
+        day = datetime(2026, 10, 25)
+        with patch("worker.videos.make", fake_make), patch("worker.social.connected", lambda: False), \
+                patch("core.phone_alerts.send_file", lambda path, note, cfg=None: texted.append((path, note))), \
+                patch("core.phone_alerts.settings", lambda: {"enabled": True, "off": []}):
+            self.assertEqual(svc.video_slot(s, day.replace(hour=10)), "")              # before the first time
+            self.assertEqual(svc.video_slot(s, day.replace(hour=11, minute=5)), "texted")
+            self.assertEqual(svc.video_slot(s, day.replace(hour=12)), "")              # that slot is done
+            svc.video_slot(s, day.replace(hour=15, minute=1))
+            svc.video_slot(s, day.replace(hour=19, minute=30))
+            svc.video_slot(s, day.replace(hour=22))
+        self.assertEqual(made, ["reveal", "pov", "gifts"])
+        self.assertEqual(len(texted), 3)
+        self.assertIn("Video 1 of 3", texted[0][1])
+        self.assertIn("#tag", texted[0][1])
+        self.assertEqual(len(ws.load_state(self.dir / "s.json")["videos"]), 3)
+
+    def test_a_late_start_makes_one_video_not_a_backlog(self):
+        s = self._listed_shop()
+        made = []
+        svc = ws.ShopService(log=lambda m: None)
+        with patch("worker.videos.make", lambda rec, fmt, *a, **k: made.append(fmt) or
+                   {"file": "f.mp4", "caption": "c", "format": fmt, "design": rec["id"]}), \
+                patch("worker.social.connected", lambda: False), \
+                patch("core.phone_alerts.send_file", lambda *a, **k: None), \
+                patch("core.phone_alerts.settings", lambda: {"enabled": True, "off": []}):
+            svc.video_slot(s, datetime(2026, 10, 25, 20, 0))                          # Mac woke at 8 PM
+            svc.video_slot(s, datetime(2026, 10, 25, 20, 10))
+        self.assertEqual(made, ["reveal"])
+
+    def test_music_and_copy_fallback(self):
+        from worker import videos
+        path = self.dir / "m.wav"
+        videos.music(path, 3.0, seed=1)
+        self.assertGreater(path.stat().st_size, 3 * 44100)
+        copy = videos.video_copy({"title": "Plant Gift", "slogan": "I PROBABLY OVERWATERED IT", "niche": "plant lovers"},
+                                 ask=lambda p: {"hook": "Disney plants", "pov": "POV: you water daily",
+                                                "caption": "Cute. Link in bio.", "hashtags": ["#Plant Mom", "gift"]})
+        self.assertEqual(copy["hook"], "Made for plant lovers")                       # protected name refused
+        self.assertEqual(copy["pov"], "POV: you water daily")
+        self.assertEqual(copy["hashtags"], ["plantmom", "gift"])

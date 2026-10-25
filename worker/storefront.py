@@ -163,6 +163,34 @@ def _git(*args: str, cwd: Path = REPO_DIR, timeout: float = 120) -> subprocess.C
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=timeout)
 
 
+def host_video(path: Path) -> str:
+    """Put a video on the storefront site (v/) and return its public address, for Instagram to fetch."""
+    import shutil
+    import time
+    cfg = settings()
+    if not (REPO_DIR / ".git").exists():
+        raise RuntimeError("the storefront repository isn't set up yet")
+    (REPO_DIR / "v").mkdir(exist_ok=True)
+    shutil.copy2(path, REPO_DIR / "v" / Path(path).name)
+    _git("pull", "--rebase", "--quiet")
+    _git("add", "v")
+    who = ["-c", "user.name=Nathan Yousif", "-c", "user.email=nathanyousif@Nathans-Laptop.local"]
+    _git(*who, "commit", "-q", "-m", f"Video {Path(path).name}")
+    r = _git("push", "-q", "origin", "HEAD")
+    if r.returncode:
+        raise RuntimeError(f"couldn't push the video: {r.stderr[-200:]}")
+    url = site_url(cfg["repo"]) + "v/" + Path(path).name
+    for _ in range(30):                                    # GitHub Pages takes a minute to serve new files
+        try:
+            req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "Mozilla/5.0"})
+            if urllib.request.urlopen(req, timeout=20).status == 200:
+                return url
+        except Exception:
+            pass
+        time.sleep(10)
+    raise RuntimeError("GitHub Pages didn't start serving the video")
+
+
 def publish(designs: list, printify: Callable, log: Callable[[str], None] = print) -> str:
     """Build the site and push it. '' when there was nothing new."""
     cfg = settings()

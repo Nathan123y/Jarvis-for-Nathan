@@ -53,7 +53,8 @@ CHANNELS = {"etsy": {"name": "Etsy", "title_max": 140}, "ebay": {"name": "eBay",
 EXTRA_PHOTOS = {"tee": ("person-1", "person-2", "lifestyle", "hanging-1", "duo"),
                 "mug": (),
                 "sticker": ("context-1", "context-2")}
-DEFAULTS = {"enabled": True, "designs_per_day": 1, "time": "10:00", "products": ["tee", "mug", "sticker"]}
+DEFAULTS = {"enabled": True, "designs_per_day": 1, "time": "10:00", "products": ["tee", "mug", "sticker"],
+            "video_times": "11:00,15:00,19:00"}                 # one video at each; empty = no videos
 
 BLOCKED = re.compile(r"(?<![a-z])(" + "|".join([
     "disney", "pixar", "marvel", "dc comics", "batman", "superman", "spider-?man", "avengers", "star wars", "jedi",
@@ -598,6 +599,75 @@ class ShopService:
             self.notify("shop", line)
         self.storefront(shop, today, force=bool(listed))
         self.etsy_photos(shop)
+        self.video_slot(shop, now)
+
+    def video_slot(self, shop: "Shop", now: datetime) -> str:
+        """At each of the day's video times: make the next video and post it (Instagram) or text it to you."""
+        times = [t.strip() for t in str(settings()["video_times"]).split(",") if t.strip()]
+        st = load_state(shop.state_path)
+        today = now.date().isoformat()
+        done = st.setdefault("video_slots", {}).get(today, [])
+        due = [i for i, t in enumerate(times) if i not in done and now.strftime("%H:%M") >= t]
+        if not due:
+            return ""
+        slot = due[0]
+        st["video_slots"] = {today: done + due}           # missed slots (Mac asleep) are skipped, not stacked up
+        save_state(st, shop.state_path)
+        listed = [d for d in st["designs"] if any(p.get("published") for p in d.get("products", {}).values())]
+        if not listed:
+            return ""
+        from worker import videos
+        fmt = videos.FORMATS[slot % len(videos.FORMATS)]
+        made = {(v["design"], v["format"]) for v in st.setdefault("videos", [])}
+        fresh = [d for d in reversed(listed) if (d["id"], fmt) not in made]
+        rec = fresh[0] if fresh else min(listed, key=lambda d: sum(v["design"] == d["id"] for v in st["videos"]))
+        try:
+            from worker import storefront
+            video = videos.make(rec, fmt, shop.art_dir / "videos", storefront.settings()["name"], printify=shop.c.printify)
+        except Exception as exc:
+            self.log(f"videos: couldn't make a {fmt} video: {exc}")
+            return "failed"
+        video["made"] = time.time()
+        st = load_state(shop.state_path)
+        for d in st["designs"]:
+            if d["id"] == rec["id"] and rec.get("video"):
+                d["video"] = rec["video"]                    # keep the copy for the next formats
+        st.setdefault("videos", []).append(video)
+        save_state(st, shop.state_path)
+        return self.deliver(video, shop, slot + 1, len(times))
+
+    def deliver(self, video: dict, shop: "Shop", n: int, of: int) -> str:
+        from worker import social
+        if social.connected():
+            try:
+                from worker import storefront
+                url = storefront.host_video(Path(video["file"]))
+                post = social.post_reel(url, video["caption"])
+                self.mark(shop, video, instagram=post)
+                self.notify("videos", f"🎬 Posted today's video {n} of {of} to Instagram ({video['format']}).")
+                return "posted"
+            except Exception as exc:
+                self.log(f"videos: Instagram post failed: {exc}")
+                self.notify("system", f"⚠️ Couldn't post the video to Instagram: {str(exc)[:120]}. I'll text it to you instead.")
+        from core import phone_alerts as pa
+        cfg = pa.settings()
+        if not cfg["enabled"] or "videos" in cfg["off"]:
+            return "off"
+        try:
+            pa.send_file(video["file"], f"🎬 Video {n} of {of} for today, ready to post on TikTok, Reels or Shorts. "
+                                        f"Caption:\n{video['caption']}", cfg)
+            self.mark(shop, video, texted=True)
+            return "texted"
+        except Exception as exc:
+            self.log(f"videos: couldn't text the video: {exc}")
+            return "failed"
+
+    def mark(self, shop: "Shop", video: dict, **kv) -> None:
+        st = load_state(shop.state_path)
+        for v in st.get("videos", []):
+            if v["file"] == video["file"]:
+                v.update(kv)
+        save_state(st, shop.state_path)
 
     def etsy_photos(self, shop: "Shop") -> None:
         """Add the saved extra photos to each Etsy listing, once Jarvis is connected to Etsy itself."""
