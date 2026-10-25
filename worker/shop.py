@@ -67,24 +67,33 @@ BLOCKED = re.compile(r"(?<![a-z])(" + "|".join([
     "harley", "jeep", "ford", "chevy", "john deere", "yeti", "stanley cup", "lego", "crocs",
 ]) + r")(?![a-z])", re.I)
 
-IDEA_PROMPT = """You design products for an Etsy print-on-demand shop that sells T-shirts, mugs and stickers.
-Invent ONE new design that a specific group of people would buy for themselves or as a gift: a hobby,
-job, pet, place type, life stage or inside joke (nurses, teachers, gardeners, cat moms, hikers, anglers,
-bookworms, bakers, new dads, plant lovers, retirees, nerdy engineers, and so on, or something fresher).
+IDEA_PROMPT = """You design products for an Etsy print-on-demand shop that sells T-shirts, mugs and stickers to
+people aged roughly 16-35 who live online. The shop's voice is edgy, sarcastic and meme-literate: the kind of
+shirt that makes a stranger laugh, take a photo or ask where you got it. Not family friendly, not wholesome,
+not "Live Laugh Love". Invent ONE new design.
+
+Good directions: internet and meme humour (original jokes in the style of current memes and slang), unhinged or
+chaotic energy, brutal honesty about work, school, money, dating, sleep, anxiety, gym, gaming and adulting,
+dark-but-harmless humour, absurd deadpan statements, ironic fake motivation, cursed-looking cute animals.
+Mild swearing is fine (damn, hell, crap, "f*ck"-style censored words); keep it clever, not just crude.
 
 Rules, all required:
+- Never: slurs, hate or jokes punching down at a group, sexual or explicit content, drugs, violence against
+  real people, self-harm encouragement, politics or religion.
 - No brands, trademarks, logos, characters, celebrities, sports teams, movies, TV, games, songs, quotes or
-  slogans someone else owns, politics or religion. Original ideas only.
-- The illustration: one cute or funny character or object, simple bold flat vector style, thick dark
-  outlines, a few bright colours, centred, isolated on a plain pure white background, no text, letters or
-  numbers in the picture.
-- The slogan is printed under the picture by us: 2 to 6 words, funny or heartfelt, ALL CAPS, plain ASCII.
-- Title: what buyers type into Etsy search, 60-120 characters, no product type (we add "T-Shirt" etc.).
+  slogans someone else owns, and no famous meme images or meme characters (Pepe, Doge, This Is Fine dog,
+  Wojak, etc.) - the joke and the drawing must be original.
+- The illustration: one funny, weird or deadpan character or object (e.g. a raccoon in a hoodie, a burnt-out
+  coffee cup, a smug cat, a skeleton at a laptop), bold streetwear-style vector art, thick dark outlines,
+  a few punchy colours, centred, isolated on a plain pure white background, no text, letters or numbers.
+- The slogan is printed under the picture by us: 2 to 7 words, ALL CAPS, plain ASCII, punchy and quotable.
+- Title: what buyers type into Etsy search (e.g. "funny sarcastic shirt", "meme shirt", "gen z humor"),
+  60-120 characters, no product type (we add "T-Shirt" etc.).
 - Exactly 13 tags, each 20 characters or fewer, lowercase, what buyers search for.
-- Don't repeat these recent designs: {recent}
+- Don't repeat the theme or joke of these recent designs; pick a different topic: {recent}
 
 Reply with JSON only:
-{{"niche": "...", "image_prompt": "...", "slogan": "...", "title": "...", "description": "2-3 friendly sentences for the listing", "tags": ["...", ...]}}"""
+{{"niche": "...", "image_prompt": "...", "slogan": "...", "title": "...", "description": "2-3 sentences in the shop's voice for the listing", "tags": ["...", ...]}}"""
 
 
 # ── small pieces ─────────────────────────────────────────────────────────────
@@ -141,9 +150,9 @@ def clean_idea(idea: dict) -> dict:
         if t and t not in seen:
             seen.add(t)
             tags.append(t)
-    slogan = re.sub(r"[^A-Z0-9 '!?&.,-]", "", str(idea.get("slogan") or "").upper()).strip()
+    slogan = re.sub(r"[^A-Z0-9 '!?&.,*-]", "", str(idea.get("slogan") or "").upper()).strip()
     return {"niche": str(idea.get("niche") or "")[:80], "image_prompt": str(idea["image_prompt"])[:900],
-            "slogan": " ".join(slogan.split()[:6]), "title": " ".join(str(idea["title"]).split())[:110],
+            "slogan": " ".join(slogan.split()[:7]), "title": " ".join(str(idea["title"]).split())[:110],
             "description": " ".join(str(idea.get("description") or "").split())[:600], "tags": tags[:13]}
 
 
