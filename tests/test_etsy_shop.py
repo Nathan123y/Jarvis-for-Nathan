@@ -60,11 +60,19 @@ class FakeClients:
         if path.startswith("catalog/blueprints/400/"):
             return {"variants": [{"id": 20, "title": '3" × 3" / White', "options": {"size": '3" × 3"'},
                                   "placeholders": [{"position": "front", "width": 559, "height": 559}]}]}
+        for bp, pos, w, h, opts in ((77, "front", 2919, 1944, {"color": "Sport Grey", "size": "M"}),
+                                    (39, "front", 3210, 3852, {"color": "White", "size": "L"}),
+                                    (1574, "front_left_leg", 2100, 2400, {"color": "Ivory", "size": "S"}),
+                                    (1588, "left_leg_front", 1048, 3130, {"color": "Ivory", "size": "XL"}),
+                                    (1128, "front", 1650, 750, {"color": "Black", "size": "One size"})):
+            if path.startswith(f"catalog/blueprints/{bp}/"):
+                return {"variants": [{"id": bp * 10, "title": f"{opts['color']} / {opts['size']}", "options": opts,
+                                      "placeholders": [{"position": pos, "width": w, "height": h}]}]}
         if path == "uploads/images.json":
-            return {"id": "img1"}
+            return {"id": f"img{len([c for c in self.calls if c[1] == 'uploads/images.json'])}"}
         if method == "POST" and path.endswith("/products.json"):
             self.next_id += 1
-            costs = {12: 1129, 478: 503, 400: 158}
+            costs = {12: 1129, 478: 503, 400: 158, 77: 2150, 39: 1050, 1574: 2290, 1588: 2340, 1128: 1490}
             return {"id": f"p{self.next_id}", "variants": [{"id": v["id"], "cost": costs[body["blueprint_id"]]}
                                                           for v in body["variants"]]}
         if "/orders.json" in path:
@@ -81,7 +89,7 @@ class _Base(unittest.TestCase):
 
     def shop(self, clients, **cfg):
         fetch = cfg.pop("trends_fetch", None)
-        settings = dict(ws.DEFAULTS, **cfg)
+        settings = dict(ws.DEFAULTS, **{"products": ["tee", "mug", "sticker"], **cfg})   # the original three, unless a test says
         return ws.Shop(clients, state_path=self.dir / "s.json", art_dir=self.dir / "art", cfg=lambda: settings,
                        log=lambda m: None, notify=lambda k, t: self.sent.append((k, t)), clock=lambda: 1_792_900_000,
                        trends_fetch=fetch or (lambda: {}), notebook_path=self.dir / "notebook.json")
@@ -144,6 +152,22 @@ class ListingTests(_Base):
         self.assertEqual(len([x for x in c.calls if x[1].endswith("publish.json")]), 3)
         self.assertEqual(s.list_pending(), [])                                         # nothing twice
         self.assertEqual(len([x for x in c.calls if x[1].endswith("publish.json")]), 3)
+
+    def test_the_full_lineup_hoodie_tank_shorts_pants_hat_and_no_sticker(self):
+        c = FakeClients(shops=[{"id": 9, "sales_channel": "etsy"}])
+        s = self.shop(c, products=list(ws.DEFAULTS["products"]))
+        s.make_design()
+        done = s.list_pending()
+        self.assertEqual(len(done), 7)
+        created = {b["blueprint_id"]: b for m, path, b in c.calls if m == "POST" and path == "shops/9/products.json"}
+        self.assertEqual(sorted(created), [12, 39, 77, 478, 1128, 1574, 1588])            # no sticker (400)
+        pos = lambda bp: created[bp]["print_areas"][0]["placeholders"][0]
+        self.assertEqual(pos(1574)["position"], "front_left_leg")
+        self.assertEqual(pos(1588)["position"], "left_leg_front")
+        self.assertEqual(pos(1588)["images"][0]["y"], 0.3)                               # up on the thigh
+        hat_img = pos(1128)["images"][0]["id"]
+        self.assertNotEqual(hat_img, pos(12)["images"][0]["id"])                         # the hat gets the slogan-only art
+        self.assertTrue(list((self.dir / "art").glob("*-slogan.png")))
 
     def test_every_design_goes_to_ebay_too_with_short_titles(self):
         c = FakeClients(shops=[{"id": 9, "sales_channel": "etsy"}, {"id": 5, "sales_channel": "ebay"},

@@ -41,8 +41,21 @@ PRODUCTS = {
     "tee": {"name": "T-Shirt", "blueprint": 12, "provider": 99, "profit": 8.0,      # Bella+Canvas 3001
             "colors": ("White", "Natural", "Ash", "Athletic Heather", "Soft Cream", "Heather Peach"),
             "sizes": ("S", "M", "L", "XL", "2XL"), "fill": 0.9},
+    "hoodie": {"name": "Hoodie", "blueprint": 77, "provider": 99, "profit": 10.0,  # Gildan 18500
+               "colors": ("White", "Sport Grey", "Ash", "Sand", "Light Pink", "Light Blue"),
+               "sizes": ("S", "M", "L", "XL", "2XL"), "fill": 0.95},
+    "tank": {"name": "Tank Top", "blueprint": 39, "provider": 99, "profit": 7.0,    # Bella+Canvas 3480
+             "colors": ("White", "Athletic Heather"), "sizes": ("S", "M", "L", "XL", "2XL"), "fill": 0.9},
+    "shorts": {"name": "Sweat Shorts", "blueprint": 1574, "provider": 39, "profit": 7.0,   # Comfort Colors, printed on the left leg
+               "position": "front_left_leg", "colors": ("Ivory", "Peachy", "Hydrangea", "Blue Jean"),
+               "sizes": ("S", "M", "L", "XL", "2XL"), "fill": 0.85},
+    "pants": {"name": "Sweatpants", "blueprint": 1588, "provider": 217, "profit": 7.0,     # Comfort Colors, the left thigh
+              "position": "left_leg_front", "colors": ("Ivory", "Peachy", "Hydrangea", "Blue Jean"),
+              "sizes": ("S", "M", "L", "XL", "2XL"), "fill": 0.95, "y": 0.3},
+    "hat": {"name": "Trucker Hat", "blueprint": 1128, "provider": 41, "profit": 7.0,       # printed (not embroidered) front panel
+            "art": "slogan", "colors": ("Black", "Dark Navy", "Dark Green", "Royal"), "sizes": ("One size",), "fill": 0.95},
     "mug": {"name": "Mug", "blueprint": 478, "provider": 99, "profit": 6.0, "sizes": ("11oz",), "fill": 0.9},
-    "sticker": {"name": "Sticker", "blueprint": 400, "provider": 99, "profit": 2.5, "fill": 1.0},
+    "sticker": {"name": "Sticker", "blueprint": 400, "provider": 99, "profit": 2.5, "fill": 1.0},   # no longer made (2026-10-24)
 }
 # Sales channels connected in Printify that every design is listed on. eBay titles stop at 80 characters.
 CHANNELS = {"etsy": {"name": "Etsy", "title_max": 140}, "ebay": {"name": "eBay", "title_max": 80}}
@@ -51,10 +64,11 @@ CHANNELS = {"etsy": {"name": "Etsy", "title_max": 140}, "ebay": {"name": "eBay",
 # Left out: the folded shirt (it hides the design) and the mug scenes (they look at the side of the mug,
 # where a centred design wraps out of sight). Every listing also gets a close-up of the design itself.
 EXTRA_PHOTOS = {"tee": ("person-1", "person-2", "lifestyle", "hanging-1", "duo"),
+                "hoodie": ("person-1", "person-2", "lifestyle", "duo"), "tank": ("person-1", "person-2", "lifestyle"),
                 "mug": (),
                 "sticker": ("context-1", "context-2")}
 DEFAULTS = {"enabled": True, "designs_per_day": 1, "time": "06:00",  # live before the 7 AM text
-            "products": ["tee", "mug", "sticker"],
+            "products": ["tee", "hoodie", "tank", "shorts", "pants", "hat", "mug"],    # the user's lineup (2026-10-24): no stickers
             "video_times": ""}                 # e.g. "11:00,15:00,19:00", one video at each; empty = no videos (off: user prefers the photos)
 
 BLOCKED = re.compile(r"(?<![a-z])(" + "|".join([
@@ -233,6 +247,29 @@ def compose(art, slogan: str, width: int = DESIGN_W):
     return canvas
 
 
+def slogan_art(slogan: str, size: tuple = (3300, 1500)):
+    """The slogan alone, for a trucker hat's wide front panel (white foam on every colour): bold dark letters."""
+    from PIL import Image, ImageDraw, ImageFont
+    w, h = size
+    draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    pt = 520
+    while pt > 100:
+        font = ImageFont.truetype(FONT, pt)
+        lines = _wrap(slogan, font, draw, w * 0.94)
+        if len(lines) <= 3 and len(lines) * pt * 1.15 <= h * 0.92:
+            break
+        pt -= 20
+    canvas = Image.new("RGBA", size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(canvas)
+    line_h = round(pt * 1.15)
+    y = (h - line_h * len(lines)) / 2
+    for line in lines:
+        tw = d.textlength(line, font=font)
+        d.text(((w - tw) / 2, y), line, font=font, fill=(34, 30, 38, 255))
+        y += line_h
+    return canvas
+
+
 def _wrap(text: str, font, draw, width: int) -> list:
     lines, cur = [], ""
     for word in text.split():
@@ -315,7 +352,8 @@ def placements(kind: str, image_id: str, size: tuple, area: tuple) -> list:
     and a copy on each side of the handle (tried 2026-10-24) puts a seam right there."""
     (w, h), (pw, ph) = size, area
     fill = PRODUCTS[kind]["fill"]
-    return [{"id": image_id, "x": 0.5, "y": 0.5, "scale": round(min(1.0, (ph / pw) * (w / h)) * fill, 3), "angle": 0}]
+    return [{"id": image_id, "x": 0.5, "y": PRODUCTS[kind].get("y", 0.5),
+             "scale": round(min(1.0, (ph / pw) * (w / h)) * fill, 3), "angle": 0}]
 
 
 # ── the services ─────────────────────────────────────────────────────────────
@@ -415,7 +453,7 @@ class Shop:
             chosen = white or chosen
         if not chosen:
             raise RuntimeError(f"no {p['name']} variants matched")
-        front = next(ph for ph in chosen[0]["placeholders"] if ph["position"] == "front")
+        front = next(ph for ph in chosen[0]["placeholders"] if ph["position"] == p.get("position", "front"))
         self._variants[kind] = ([v["id"] for v in chosen][:100], (front["width"], front["height"]))
         return self._variants[kind]
 
@@ -489,10 +527,26 @@ class Shop:
                              {"file_name": Path(rec["file"]).name, "contents": base64.b64encode(data).decode()})
         return up["id"]
 
+    def upload_slogan(self, rec: dict) -> tuple:
+        """(Printify image id, size) of the slogan-only art, made and uploaded once per design."""
+        path = Path(rec["file"]).with_name(f"{rec['id']}-slogan.png")
+        if not path.exists():
+            slogan_art(rec.get("slogan") or rec["title"][:40]).save(path, "PNG", optimize=True)
+        if not rec.get("slogan_upload_id"):
+            up = self.c.printify("POST", "uploads/images.json",
+                                 {"file_name": path.name, "contents": base64.b64encode(path.read_bytes()).decode()})
+            rec["slogan_upload_id"] = up["id"]
+        from PIL import Image
+        with Image.open(path) as im:
+            return rec["slogan_upload_id"], im.size
+
     def create(self, rec: dict, kind: str, shop_id: int, image_id: str, title_max: int = 140) -> dict:
         p = PRODUCTS[kind]
         ids, (pw, ph) = self.variants(kind)
-        images = placements(kind, image_id, rec["size"], (pw, ph))
+        art_size = rec["size"]
+        if p.get("art") == "slogan":
+            image_id, art_size = self.upload_slogan(rec)
+        images = placements(kind, image_id, art_size, (pw, ph))
         title = listing_title(rec["title"], p["name"], title_max)
         desc = (f"{rec['description']}\n\n{rec['slogan'].title()}." if rec.get("slogan") else rec["description"]) + \
             ("\n\nDesigned in our studio with the help of AI image tools, then printed on demand and shipped by our "
@@ -501,7 +555,7 @@ class Shop:
                 "print_provider_id": p["provider"],
                 "variants": [{"id": i, "price": 2999, "is_enabled": True} for i in ids],
                 "print_areas": [{"variant_ids": ids, "placeholders": [
-                    {"position": "front", "images": images}]}]}
+                    {"position": p.get("position", "front"), "images": images}]}]}
         product = self.c.printify("POST", f"shops/{shop_id}/products.json", body)
         extra = self.save_photos(rec, kind, product.get("images") or [])
         priced = [{"id": v["id"], "price": price_for(int(v.get("cost") or 0), p["profit"]), "is_enabled": True}
