@@ -7,7 +7,8 @@ starts from "now" the first time, so turning this on never texts a backlog.
   reminders  every pass   a Jarvis reminder whose time has come
   events     every pass   website customers (call request, interest, question, payment),
                           broken background jobs, a paper trade that lost more than loss_alert
-  email      every 3 min  unread inbox mail Gmail marks important or that says it's urgent, any
+  email      every 3 min  unread inbox mail Gmail marks important or that says it's urgent (school: also
+                          Canvas notices, sjsu.edu people, enrollment and emergency mail), any
                           mail from a VIP sender, and packages out for delivery / delivered /
                           with a problem (personal and school accounts; the outreach "spam"
                           account is skipped)
@@ -39,8 +40,19 @@ PASS_SECONDS = 30
 EMAIL_EVERY = 180
 CANVAS_EVERY = 900
 REMINDER_LATE = 15 * 60       # a reminder found more than this late (the Mac slept) is not texted
-EMAIL_QUERY = ("in:inbox is:unread newer_than:1d -category:promotions -category:social -category:forums "
-               "(is:important OR subject:(urgent OR asap OR deadline OR emergency OR \"action required\"))")
+_INBOX = "in:inbox is:unread newer_than:1d -category:promotions -category:social -category:forums "
+_IMPORTANT = 'is:important OR subject:(urgent OR asap OR deadline OR emergency OR "action required")'
+EMAIL_QUERY = f"{_INBOX}({_IMPORTANT})"
+# Gmail's "important" guess misses school mail that matters (an enrollment appointment, a cancelled class, a campus
+# emergency alert) while flagging recruiting blasts, so the school account also gets: Canvas course notices (not the
+# daily digest), Rave emergency alerts, enrollment / registration / aid mail, and anyone at sjsu.edu except the
+# campus-wide newsletter senders.
+SCHOOL_EXTRA = ('(from:instructure.com -subject:"Recent Canvas Notifications") OR from:getrave.com '
+                'OR from:enrollmentmanagement@sjsu.edu OR subject:(enrollment OR registration OR "financial aid" '
+                'OR tuition OR waitlist OR canceled OR cancelled) OR (from:sjsu.edu -from:me -from:universitycomm@sjsu.edu '
+                '-from:engineering-comm@sjsu.edu -from:newspartans@sjsu.edu -from:spartanconnect@sjsu.edu '
+                '-from:electrical.engineering@sjsu.edu)')
+EMAIL_QUERIES = {"school": f"{_INBOX}({_IMPORTANT} OR {SCHOOL_EXTRA})"}
 EMAIL_ACCOUNTS = ("personal", "school")
 CALENDAR_EVERY = 120
 FANTASY_EVERY = 1200
@@ -186,9 +198,9 @@ class Scanner:
         recent = [p for p in cur.get("pkg_recent") or [] if self.clock() - p[0] < 86400]
         vip_sig = "|".join(sorted(v.lower() for v in cfg["vip"]))
         vip_changed = cur.get("vip_sig", "") != vip_sig        # a newly added VIP's old mail is not texted
-        queries = ([("vip", vip_query(cfg["vip"]))] if cfg["vip"] else []) + [("email", EMAIL_QUERY)]
         n = 0
         for account in accounts:
+            queries = ([("vip", vip_query(cfg["vip"]))] if cfg["vip"] else []) + [("email", EMAIL_QUERIES.get(account, EMAIL_QUERY))]
             try:
                 service = service_for(account)
                 api = service.users().messages()

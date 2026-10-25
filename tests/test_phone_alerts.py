@@ -157,6 +157,19 @@ class ScannerTests(_Base):
             self.assertEqual(s.email(accounts=["school"], service_for=lambda a: service), 1)
         self.assertEqual(self.sent, ["📧 School email from Ms. Lee: Midterm moved"])
 
+    def test_school_search_also_covers_canvas_professors_and_enrollment(self):
+        asked = {}
+        for account in ("school", "personal"):
+            service = self._gmail({})
+            s = self.scanner()
+            s.email(accounts=[account], service_for=lambda a: service)
+            asked[account] = [c.kwargs["q"] for c in service.users.return_value.messages.return_value.list.call_args_list]
+        school = next(q for q in asked["school"] if "is:important" in q)
+        for term in ("from:instructure.com", "from:sjsu.edu", "enrollment", "from:getrave.com", "-from:universitycomm@sjsu.edu"):
+            self.assertIn(term, school)
+        self.assertTrue(school.startswith("in:inbox is:unread newer_than:1d -category:promotions"))
+        self.assertNotIn("from:sjsu.edu", " ".join(asked["personal"]))
+
     def test_vip_mail_is_texted_once_and_a_new_vip_does_not_text_old_mail(self):
         results = {"email": [], "vip": ["v1"]}
         meta = {"v1": self._meta("Coach Dan <dan@club.org>", "Practice moved"),
