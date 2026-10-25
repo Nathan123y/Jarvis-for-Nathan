@@ -219,8 +219,14 @@ class ListingTests(_Base):
         s = self.shop(c)
         c.orders = [{"id": "o1", "line_items": [{"metadata": {"title": "Old order"}}]}]
         self.assertEqual(s.new_orders(), [])
-        c.orders.append({"id": "o2", "total_price": 2899, "line_items": [{"metadata": {"title": "Plant Lover T-Shirt"}}]})
+        c.orders.append({"id": "o2", "total_price": 1500,                              # Printify's cost, not the sale
+                         "line_items": [{"metadata": {"title": "Plant Lover T-Shirt"}, "product_id": "tee-1", "quantity": 1}]})
+        st = ws.load_state(self.dir / "s.json")
+        st["designs"].append({"id": "d", "made": 0, "products": {"tee": {"id": "tee-1", "price": 2899, "published": True}}})
+        ws.save_state(st, self.dir / "s.json")
         self.assertEqual(s.new_orders(), ["💰 SALE on Etsy! Plant Lover T-Shirt ($28.99). Printify will print and ship it."])
+        night = ws.overnight(0, self.dir / "s.json")
+        self.assertEqual((night["sales"], night["revenue"], night["listed"]), (1, 28.99, 1))
         self.assertEqual(s.new_orders(), [])
         c.orders[1]["status"] = "in-production"
         self.assertEqual(s.new_orders(), ["📦 Your Etsy order (Plant Lover T-Shirt) is being printed."])
@@ -236,8 +242,8 @@ class ScheduleTests(_Base):
         s = self.shop(c)
         svc = ws.ShopService(log=lambda m: None, notify=lambda k, t: self.sent.append((k, t)))
         with patch.object(ws, "settings", lambda: dict(ws.DEFAULTS)), patch("worker.storefront.publish", lambda *a, **k: ""):
-            svc.run_once(s, now=datetime.fromtimestamp(1_792_900_000).replace(hour=9))
-            self.assertEqual(len(ws.load_state(self.dir / "s.json")["designs"]), 0)       # before 10:00
+            svc.run_once(s, now=datetime.fromtimestamp(1_792_900_000).replace(hour=5))
+            self.assertEqual(len(ws.load_state(self.dir / "s.json")["designs"]), 0)       # before 6:00
             svc.run_once(s, now=datetime.fromtimestamp(1_792_900_000).replace(hour=11))
             svc.run_once(s, now=datetime.fromtimestamp(1_792_900_000).replace(hour=12))
             self.assertEqual(len(ws.load_state(self.dir / "s.json")["designs"]), 1)       # once a day

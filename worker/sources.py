@@ -254,7 +254,8 @@ def fantasy_summary() -> Optional[str]:
 
 # ── the morning text ─────────────────────────────────────────────────────────
 def morning_text(*, today: date, weather_line: Optional[str], events: Optional[list[dict]], canvas: list[dict],
-                 fantasy_swaps: list[str], packages: list[str], overnight: list[str]) -> str:
+                 fantasy_swaps: list[str], packages: list[str], overnight: list[str],
+                 trading: Optional[list] = None, shop: Optional[dict] = None) -> str:
     lines = [f"Good morning! {today.strftime('%a %b %-d')}"]
     if weather_line:
         lines.append(f"☀️ {weather_line}")
@@ -282,6 +283,13 @@ def morning_text(*, today: date, weather_line: Optional[str], events: Optional[l
         lines.append("🏈 Swap out: " + "; ".join(fantasy_swaps[:3]))
     if packages:
         lines.append("📦 " + "; ".join(packages[:3]))
+    for line in trading or []:
+        lines.append(f"📈 {line}")
+    if shop:
+        sold = (f"{shop['sales']} sale{'s' if shop['sales'] != 1 else ''} in the last day"
+                + (f" (${shop['revenue']:,.2f})" if shop.get("revenue") else "") if shop["sales"] else "No sales overnight")
+        new = f"; new today: '{_short(shop['new'][-1], 40)}'" if shop.get("new") else ""
+        lines.append(f"🛍️ Shop: {sold}{new}; {shop['listed']} designs live.")
     if overnight:
         lines.append("🌙 Overnight: " + " | ".join(overnight[:5]))
     return "\n".join(lines)

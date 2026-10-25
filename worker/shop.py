@@ -53,7 +53,8 @@ CHANNELS = {"etsy": {"name": "Etsy", "title_max": 140}, "ebay": {"name": "eBay",
 EXTRA_PHOTOS = {"tee": ("person-1", "person-2", "lifestyle", "hanging-1", "duo"),
                 "mug": (),
                 "sticker": ("context-1", "context-2")}
-DEFAULTS = {"enabled": True, "designs_per_day": 1, "time": "10:00", "products": ["tee", "mug", "sticker"],
+DEFAULTS = {"enabled": True, "designs_per_day": 1, "time": "06:00",  # live before the 7 AM text
+            "products": ["tee", "mug", "sticker"],
             "video_times": ""}                 # e.g. "11:00,15:00,19:00", one video at each; empty = no videos (off: user prefers the photos)
 
 BLOCKED = re.compile(r"(?<![a-z])(" + "|".join([
@@ -141,6 +142,16 @@ def save_state(st: dict, path: Path = STATE) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(st, indent=1))
     tmp.replace(path)
+
+
+def overnight(since: float, path: Path = STATE) -> dict:
+    """For the morning text: sales since `since` and the designs made since then."""
+    st = load_state(path)
+    sales = [x for x in st.get("sales_log") or [] if x.get("at", 0) >= since]
+    return {"sales": len(sales), "revenue": round(sum(x.get("price") or 0 for x in sales), 2),
+            "new": [d.get("slogan") or d.get("title", "") for d in st["designs"] if d.get("made", 0) >= since
+                    and any(p.get("published") for p in d.get("products", {}).values())],
+            "listed": sum(1 for d in st["designs"] if any(p.get("published") for p in d.get("products", {}).values()))}
 
 
 def price_for(cost_cents: int, profit: float) -> int:
@@ -565,6 +576,8 @@ class Shop:
         st = load_state(self.state_path)
         started = st.setdefault("orders_started_by", {"etsy": True} if st.get("orders_started") else {})
         lines = []
+        retail = {p.get("id"): p.get("price") for rec in st["designs"] for ch in CHANNELS
+                  for p in products_in(rec, ch).values() if p.get("id")}
         for channel, shop in stores.items():
             data = self.c.printify("GET", f"shops/{shop['id']}/orders.json?limit=20")
             status = st.setdefault("order_status", {})
@@ -576,7 +589,12 @@ class Shop:
                     status[o["id"]] = o.get("status")
                     if not started.get(channel):                # the first look at a channel is a baseline
                         continue
-                    total = (o.get("total_price") or 0) / 100
+                    prices = [retail.get(li.get("product_id")) for li in o.get("line_items") or []]
+                    total = sum(p * int(li.get("quantity") or 1) for p, li in zip(prices, o.get("line_items") or [])
+                                if p) / 100                       # what the buyer paid us (Printify's total is its cost)
+                    st.setdefault("sales_log", []).append({"at": self.clock(), "channel": channel, "items": items,
+                                                           "price": total})
+                    st["sales_log"] = st["sales_log"][-500:]
                     lines.append(f"💰 SALE on {CHANNELS[channel]['name']}! {items}" +
                                  (f" (${total:.2f})" if total else "") + ". Printify will print and ship it.")
                     continue

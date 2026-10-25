@@ -326,6 +326,10 @@ class Scanner:
             "canvas": safe(canvas, []),
             "fantasy_swaps": list(cur.get("fantasy_swaps") or []),
             "packages": [p[2] for p in cur.get("pkg_recent") or [] if p[1] == "out_for_delivery"],
+            "trading": [x for x in (safe(lambda: self._options_since(now - timedelta(days=1), "since yesterday"), None),
+                                    safe(lambda: self._meme_since(now - timedelta(days=1), "overnight"), None)) if x],
+            "shop": safe(lambda: __import__("worker.shop", fromlist=["overnight"]).overnight(
+                (now - timedelta(days=1)).timestamp()), None),
         }
 
     # ── the trading day ──────────────────────────────────────────────────────
@@ -581,6 +585,37 @@ class Scanner:
         text = sources.weekly_text(today=now.date(), **(gather or self._gather_weekly)(now))
         return self.alerts.scheduled("weekly", text, force=force)
 
+    def _options_since(self, since: datetime, when: str) -> str:
+        trades = self.store.events(since=since.timestamp(), kinds=["trade_result"])
+        pnls = [(t["detail"].get("bot"), float(t["detail"]["pnl"])) for t in trades
+                if (t.get("detail") or {}).get("pnl") is not None]
+        if not pnls:
+            return f"Options bots: no closed trades {when}."
+        by_bot: dict = {}
+        for bot, pnl in pnls:
+            by_bot[bot] = by_bot.get(bot, 0.0) + pnl
+        line = (f"Options bots: {sum(p for _, p in pnls):+,.0f} dollars on {len(pnls)} closed trades {when}, "
+                f"{sum(1 for _, p in pnls if p > 0)} won")
+        if len(by_bot) >= 2:
+            best = max(by_bot, key=by_bot.get)
+            line += f". Best bot: {best} ({by_bot[best]:+,.0f})"
+        return line + " (simulated)."
+
+    def _meme_since(self, since: datetime, when: str) -> Optional[str]:
+        status = sources.meme_status()
+        if not status:
+            return None
+        sells = [t for t in sources.meme_trades() if t.get("kind") == "sell" and t.get("pnl") is not None
+                 and _ts(t.get("ts")) >= since.timestamp()]
+        line = f"Memecoin account ${float(status['equity']):,.2f}"
+        if status.get("first_equity"):
+            line += f" ({float(status['equity']) - float(status['first_equity']):+,.2f} since it started)"
+        if sells:
+            line += f"; {len(sells)} closed {when}, {sum(float(t['pnl']) for t in sells):+,.2f}"
+        elif status.get("positions"):
+            line += f"; holding {len(status['positions'])}"
+        return line + " (simulated)."
+
     def _gather_weekly(self, now: datetime) -> dict:
         def safe(fn, default):
             try:
@@ -591,34 +626,8 @@ class Scanner:
 
         week_ago = now - timedelta(days=7)
 
-        def trading():
-            trades = self.store.events(since=week_ago.timestamp(), kinds=["trade_result"])
-            pnls = [(t["detail"].get("bot"), float(t["detail"]["pnl"])) for t in trades
-                    if (t.get("detail") or {}).get("pnl") is not None]
-            if not pnls:
-                return "Options bots: no closed trades this week."
-            by_bot: dict = {}
-            for bot, pnl in pnls:
-                by_bot[bot] = by_bot.get(bot, 0.0) + pnl
-            line = (f"Options bots: {sum(p for _, p in pnls):+,.0f} dollars on {len(pnls)} closed trades, "
-                    f"{sum(1 for _, p in pnls if p > 0)} won")
-            if len(by_bot) >= 2:
-                best = max(by_bot, key=by_bot.get)
-                line += f". Best bot: {best} ({by_bot[best]:+,.0f})"
-            return line + " (simulated)."
-
-        def memecoin():
-            status = sources.meme_status()
-            if not status:
-                return None
-            sells = [t for t in sources.meme_trades() if t.get("kind") == "sell" and t.get("pnl") is not None
-                     and _ts(t.get("ts")) >= week_ago.timestamp()]
-            line = f"Memecoin account ${float(status['equity']):,.2f}"
-            if status.get("first_equity"):
-                line += f" ({float(status['equity']) - float(status['first_equity']):+,.2f} since it started)"
-            if sells:
-                line += f"; {len(sells)} closed this week, {sum(float(t['pnl']) for t in sells):+,.2f}"
-            return line + " (simulated)."
+        trading = lambda: self._options_since(week_ago, "this week")
+        memecoin = lambda: self._meme_since(week_ago, "this week")
 
         def canvas():
             from plugins.canvas_school import fetch_assignments
