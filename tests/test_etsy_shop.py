@@ -231,6 +231,24 @@ class ScheduleTests(_Base):
             svc.run_once(s, now=datetime.fromtimestamp(1_792_900_000).replace(hour=13))
             self.assertEqual(len(ws.load_state(self.dir / "s.json")["designs"]), 2)
 
+    def test_make_now_queue_makes_one_per_pass_on_only_the_asked_products(self):
+        c = FakeClients(shops=[{"id": 9, "sales_channel": "etsy"}])
+        s = self.shop(c)
+        svc = ws.ShopService(log=lambda m: None, notify=lambda k, t: self.sent.append((k, t)))
+        st = ws.load_state(self.dir / "s.json")
+        st.update(make_now=2, make_only=["tee"])
+        ws.save_state(st, self.dir / "s.json")
+        with patch.object(ws, "settings", lambda: dict(ws.DEFAULTS, designs_per_day=0)), \
+                patch("worker.storefront.publish", lambda *a, **k: ""):
+            for hour in (13, 14, 15):
+                svc.run_once(s, now=datetime.fromtimestamp(1_792_900_000).replace(hour=hour))
+        st = ws.load_state(self.dir / "s.json")
+        self.assertEqual(len(st["designs"]), 2)
+        self.assertEqual(st["make_now"], 0)
+        self.assertNotIn("make_only", st)
+        created = [x for x in c.calls if x[0] == "POST" and x[1] == "shops/9/products.json"]
+        self.assertEqual({b["blueprint_id"] for _, _, b in created}, {12})                # t-shirts only
+
 
 if __name__ == "__main__":
     unittest.main()

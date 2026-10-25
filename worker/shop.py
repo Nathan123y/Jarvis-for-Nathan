@@ -371,7 +371,8 @@ class Shop:
         return self._variants[kind]
 
     # one design, start to finish
-    def make_design(self) -> dict:
+    def make_design(self, only: Optional[list] = None) -> dict:
+        """only: the product kinds this design goes on (e.g. ["tee"]); None means the usual set."""
         st = load_state(self.state_path)
         recent = [d.get("niche", "") + ": " + d.get("slogan", "") for d in st["designs"]]
         last_error = None
@@ -394,6 +395,8 @@ class Shop:
         design.save(path, "PNG", optimize=True)
         (self.art_dir / f"{stamp}-raw.jpg").write_bytes(raw)
         rec = {"id": stamp, **idea, "file": str(path), "size": list(design.size), "made": self.clock(), "products": {}}
+        if only:
+            rec["only"] = list(only)
         st["designs"].append(rec)
         save_state(st, self.state_path)
         self.log(f"shop: designed '{idea['title']}' ({idea['slogan']})")
@@ -483,7 +486,7 @@ class Shop:
                 if self.clock() < retry.get(channel, rec.get("retry_at", 0) if channel == "etsy" else 0):
                     continue
                 listed = products_in(rec, channel)
-                for kind in self.cfg()["products"]:
+                for kind in rec.get("only") or self.cfg()["products"]:
                     if kind not in PRODUCTS:
                         continue
                     prod = listed.get(kind)
@@ -574,14 +577,18 @@ class ShopService:
         today = now.date().isoformat()
         h, m = (int(x) for x in str(cfg["time"]).split(":"))
         made_today = sum(1 for d in st["designs"] if datetime.fromtimestamp(d["made"]).date().isoformat() == today)
-        asked = bool(st.get("make_now"))                    # "make a new product now", from the plugin
+        queued = int(st.get("make_now") or 0)              # "make N new products now", from the plugin; one per pass
         cooling = time.time() - st.get("last_fail_at", 0) < 3600
-        if asked or (not cooling and now.hour * 60 + now.minute >= h * 60 + m and made_today < cfg["designs_per_day"]):
-            if asked:
-                st["make_now"] = False
-                save_state(st, shop.state_path)
+        if (queued and not cooling) or (not cooling and now.hour * 60 + now.minute >= h * 60 + m
+                                        and made_today < cfg["designs_per_day"]):
             try:
-                shop.make_design()
+                shop.make_design(only=st.get("make_only") if queued else None)
+                if queued:
+                    st = load_state(shop.state_path)
+                    st["make_now"] = queued - 1
+                    if queued == 1:
+                        st.pop("make_only", None)
+                    save_state(st, shop.state_path)
             except Exception as exc:
                 self.log(f"shop: today's design failed: {exc}")
                 st["last_fail_at"] = time.time()

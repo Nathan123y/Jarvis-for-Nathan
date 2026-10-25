@@ -17,7 +17,8 @@ PLUGIN = {
         "The user's Etsy and eBay print-on-demand shop, which Jarvis runs by itself: every day it invents a design "
         "(AI illustration and slogan), puts it on a T-shirt, a mug and a sticker through Printify, and lists "
         "them on Etsy and eBay; Printify prints and ships orders. Use for 'how is my Etsy shop doing', 'any Etsy "
-        "orders', 'make a new product now' (make_now), 'pause the shop' (pause), 'resume the shop' (resume), "
+        "orders', 'make a new product now' (make_now; 'make 10 more t-shirts' = make_now, value=10, "
+        "products=['tee']), 'pause the shop' (pause), 'resume the shop' (resume), "
         "'make 2 designs a day' (per_day, value=number), 'what did you list lately' (recent), "
         "'connect Jarvis to Etsy' for the extra listing photos (connect_etsy), and when the user pastes the "
         "localhost address Etsy sent them to (finish_etsy, url=that address). "
@@ -28,7 +29,9 @@ PLUGIN = {
         "properties": {
             "action": {"type": "STRING", "enum": ["status", "make_now", "pause", "resume", "per_day", "recent", "connect_etsy", "finish_etsy"]},
             "url": {"type": "STRING", "description": "For finish_etsy: the whole https://localhost:3003/callback?... address"},
-            "value": {"type": "INTEGER", "description": "For per_day: designs a day (0-5); each becomes 3 listings"},
+            "value": {"type": "INTEGER", "description": "For per_day: designs a day (0-5); for make_now: how many new designs (1-20)"},
+            "products": {"type": "ARRAY", "items": {"type": "STRING", "enum": ["tee", "mug", "sticker"]},
+                         "description": "For make_now: only these products (e.g. ['tee'] for t-shirts only); empty = all three"},
         },
         "required": [],
     },
@@ -93,10 +96,19 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
             return (f"Okay, {n} design{'s' if n != 1 else ''} a day: {n * 3} listings, about "
                     f"${n * 3 * 0.20 * 30:.0f} a month in Etsy listing fees.")
         if action == "make_now":
+            try:
+                n = max(1, min(20, int(args.get("value") or 1)))
+            except (TypeError, ValueError):
+                n = 1
+            only = [k for k in (args.get("products") or []) if k in ws.PRODUCTS]
             st = ws.load_state()
-            st["make_now"] = True
+            st["make_now"] = int(st.get("make_now") or 0) + n
+            if only:
+                st["make_only"] = only
             ws.save_state(st)
-            return "On it. The worker will design a new product within five minutes and list it if Etsy is connected."
+            what = " and ".join(ws.PRODUCTS[k]["name"].lower() + "s" for k in only) or "products"
+            return (f"On it: {n} new design{'s' if n != 1 else ''} as {what}, one about every five minutes. "
+                    "I'll text you as each one is listed.")
         if action == "recent":
             designs = ws.load_state()["designs"][-5:][::-1]
             if not designs:
