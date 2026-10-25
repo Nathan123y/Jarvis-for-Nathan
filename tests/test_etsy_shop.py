@@ -365,8 +365,7 @@ class VideoTests(_Base):
             made.append(fmt)
             return {"file": str(self.dir / f"{fmt}.mp4"), "caption": "c #tag", "format": fmt, "design": rec["id"]}
         day = datetime(2026, 10, 25)
-        with patch("worker.videos.make", fake_make), patch("worker.social.connected", lambda: False), \
-                patch("core.phone_alerts.send_file", lambda path, note, cfg=None: texted.append((path, note))), \
+        with patch("worker.videos.make", fake_make), patch("core.phone_alerts.send_file", lambda path, note, cfg=None: texted.append((path, note))), \
                 patch("core.phone_alerts.settings", lambda: {"enabled": True, "off": []}), \
                 patch.object(ws, "settings", lambda: dict(ws.DEFAULTS, video_times="11:00,15:00,19:00")):
             self.assertEqual(svc.video_slot(s, day.replace(hour=10)), "")              # before the first time
@@ -393,7 +392,6 @@ class VideoTests(_Base):
         svc = ws.ShopService(log=lambda m: None)
         with patch("worker.videos.make", lambda rec, fmt, *a, **k: made.append(fmt) or
                    {"file": "f.mp4", "caption": "c", "format": fmt, "design": rec["id"]}), \
-                patch("worker.social.connected", lambda: False), \
                 patch("core.phone_alerts.send_file", lambda *a, **k: None), \
                 patch("core.phone_alerts.settings", lambda: {"enabled": True, "off": []}), \
                 patch.object(ws, "settings", lambda: dict(ws.DEFAULTS, video_times="11:00,15:00,19:00")):

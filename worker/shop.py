@@ -780,18 +780,7 @@ class ShopService:
         return self.deliver(video, shop, slot + 1, len(times))
 
     def deliver(self, video: dict, shop: "Shop", n: int, of: int) -> str:
-        from worker import social
-        if social.connected():
-            try:
-                from worker import storefront
-                url = storefront.host_video(Path(video["file"]))
-                post = social.post_reel(url, video["caption"])
-                self.mark(shop, video, instagram=post)
-                self.notify("videos", f"🎬 Posted today's video {n} of {of} to Instagram ({video['format']}).")
-                return "posted"
-            except Exception as exc:
-                self.log(f"videos: Instagram post failed: {exc}")
-                self.notify("system", f"⚠️ Couldn't post the video to Instagram: {str(exc)[:120]}. I'll text it to you instead.")
+        """Texts the video to the user (Jarvis never posts to their social accounts)."""
         from core import phone_alerts as pa
         cfg = pa.settings()
         if not cfg["enabled"] or "videos" in cfg["off"]:

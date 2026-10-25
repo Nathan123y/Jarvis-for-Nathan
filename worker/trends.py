@@ -1,6 +1,7 @@
 """What the internet is joking about today, for the shop's Trend Scout: Know Your Meme's newest confirmed memes (it documents
 what goes viral on TikTok, X and Instagram, which have no free feeds), the day's top posts in Reddit's meme and funny-phrase
-subreddits, and Bluesky's trending topics. One request per source, once a day; a source that fails is just left out.
+subreddits, Bluesky's trending topics, and (read only, once connected) Instagram's big meme pages and hashtags (ig_scout.py).
+One request per source, once a day; a source that fails is just left out.
 """
 from __future__ import annotations
 
@@ -43,6 +44,7 @@ def bluesky_topics(text: str) -> list:
 
 def fetch(get: Optional[Callable] = None) -> dict:
     """{source name: [titles]}."""
+    real = get is None
     if get is None:
         import requests
         get = lambda url: requests.get(url, headers=UA, timeout=20)
@@ -54,6 +56,14 @@ def fetch(get: Optional[Callable] = None) -> dict:
                 items = (bluesky_topics(r.text) if url.startswith("https://api.bsky.app") else titles(r.text))[:PER_SOURCE]
                 if items:
                     found[name] = items
+        except Exception:
+            pass
+    if real:                                               # Instagram (read only), once it's connected
+        try:
+            from worker import ig_scout
+            lines = ig_scout.fetch() if ig_scout.connected() else []
+            if lines:
+                found["Instagram (the most viral posts on big meme pages and hashtags, read from the pictures)"] = lines
         except Exception:
             pass
     return found

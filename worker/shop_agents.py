@@ -1,7 +1,7 @@
 """The shop's crew: four agents that run the print-on-demand shop as a daily cycle, and a notebook they keep for themselves.
 
-  Trend Scout  once a day reads what's going viral (Know Your Meme, which tracks TikTok, X and Instagram memes too; Reddit's meme and
-               funny-phrase subreddits; Bluesky's trending topics) and picks the five funniest phrases or memes that would work on a
+  Trend Scout  once a day reads what's going viral (Know Your Meme, which tracks TikTok and X memes too; Reddit's meme and
+               funny-phrase subreddits; Bluesky's trending topics; Instagram's big meme pages and hashtags, read only, see ig_scout.py) and picks the five funniest phrases or memes that would work on a
                shirt, skipping news, politics, real people and brands. Its picks go to the Designer.
   Designer     shop.Shop.make_design: turns one pick (or a winner's theme) into a slogan, an illustration and a listing, using the
                notebook's lessons. Hands the design to the Publisher.
