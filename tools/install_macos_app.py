@@ -25,7 +25,6 @@ from pathlib import Path
 BUNDLE_ID = "com.nathan.jarvis.launcher"
 MARKER = "# Jarvis Git checkout launcher"
 NATIVE_SOURCE = Path(__file__).with_name("jarvis_launcher.swift")
-ANNOUNCER_SOURCE = Path(__file__).with_name("notification_announcer.swift")
 BUILD_MARKER = "native-build.sha256"
 LOCAL_IDENTITY = "Jarvis Local Signing"
 ICON_SOURCE = Path(__file__).resolve().parent.parent / "assets" / "icon.png"
@@ -70,8 +69,7 @@ def signing_identity() -> str:
 
 def native_build_id(settings: dict, info: dict, identity: str) -> str:
     digest = hashlib.sha256()
-    for source in (NATIVE_SOURCE, ANNOUNCER_SOURCE):
-        digest.update(source.read_bytes())
+    digest.update(NATIVE_SOURCE.read_bytes())
     digest.update(plistlib.dumps(settings, sort_keys=True))
     digest.update(plistlib.dumps(info, sort_keys=True))
     digest.update(identity.encode("utf-8"))
@@ -188,8 +186,8 @@ def install(repo: Path, interpreter: Path, destination: Path, architecture: str 
             if "CFBundleIconFile" in info:
                 write_icon(config)       # before signing: the signature covers it
             launcher = macos / "Jarvis"
-            result = subprocess.run(["/usr/bin/xcrun", "swiftc", str(NATIVE_SOURCE),
-                                     str(ANNOUNCER_SOURCE), "-framework", "AVFoundation",
+            result = subprocess.run(["/usr/bin/xcrun", "swiftc", "-parse-as-library", str(NATIVE_SOURCE),
+                                     "-framework", "AVFoundation",
                                      "-framework", "AppKit", "-framework", "ApplicationServices",
                                      "-framework", "ScreenCaptureKit", "-o", str(launcher)],
                                     capture_output=True, text=True, check=False)

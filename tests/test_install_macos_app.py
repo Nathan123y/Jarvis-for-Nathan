@@ -76,8 +76,6 @@ class MacLauncherTests(unittest.TestCase):
             # Two identity lookups (Apple Development, then a local certificate).
             self.assertEqual(run.call_count, 5)
             self.assertIn("swiftc", run.call_args_list[2].args[0])
-            self.assertTrue(any(str(source).endswith("notification_announcer.swift")
-                                for source in run.call_args_list[2].args[0]))
             self.assertEqual(run.call_args_list[3].args[0][3], "-")
             self.assertTrue((target / "Contents" / "Resources" / "AppIcon.icns").is_file())
             with (target / "Contents" / "Info.plist").open("rb") as source:

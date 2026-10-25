@@ -14,13 +14,13 @@ private func userHome() -> URL {
     return FileManager.default.homeDirectoryForCurrentUser
 }
 
-final class JarvisLauncher: NSObject, NSApplicationDelegate {
+final class JarvisLauncher: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var child: Process?
     private var statusItem: NSStatusItem?
     private var microphoneItem: NSMenuItem?
     private var statusLabel: NSMenuItem?
-    private var announcementsItem: NSMenuItem?
-    private let announcer = NotificationAnnouncer()
+    private var moneyItem: NSMenuItem?
+    private var repoPath: String?
     private var refreshTimer: Timer?
     private var screenTimer: DispatchSourceTimer?
     private var controlDirectory: URL?
@@ -33,7 +33,6 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])
             controlDirectory = directory
-            announcer.controlDirectory = directory
             try? FileManager.default.removeItem(at: directory.appendingPathComponent("command"))
             try? FileManager.default.removeItem(at: directory.appendingPathComponent("status"))
             try? FileManager.default.removeItem(at: directory.appendingPathComponent("announcing"))
@@ -60,7 +59,6 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
         }
         screenTimer = timer
         timer.resume()
-        announcer.start()
         AVCaptureDevice.requestAccess(for: .audio) { allowed in
             DispatchQueue.main.async {
                 if allowed {
@@ -85,6 +83,7 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
             showError("Launcher settings are missing. Run the Jarvis installer again.")
             return
         }
+        repoPath = repo
         let main = URL(fileURLWithPath: repo).appendingPathComponent("main.py").path
         guard FileManager.default.fileExists(atPath: main),
               FileManager.default.isExecutableFile(atPath: python) else {
@@ -140,16 +139,18 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
         status.isEnabled = false
         menu.addItem(status)
         statusLabel = status
+        let money = NSMenuItem(title: "💰 Checking the money…", action: #selector(openShop), keyEquivalent: "")
+        menu.addItem(money)
+        moneyItem = money
+        menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Open Jarvis", action: #selector(openWindow), keyEquivalent: ""))
         let microphone = NSMenuItem(title: "Mute microphone", action: #selector(toggleMicrophone), keyEquivalent: "")
         menu.addItem(microphone)
         microphoneItem = microphone
-        let announcements = NSMenuItem(title: "Announce notifications", action: #selector(toggleAnnouncements), keyEquivalent: "")
-        menu.addItem(announcements)
-        announcementsItem = announcements
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit Jarvis", action: #selector(quit), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Restart Jarvis", action: #selector(restart), keyEquivalent: ""))
         for entry in menu.items where entry.action != nil { entry.target = self }
+        menu.delegate = self
         item.menu = menu
         statusItem = item
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -254,9 +255,6 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
             (muted ? "Microphone muted" : "Microphone active")) : "Jarvis stopped"
         microphoneItem?.title = muted ? "Unmute microphone" : "Mute microphone"
         microphoneItem?.isEnabled = running && state != nil
-        announcementsItem?.state = announcer.enabled ? .on : .off
-        announcementsItem?.title = announcer.enabled && !announcer.trusted
-            ? "Grant Accessibility to announce" : "Announce notifications"
         if let button = statusItem?.button {
             button.image = NSImage(systemSymbolName: muted ? "mic.slash.circle" : "waveform.circle",
                                    accessibilityDescription: muted ? "Jarvis muted" : "Jarvis")
@@ -273,15 +271,51 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
     @objc private func toggleMicrophone() {
         sendCommand(microphoneItem?.title == "Unmute microphone" ? "unmute" : "mute")
     }
-    @objc private func toggleAnnouncements() {
-        if announcer.enabled && !announcer.trusted {
-            _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
-        } else {
-            announcer.setEnabled(!announcer.enabled)
-        }
-        refreshMenu()
+    @objc private func openShop() {
+        if let url = URL(string: "https://www.etsy.com/your/shops/me/dashboard") { NSWorkspace.shared.open(url) }
     }
-    @objc private func quit() { NSApp.terminate(nil) }
+    /// Quits, waits for this app and its Python session to exit, then opens Jarvis again.
+    @objc private func restart() {
+        var pids = ["\(getpid())"]
+        if let child = child, child.isRunning { pids.append("\(child.processIdentifier)") }
+        let relaunch = Process()
+        relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
+        relaunch.arguments = ["-c", "for p in \(pids.joined(separator: " ")); do "
+            + "while kill -0 $p 2>/dev/null; do sleep 0.2; done; done; /usr/bin/open \"$0\"",
+            Bundle.main.bundlePath]
+        try? relaunch.run()
+        NSApp.terminate(nil)
+    }
+
+    func menuWillOpen(_ menu: NSMenu) { moneyItem?.title = moneyTitle() }
+
+    /// Today's money at a glance: the memecoin bot's paper account and the shop's sales.
+    private func moneyTitle() -> String {
+        var parts: [String] = []
+        let status = userHome().appendingPathComponent("optionsbots/data/memebot/status.json")
+        if let data = try? Data(contentsOf: status),
+           let bot = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+           let equity = (bot["equity"] as? NSNumber)?.doubleValue {
+            let change = equity - ((bot["day_start_equity"] as? NSNumber)?.doubleValue ?? equity)
+            var line = String(format: "🪙 $%.2f (%@$%.2f today)", equity, change < 0 ? "−" : "+", abs(change))
+            if let beat = bot["heartbeat"] as? String,
+               let at = ISO8601DateFormatter().date(from: beat), Date().timeIntervalSince(at) > 600 {
+                line += " ⚠️ bot stopped"
+            }
+            parts.append(line)
+        }
+        if let repo = repoPath,
+           let data = try? Data(contentsOf: URL(fileURLWithPath: repo).appendingPathComponent("memory/etsy_shop.json")),
+           let shop = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+            let since = Calendar.current.startOfDay(for: Date()).timeIntervalSince1970
+            let sales = (shop["sales_log"] as? [[String: Any]] ?? [])
+                .filter { (($0["at"] as? NSNumber)?.doubleValue ?? 0) >= since }
+            let revenue = sales.reduce(0.0) { $0 + (($1["price"] as? NSNumber)?.doubleValue ?? 0) }
+            parts.append("🛍️ \(sales.count) sale\(sales.count == 1 ? "" : "s") today"
+                + (revenue > 0 ? String(format: " ($%.2f)", revenue) : ""))
+        }
+        return parts.isEmpty ? "💰 No money data yet" : parts.joined(separator: "   ")
+    }
 
     private func showError(_ message: String) {
         let alert = NSAlert()
@@ -294,7 +328,6 @@ final class JarvisLauncher: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         refreshTimer?.invalidate()
         screenTimer?.cancel()
-        announcer.stop()
         if let child = child, child.isRunning { child.terminate() }
         if let directory = controlDirectory {
             try? FileManager.default.removeItem(at: directory.appendingPathComponent("command"))
