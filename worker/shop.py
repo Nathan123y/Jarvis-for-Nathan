@@ -765,7 +765,8 @@ class ShopService:
                     save_state(st, shop.state_path)
             except Exception as exc:
                 self.log(f"shop: today's design failed: {exc}")
-                st["last_fail_at"] = time.time()
+                busy = "didn't answer" in str(exc)                 # Gemini overloaded for a while: try again in 15 minutes, not an hour
+                st["last_fail_at"] = time.time() - (2700 if busy else 0)
                 save_state(st, shop.state_path)
                 if st.get("last_fail_day") != today:
                     st["last_fail_day"] = today
