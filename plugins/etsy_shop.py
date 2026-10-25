@@ -42,7 +42,7 @@ PLUGIN_SETTINGS = {
     "namespace": ws.NS,
     "title": "Etsy shop (print-on-demand through Printify)",
     "fields": [
-        {"key": "designs_per_day", "type": "text", "label": "Designs a day (each = shirt, mug and sticker listings)", "placeholder": "1"},
+        {"key": "designs_per_day", "type": "text", "label": "Designs a day, spread through the day (each = the whole lineup)", "placeholder": "1"},
         {"key": "time", "type": "text", "label": "Make the day's design at (HH:MM)", "placeholder": "10:00"},
     ],
 }
@@ -64,7 +64,7 @@ def _status() -> str:
     if not tokens:
         parts.append("The shop needs the Printify and Cloudflare keys in Plugin Settings.")
     parts.append(f"The shop is {'running' if cfg['enabled'] else 'paused'}: {cfg['designs_per_day']} design"
-                 f"{'s' if cfg['designs_per_day'] != 1 else ''} a day at {cfg['time']}, each as a shirt, mug and sticker.")
+                 f"{'s' if cfg['designs_per_day'] != 1 else ''} a day at {cfg['time']}, each listed as the whole lineup (tee, hoodie, tank, shorts, sweatpants, hat, mug).")
     where = " and ".join(f"{n} on {ws.CHANNELS[ch]['name']}" for ch, n in live.items() if n) or "none live yet"
     parts.append(f"{len(designs)} design{'s' if len(designs) != 1 else ''} made, {listed} listings: {where}" +
                  (f", {waiting} waiting to be listed." if waiting else "."))

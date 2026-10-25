@@ -735,7 +735,10 @@ class ShopService:
         queued = int(st.get("make_now") or 0)              # "make N new products now", from the plugin; one per pass
         spin_q = list(st.get("make_spinoff") or [])        # spin-offs of a design that just sold, queued by the Analyst
         cooling = time.time() - st.get("last_fail_at", 0) < 3600
-        daily = now.hour * 60 + now.minute >= h * 60 + m and made_today < cfg["designs_per_day"]
+        # N designs a day are spread from the start time to midnight (4 a day at 06:00: 06:00, 10:30, 15:00, 19:30)
+        n = cfg["designs_per_day"]
+        gap = (24 * 60 - (h * 60 + m)) / n if n else 0
+        daily = made_today < n and now.hour * 60 + now.minute >= h * 60 + m + made_today * gap
         if not cooling and (spin_q or queued or daily):
             from worker import shop_agents
             try:
