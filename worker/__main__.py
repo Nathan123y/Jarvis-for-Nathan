@@ -92,9 +92,15 @@ def cmd_run(args) -> int:
     shop = ShopService(logging.getLogger("jarvis.shop").info,
                        notify=lambda kind, text: (alerts.alerts.scheduled if kind == "shop" else alerts.alerts.notify)(kind, text))
     shop.start()
+    # The internship crew: Summer 2027 applications and company replies (worker/internships.py).
+    from worker.internships import InternshipService
+    internships = InternshipService(logging.getLogger("jarvis.internships").info,
+                                    notify=lambda kind, text: alerts.alerts.scheduled(kind, text))
+    internships.start()
     try:
         w.run_forever()
     finally:
+        internships.stop()
         shop.stop()
         alerts.stop()
         if phone:

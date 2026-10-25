@@ -37,6 +37,7 @@ KINDS = {
     "memecoin": "memecoin bot trades and big moves",
     "sales": "Gumroad sales",
     "shop": "Etsy shop listings and orders",
+    "internships": "internship applications and company replies",
     "videos": "the daily shop videos (sent to you to post until Instagram posts them itself)",
     "canvas": "Canvas work due soon",
     "canvas_tonight": "the 8 PM 'due tonight' check",

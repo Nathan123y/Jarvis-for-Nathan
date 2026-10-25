@@ -1,0 +1,155 @@
+import json
+import tempfile
+import unittest
+from datetime import datetime
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from worker import intern_apply as ia
+from worker import internships as wi
+
+NOW = datetime(2026, 10, 26, 9, 0).timestamp()
+
+
+def listing(**kw):
+    base = {"id": "a1", "company_name": "Muon Space", "title": "Electrical Engineer Intern", "active": True,
+            "is_visible": True, "terms": ["Summer 2027"], "category": "Hardware", "locations": ["San Jose, CA"],
+            "degrees": ["Bachelor's"], "sponsorship": "Other", "date_posted": 100,
+            "url": "https://job-boards.greenhouse.io/muonspace/jobs/5255112007"}
+    base.update(kw)
+    return base
+
+
+class ScoutTests(unittest.TestCase):
+    def test_keeps_california_summer_2027_hardware_for_bachelors(self):
+        self.assertTrue(wi.wanted(listing(), {}))
+        self.assertFalse(wi.wanted(listing(terms=["Summer 2026"]), {}))
+        self.assertFalse(wi.wanted(listing(locations=["Austin, TX"]), {}))
+        self.assertFalse(wi.wanted(listing(degrees=["Master's", "PhD"]), {}))
+        self.assertFalse(wi.wanted(listing(category="Software"), {}))
+        self.assertFalse(wi.wanted(listing(title="Embedded Software Engineer Intern"), {}))
+        self.assertTrue(wi.wanted(listing(title="Firmware and Hardware Validation Intern"), {}))
+        self.assertFalse(wi.wanted(listing(active=False), {}))
+
+    def test_sponsorship_and_citizenship_follow_the_info_file(self):
+        needs = {"will you need visa sponsorship now or in the future": "yes"}
+        self.assertFalse(wi.wanted(listing(sponsorship="Does Not Offer Sponsorship"), needs))
+        self.assertFalse(wi.wanted(listing(sponsorship="U.S. Citizenship is Required"), {}))
+        citizen = {"citizenship (us citizen / permanent resident / other)": "US citizen"}
+        self.assertTrue(wi.wanted(listing(sponsorship="U.S. Citizenship is Required"), citizen))
+
+    def test_new_postings_are_added_once_and_closed_ones_drop_out(self):
+        st = {"jobs": {}, "replies_seen": []}
+        feed = [listing(), listing(id="b2", url="https://nvidia.wd5.myworkdayjobs.com/x")]
+        self.assertEqual(wi.scout(st, lambda u: json.dumps(feed).encode(), {}, NOW), 2)
+        self.assertEqual(st["jobs"]["a1"]["ats"], "greenhouse")
+        self.assertEqual(st["jobs"]["b2"]["ats"], "manual")
+        self.assertEqual(wi.scout(st, lambda u: json.dumps(feed).encode(), {}, NOW), 0)
+        feed[0]["active"] = False
+        wi.scout(st, lambda u: json.dumps(feed).encode(), {}, NOW)
+        self.assertEqual(st["jobs"]["a1"]["status"], "closed")
+
+
+class ProfileTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.profile = self.dir / "profile.md"
+        self.profile.write_text(Path(wi.PROFILE).read_text() if wi.PROFILE.exists() else "First name: Nathan\n")
+
+    def test_blank_required_lines_and_a_missing_resume_are_gaps(self):
+        self.profile.write_text("First name: Nathan\nLast name:\nGPA: 3.5\n")
+        gaps = wi.profile_gaps(self.profile, self.dir / "resume.pdf")
+        self.assertIn("last name", gaps)
+        self.assertNotIn("first name", gaps)
+        self.assertIn("resume.pdf", gaps)
+
+    def test_unanswered_questions_are_added_once(self):
+        self.profile.write_text("# Info\nFirst name: Nathan\n")
+        self.assertEqual(wi.add_questions(["SpaceX Program Preference*"], self.profile), ["SpaceX Program Preference"])
+        self.assertEqual(wi.add_questions(["SpaceX Program Preference"], self.profile), [])
+        text = self.profile.read_text()
+        self.assertEqual(text.count("SpaceX Program Preference:"), 1)
+        self.assertIn("## Extra answers", text)
+
+
+class ReplyTests(unittest.TestCase):
+    def test_classify(self):
+        self.assertEqual(wi.classify("Interview invitation", "")[0], "interview")
+        self.assertEqual(wi.classify("Next steps: HackerRank assessment", "")[0], "interview")
+        self.assertEqual(wi.classify("Your CodeSignal assessment", "")[0], "coding test")
+        self.assertEqual(wi.classify("Your application", "Unfortunately we will not be moving forward")[0], "rejection")
+        self.assertEqual(wi.classify("Thank you for applying to Muon Space", "")[0], "received")
+        self.assertIsNone(wi.classify("Security code for your application", "")[1])
+
+    def test_company_match(self):
+        self.assertTrue(wi.company_in("Muon Space", "Muon Space <no-reply@greenhouse.io>", "Thanks", ""))
+        self.assertTrue(wi.company_in("DoorDash", "no-reply@doordash.com", "", ""))
+        self.assertFalse(wi.company_in("Arc", "Marcus <m@x.com>", "Archive", ""))
+
+    def test_replies_are_texted_once_and_update_the_job(self):
+        st = {"jobs": {"a1": {"id": "a1", "company": "Muon Space", "title": "EE Intern", "status": "applied", "applied_at": NOW}},
+              "replies_seen": []}
+        service = MagicMock()
+        api = service.users.return_value.messages.return_value
+        api.list.return_value.execute.return_value = {"messages": [{"id": "m1"}]}
+        api.get.return_value.execute.return_value = {
+            "payload": {"headers": [{"name": "From", "value": "Muon Space Recruiting <jobs@muonspace.com>"},
+                                    {"name": "Subject", "value": "Interview for Electrical Engineer Intern"}]},
+            "snippet": "We'd like to schedule a call"}
+        sent = []
+        self.assertEqual(wi.check_replies(st, service, sent.append), 1)
+        self.assertEqual(wi.check_replies(st, service, sent.append), 0)
+        self.assertEqual(st["jobs"]["a1"]["status"], "replied")
+        self.assertIn("Muon Space wants to talk", sent[0])
+
+
+class PacingTests(unittest.TestCase):
+    def setUp(self):
+        self.path = Path(tempfile.mkdtemp()) / "state.json"
+        self.sent = []
+        self.svc = wi.InternshipService(lambda m: None, lambda k, t: self.sent.append(t), state_path=self.path,
+                                        clock=lambda: self.now)
+        jobs = {str(i): {"id": str(i), "company": f"C{i}", "title": "EE Intern", "status": "new", "ats": "greenhouse",
+                         "posted": i, "url": "u"} for i in range(10)}
+        self.st = {"jobs": jobs, "replies_seen": []}
+
+    def run_at(self, hh, mm, cfg):
+        self.now = datetime(2026, 10, 26, hh, mm).timestamp()
+        tried = []
+
+        def fake(st, job, practice, today):
+            tried.append(job["id"])
+            job.update(status="applied", applied_at=self.now, tried_day=today)
+            return "applied"
+        with patch.object(self.svc, "apply_one", side_effect=fake):
+            self.svc._maybe_apply(self.st, cfg, datetime.fromtimestamp(self.now), "2026-10-26")
+        return tried
+
+    def test_applications_are_spread_through_the_day_newest_first(self):
+        cfg = dict(wi.DEFAULTS, practice=False)
+        self.assertEqual(self.run_at(5, 59, cfg), [])
+        self.assertEqual(self.run_at(6, 0, cfg), ["9"])
+        self.assertEqual(self.run_at(6, 30, cfg), [])            # the next slot is 9:00 (15 hours / 5)
+        self.assertEqual(self.run_at(9, 0, cfg), ["8"])
+        for hh in (12, 15, 18):
+            self.run_at(hh, 0, cfg)
+        self.assertEqual(self.run_at(20, 59, cfg), [])           # five done
+        self.assertEqual(sum(1 for j in self.st["jobs"].values() if j["status"] == "applied"), 5)
+
+    def test_practice_mode_stops_after_one(self):
+        cfg = dict(wi.DEFAULTS)
+        self.st["practice_done"] = NOW
+        self.assertEqual(self.run_at(9, 0, cfg), [])
+
+
+class FormTests(unittest.TestCase):
+    def test_pick_matches_options_loosely_but_exactly_returns_one(self):
+        opts = ["I will be enrolled in a bachelor’s degree program by the start of employment", "None of the above"]
+        self.assertEqual(ia.pick(opts, "I will be enrolled in a bachelor's degree program"), opts[0])
+        self.assertEqual(ia.pick(["Yes", "No"], "yes"), "Yes")
+        self.assertIsNone(ia.pick(["Yes", "No"], "maybe"))
+        self.assertEqual(ia.pick(["United States +1", "United Kingdom +44"], "United States"), "United States +1")
+
+
+if __name__ == "__main__":
+    unittest.main()

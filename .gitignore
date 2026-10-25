@@ -27,6 +27,7 @@ config/gmail_*_token.json
 config/gmail_*_token.json.tmp
 # Private promotion drafts, contacts, and opt-outs
 config/product_sales/
+config/internships/
 # Paper-trading journal, state and runner log (numbers only)
 config/trading/
 config/trading_day/
@@ -48,6 +49,7 @@ memory/espn_status.tmp
 # Money tracker entries and budgets
 memory/money.json
 memory/etsy_shop.json
+memory/internships.json
 memory/etsy_shop/
 # Package tracker: order email subjects and states
 config/packages_state.json
