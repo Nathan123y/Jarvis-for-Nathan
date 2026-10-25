@@ -54,7 +54,7 @@ EXTRA_PHOTOS = {"tee": ("person-1", "person-2", "lifestyle", "hanging-1", "duo")
                 "mug": (),
                 "sticker": ("context-1", "context-2")}
 DEFAULTS = {"enabled": True, "designs_per_day": 1, "time": "10:00", "products": ["tee", "mug", "sticker"],
-            "video_times": "11:00,15:00,19:00"}                 # one video at each; empty = no videos
+            "video_times": ""}                 # e.g. "11:00,15:00,19:00", one video at each; empty = no videos (off: user prefers the photos)
 
 BLOCKED = re.compile(r"(?<![a-z])(" + "|".join([
     "disney", "pixar", "marvel", "dc comics", "batman", "superman", "spider-?man", "avengers", "star wars", "jedi",

@@ -319,7 +319,8 @@ class VideoTests(_Base):
         day = datetime(2026, 10, 25)
         with patch("worker.videos.make", fake_make), patch("worker.social.connected", lambda: False), \
                 patch("core.phone_alerts.send_file", lambda path, note, cfg=None: texted.append((path, note))), \
-                patch("core.phone_alerts.settings", lambda: {"enabled": True, "off": []}):
+                patch("core.phone_alerts.settings", lambda: {"enabled": True, "off": []}), \
+                patch.object(ws, "settings", lambda: dict(ws.DEFAULTS, video_times="11:00,15:00,19:00")):
             self.assertEqual(svc.video_slot(s, day.replace(hour=10)), "")              # before the first time
             self.assertEqual(svc.video_slot(s, day.replace(hour=11, minute=5)), "texted")
             self.assertEqual(svc.video_slot(s, day.replace(hour=12)), "")              # that slot is done
@@ -332,6 +333,12 @@ class VideoTests(_Base):
         self.assertIn("#tag", texted[0][1])
         self.assertEqual(len(ws.load_state(self.dir / "s.json")["videos"]), 3)
 
+    def test_videos_are_off_by_default(self):
+        s = self._listed_shop()
+        with patch.object(ws, "settings", lambda: dict(ws.DEFAULTS)), \
+                patch("worker.videos.make", lambda *a, **k: self.fail("made a video")):
+            self.assertEqual(ws.ShopService(log=lambda m: None).video_slot(s, datetime(2026, 10, 25, 20)), "")
+
     def test_a_late_start_makes_one_video_not_a_backlog(self):
         s = self._listed_shop()
         made = []
@@ -340,7 +347,8 @@ class VideoTests(_Base):
                    {"file": "f.mp4", "caption": "c", "format": fmt, "design": rec["id"]}), \
                 patch("worker.social.connected", lambda: False), \
                 patch("core.phone_alerts.send_file", lambda *a, **k: None), \
-                patch("core.phone_alerts.settings", lambda: {"enabled": True, "off": []}):
+                patch("core.phone_alerts.settings", lambda: {"enabled": True, "off": []}), \
+                patch.object(ws, "settings", lambda: dict(ws.DEFAULTS, video_times="11:00,15:00,19:00")):
             svc.video_slot(s, datetime(2026, 10, 25, 20, 0))                          # Mac woke at 8 PM
             svc.video_slot(s, datetime(2026, 10, 25, 20, 10))
         self.assertEqual(made, ["reveal"])
