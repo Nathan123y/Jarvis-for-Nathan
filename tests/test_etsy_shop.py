@@ -34,8 +34,8 @@ class FakeClients:
         self.ideas, self.calls, self.next_id = [idea], [], 0
         self.orders = []
 
-    def idea(self, recent, trending=""):
-        self.trending = trending
+    def idea(self, recent, trending="", notes=""):
+        self.trending, self.notes = trending, notes
         return self.ideas.pop(0) if len(self.ideas) > 1 else self.ideas[0]
 
     def draw(self, prompt):
@@ -84,7 +84,7 @@ class _Base(unittest.TestCase):
         settings = dict(ws.DEFAULTS, **cfg)
         return ws.Shop(clients, state_path=self.dir / "s.json", art_dir=self.dir / "art", cfg=lambda: settings,
                        log=lambda m: None, notify=lambda k, t: self.sent.append((k, t)), clock=lambda: 1_792_900_000,
-                       trends_fetch=fetch or (lambda: {}))
+                       trends_fetch=fetch or (lambda: {}), notebook_path=self.dir / "notebook.json")
 
 
 class IdeaAndArtTests(unittest.TestCase):
@@ -222,9 +222,15 @@ class ListingTests(_Base):
         c.orders.append({"id": "o2", "total_price": 1500,                              # Printify's cost, not the sale
                          "line_items": [{"metadata": {"title": "Plant Lover T-Shirt"}, "product_id": "tee-1", "quantity": 1}]})
         st = ws.load_state(self.dir / "s.json")
-        st["designs"].append({"id": "d", "made": 0, "products": {"tee": {"id": "tee-1", "price": 2899, "published": True}}})
+        st["designs"].append({"id": "d", "made": 0, "slogan": "PLANT LOVER", "niche": "plants", "only": ["tee"],
+                              "products": {"tee": {"id": "tee-1", "price": 2899, "published": True}}})
         ws.save_state(st, self.dir / "s.json")
-        self.assertEqual(s.new_orders(), ["💰 SALE on Etsy! Plant Lover T-Shirt ($28.99). Printify will print and ship it."])
+        lines = s.new_orders()
+        self.assertEqual(lines[0], "💰 SALE on Etsy! Plant Lover T-Shirt ($28.99). Printify will print and ship it.")
+        self.assertIn('🏆 First sale for "PLANT LOVER"', lines[1])
+        st = ws.load_state(self.dir / "s.json")
+        self.assertEqual(st["make_spinoff"], ["d", "d"])                              # two more on the winning theme
+        self.assertNotIn("only", st["designs"][-1])                                    # and every product, not just the tee
         night = ws.overnight(0, self.dir / "s.json")
         self.assertEqual((night["sales"], night["revenue"], night["listed"]), (1, 28.99, 1))
         self.assertEqual(s.new_orders(), [])

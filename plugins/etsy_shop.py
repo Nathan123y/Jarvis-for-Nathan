@@ -20,14 +20,15 @@ PLUGIN = {
         "orders', 'make a new product now' (make_now; 'make 10 more t-shirts' = make_now, value=10, "
         "products=['tee']), 'pause the shop' (pause), 'resume the shop' (resume), "
         "'make 2 designs a day' (per_day, value=number), 'what did you list lately' (recent), "
+        "'what have the shop's agents learned' / 'what's trending for the shop' / 'what's selling' (agents), "
         "'connect Jarvis to Etsy' for the extra listing photos (connect_etsy), and when the user pastes the "
         "localhost address Etsy sent them to (finish_etsy, url=that address). "
-        "Actions: status, make_now, pause, resume, per_day, recent, connect_etsy, finish_etsy."
+        "Actions: status, make_now, pause, resume, per_day, recent, agents, connect_etsy, finish_etsy."
     ),
     "parameters": {
         "type": "OBJECT",
         "properties": {
-            "action": {"type": "STRING", "enum": ["status", "make_now", "pause", "resume", "per_day", "recent", "connect_etsy", "finish_etsy"]},
+            "action": {"type": "STRING", "enum": ["status", "make_now", "pause", "resume", "per_day", "recent", "agents", "connect_etsy", "finish_etsy"]},
             "url": {"type": "STRING", "description": "For finish_etsy: the whole https://localhost:3003/callback?... address"},
             "value": {"type": "INTEGER", "description": "For per_day: designs a day (0-5); for make_now: how many new designs (1-20)"},
             "products": {"type": "ARRAY", "items": {"type": "STRING", "enum": ["tee", "mug", "sticker"]},
@@ -109,6 +110,11 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
             what = " and ".join(ws.PRODUCTS[k]["name"].lower() + "s" for k in only) or "products"
             return (f"On it: {n} new design{'s' if n != 1 else ''} as {what}, one about every five minutes. "
                     "I'll text you as each one is listed.")
+        if action == "agents":
+            from worker import shop_agents
+            return ("The shop runs itself with four agents: a Trend Scout reads Know Your Meme, Reddit and Bluesky each morning, a "
+                    "Designer turns its best pick into a product, a Publisher lists it, and an Analyst reviews the results every "
+                    "evening and rewrites their notebook. " + shop_agents.summary(shop_agents.load()))
         if action == "recent":
             designs = ws.load_state()["designs"][-5:][::-1]
             if not designs:
@@ -145,6 +151,6 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
             shop_id = etsy_api.finish(str(args.get("url") or ""))
             return (f"Connected to your Etsy shop ({shop_id}). I'll add the extra photos to every listing "
                     "within a few minutes, and to each new one as it goes up.")
-        return "Etsy shop actions: status, make_now, pause, resume, per_day, recent, connect_etsy, finish_etsy."
+        return "Etsy shop actions: status, make_now, pause, resume, per_day, recent, agents, connect_etsy, finish_etsy."
     except Exception as exc:
         return f"The Etsy shop {action} failed ({type(exc).__name__}: {str(exc)[:120]})."

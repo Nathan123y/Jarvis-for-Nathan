@@ -65,7 +65,7 @@ BLOCKED = re.compile(r"(?<![a-z])(" + "|".join([
     "nfl", "nba", "mlb", "nhl", "fifa", "ncaa", "olympic", "taylor swift", "swiftie", "beyonce", "elvis", "beatles",
     "friends tv", "the office", "stranger things", "game of thrones", "lord of the rings", "hobbit", "grinch",
     "dr\\.? seuss", "winnie", "bluey", "paw patrol", "peppa", "baby shark", "yoda", "grogu", "trump", "biden",
-    "harley", "jeep", "jordans?", "air jordan", "skibidi", "ford", "chevy", "john deere", "yeti", "stanley cup", "lego", "crocs",
+    "harley", "jeep", "jordans?", "air jordan", "skibidi", "windows xp", "microsoft", "apple", "iphone", "google", "chatgpt", "openai", "tiktok", "instagram", "netflix", "amazon", "ford", "chevy", "john deere", "yeti", "stanley cup", "lego", "crocs",
 ]) + r")(?![a-z])", re.I)
 
 IDEA_PROMPT = """You design products for an Etsy print-on-demand shop that sells T-shirts, mugs and stickers to
@@ -80,6 +80,8 @@ Swearing is fine, uncensored (shit, damn, f*ck, hell, ass, etc.) when it makes t
 too, but it still has to be funny and quotable.
 
 {trends}
+
+{notes}
 
 Rules, all required:
 - Never: slurs, hate or jokes punching down at a group, sexual acts or nudity, drugs, violence against
@@ -326,10 +328,15 @@ class Clients:
         cf = get_plugin_config("cloudflare")
         self.cf_account, self.cf_token = str(cf.get("account_id") or "").strip(), str(cf.get("api_token") or "").strip()
 
-    def idea(self, recent: list, trending: str = "") -> dict:
+    def ask(self, prompt: str) -> Optional[dict]:
+        """The agents' thinking (Trend Scout, Analyst): one Gemini call, JSON back, None if it didn't answer."""
+        from core import gemini
+        return gemini.as_json(prompt, tier=gemini.SMART)
+
+    def idea(self, recent: list, trending: str = "", notes: str = "") -> dict:
         from core import gemini
         out = gemini.as_json(IDEA_PROMPT.format(recent="; ".join(recent[-40:]) or "none yet",
-                                                trends=TRENDS_NOTE.format(trending) if trending else ""),
+                                                trends=TRENDS_NOTE.format(trending) if trending else "", notes=notes),
                              tier=gemini.SMART)
         if out is None:
             raise RuntimeError("Gemini didn't answer (out of free quota?)")
@@ -357,9 +364,11 @@ class Shop:
     def __init__(self, clients=None, *, state_path: Path = STATE, art_dir: Path = ART,
                  cfg: Callable[[], dict] = settings, log: Callable[[str], None] = print,
                  notify: Optional[Callable[[str, str], None]] = None, clock: Callable[[], float] = time.time,
-                 trends_fetch: Optional[Callable[[], dict]] = None):
+                 trends_fetch: Optional[Callable[[], dict]] = None, notebook_path: Optional[Path] = None):
+        from worker import shop_agents
         self.c = clients or Clients()
         self.trends_fetch = trends_fetch
+        self.nb_path = notebook_path or shop_agents.NOTEBOOK
         self.state_path, self.art_dir, self.cfg, self.log, self.clock = state_path, art_dir, cfg, log, clock
         self.notify = notify or (lambda kind, text: None)
         self._variants: dict = {}
@@ -411,31 +420,42 @@ class Shop:
         return self._variants[kind]
 
     def trending(self, st: dict) -> str:
-        """Today's memes and internet talk, fetched once a day (saved into st, which the caller saves)."""
+        """The Trend Scout's picks from today's memes and internet talk (feeds fetched once a day, saved into st, which the
+        caller saves; the picks are cached in the notebook)."""
+        from worker import shop_agents, trends
         today = datetime.fromtimestamp(self.clock()).date().isoformat()
         cached = st.get("trends") or {}
         if cached.get("day") != today:
-            from worker import trends
             found = self.trends_fetch() if self.trends_fetch else trends.fetch()
             cached = {"day": today, "text": trends.brief(found)}
             if found:
                 st["trends"] = cached
-        return cached.get("text", "")
+        nb = shop_agents.load(self.nb_path)
+        text = shop_agents.scout(nb, cached.get("text", ""), getattr(self.c, "ask", None), today, self.clock)
+        shop_agents.save(nb, self.nb_path)
+        return text
 
     # one design, start to finish
-    def make_design(self, only: Optional[list] = None) -> dict:
-        """only: the product kinds this design goes on (e.g. ["tee"]); None means the usual set."""
+    def make_design(self, only: Optional[list] = None, spinoff: Optional[str] = None) -> dict:
+        """only: the product kinds this design goes on (e.g. ["tee"]); None means the usual set. spinoff: the id of a winning
+        design to riff on instead of today's trends."""
+        from worker import shop_agents
         st = load_state(self.state_path)
         recent = [d.get("niche", "") + ": " + d.get("slogan", "") for d in st["designs"]]
-        trending = self.trending(st)
+        parent = next((d for d in st["designs"] if d.get("id") == spinoff), None) if spinoff else None
+        trending = "" if parent else self.trending(st)
+        nb = shop_agents.load(self.nb_path)
+        notes = shop_agents.designer_notes(nb, parent)
         last_error = None
         for _ in range(3):                                      # a refused idea gets another try
             try:
-                idea = clean_idea(self.c.idea(recent, trending))
+                idea = clean_idea(self.c.idea(recent, trending, notes))
                 break
             except ValueError as exc:
                 last_error = exc
                 self.log(f"shop: idea refused: {exc}")
+                shop_agents.problem(nb, f"Designer's idea was refused: {exc}", self.clock)
+                shop_agents.save(nb, self.nb_path)
         else:
             raise RuntimeError(f"no usable idea in three tries ({last_error})")
         from PIL import Image
@@ -450,9 +470,15 @@ class Shop:
         rec = {"id": stamp, **idea, "file": str(path), "size": list(design.size), "made": self.clock(), "products": {}}
         if only:
             rec["only"] = list(only)
+        if parent:
+            rec["spinoff_of"] = parent["id"]
         st["designs"].append(rec)
         save_state(st, self.state_path)
         self.log(f"shop: designed '{idea['title']}' ({idea['slogan']})")
+        nb = shop_agents.load(self.nb_path)
+        shop_agents.log(nb, "designer", "publisher", f"designed \"{idea['slogan']}\" ({idea['niche']})" +
+                        (f", a spin-off of \"{parent.get('slogan')}\"" if parent else ""), self.clock)
+        shop_agents.save(nb, self.nb_path)
         return rec
 
     def upload(self, rec: dict) -> str:
@@ -561,6 +587,11 @@ class Shop:
                             self.notify("shop", f"⚠️ Couldn't list '{rec['title'][:50]}' on "
                                                 f"{CHANNELS[channel]['name']}: {str(exc)[:120]}. I'll retry in an hour.")
                         rec.setdefault("errors", []).append(f"{channel} {kind}: {str(exc)[:200]}")
+                        from worker import shop_agents
+                        nb = shop_agents.load(self.nb_path)
+                        shop_agents.problem(nb, f"Publisher couldn't list \"{rec.get('slogan')}\" {kind} on {channel}: {str(exc)[:120]}",
+                                            self.clock)
+                        shop_agents.save(nb, self.nb_path)
                         retry[channel] = self.clock() + 3600         # an hour, not every pass
                         if len(rec["errors"]) >= 12:
                             rec["failed"] = True
@@ -578,6 +609,8 @@ class Shop:
         lines = []
         retail = {p.get("id"): p.get("price") for rec in st["designs"] for ch in CHANNELS
                   for p in products_in(rec, ch).values() if p.get("id")}
+        design_of = {p.get("id"): rec.get("id") for rec in st["designs"] for ch in CHANNELS
+                     for p in products_in(rec, ch).values() if p.get("id")}
         for channel, shop in stores.items():
             data = self.c.printify("GET", f"shops/{shop['id']}/orders.json?limit=20")
             status = st.setdefault("order_status", {})
@@ -592,11 +625,19 @@ class Shop:
                     prices = [retail.get(li.get("product_id")) for li in o.get("line_items") or []]
                     total = sum(p * int(li.get("quantity") or 1) for p, li in zip(prices, o.get("line_items") or [])
                                 if p) / 100                       # what the buyer paid us (Printify's total is its cost)
+                    designs = sorted({design_of[li.get("product_id")] for li in o.get("line_items") or [] if li.get("product_id") in design_of})
                     st.setdefault("sales_log", []).append({"at": self.clock(), "channel": channel, "items": items,
-                                                           "price": total})
+                                                           "price": total, "designs": designs})
                     st["sales_log"] = st["sales_log"][-500:]
                     lines.append(f"💰 SALE on {CHANNELS[channel]['name']}! {items}" +
                                  (f" (${total:.2f})" if total else "") + ". Printify will print and ship it.")
+                    from worker import shop_agents
+                    nb = shop_agents.load(self.nb_path)
+                    for did in designs:
+                        win = shop_agents.on_sale(nb, st, did, total / max(1, len(designs)), self.clock)
+                        if win:
+                            lines.append(win)
+                    shop_agents.save(nb, self.nb_path)
                     continue
                 if o.get("status") != status.get(o["id"]):
                     status[o["id"]] = o.get("status")
@@ -638,11 +679,30 @@ class ShopService:
         h, m = (int(x) for x in str(cfg["time"]).split(":"))
         made_today = sum(1 for d in st["designs"] if datetime.fromtimestamp(d["made"]).date().isoformat() == today)
         queued = int(st.get("make_now") or 0)              # "make N new products now", from the plugin; one per pass
+        spin_q = list(st.get("make_spinoff") or [])        # spin-offs of a design that just sold, queued by the Analyst
         cooling = time.time() - st.get("last_fail_at", 0) < 3600
-        if (queued and not cooling) or (not cooling and now.hour * 60 + now.minute >= h * 60 + m
-                                        and made_today < cfg["designs_per_day"]):
+        daily = now.hour * 60 + now.minute >= h * 60 + m and made_today < cfg["designs_per_day"]
+        if not cooling and (spin_q or queued or daily):
+            from worker import shop_agents
             try:
-                shop.make_design(only=st.get("make_only") if queued else None)
+                if spin_q:
+                    shop.make_design(spinoff=spin_q[0])
+                    st = load_state(shop.state_path)
+                    st["make_spinoff"] = (st.get("make_spinoff") or [])[1:]
+                    st["spinoffs_made"] = int(st.get("spinoffs_made") or 0) + 1
+                    save_state(st, shop.state_path)
+                    queued = 0
+                elif queued:
+                    shop.make_design(only=st.get("make_only"))
+                else:                                      # the daily design: every other one riffs on a winner, if there is one
+                    win = shop_agents.next_spinoff(shop_agents.load(shop.nb_path), bool(st.get("last_was_spinoff")),
+                                                   int(st.get("spinoffs_made") or 0))
+                    shop.make_design(spinoff=win)
+                    st = load_state(shop.state_path)
+                    st["last_was_spinoff"] = bool(win)
+                    if win:
+                        st["spinoffs_made"] = int(st.get("spinoffs_made") or 0) + 1
+                    save_state(st, shop.state_path)
                 if queued:
                     st = load_state(shop.state_path)
                     st["make_now"] = queued - 1
@@ -667,6 +727,22 @@ class ShopService:
         self.storefront(shop, today, force=bool(listed))
         self.etsy_photos(shop)
         self.video_slot(shop, now)
+        self.evening_review(shop, now)
+
+    REVIEW_HOUR = 21
+
+    def evening_review(self, shop: "Shop", now: datetime) -> bool:
+        """The Analyst's nightly rewrite of the agents' notebook."""
+        from worker import shop_agents
+        nb = shop_agents.load(shop.nb_path)
+        if now.hour < self.REVIEW_HOUR or nb.get("reviewed_day") == now.date().isoformat() or not hasattr(shop.c, "ask"):
+            return False
+        nb["reviewed_day"] = now.date().isoformat()          # one try a day, even if Gemini doesn't answer
+        shop_agents.save(nb, shop.nb_path)
+        ok = shop_agents.review(nb, load_state(shop.state_path), shop.c.ask, shop.clock)
+        shop_agents.save(nb, shop.nb_path)
+        self.log("shop: the Analyst " + ("rewrote the notebook" if ok else "couldn't review today"))
+        return ok
 
     def video_slot(self, shop: "Shop", now: datetime) -> str:
         """At each of the day's video times: make the next video and post it (Instagram) or text it to you."""

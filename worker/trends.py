@@ -1,10 +1,11 @@
-"""What the internet is joking about today, for the shop's designs: Know Your Meme's newest confirmed memes,
-r/OutOfTheLoop's "what's up with ..." questions and the day's top meme posts on Reddit. Fetched once a
-day (one request per source) and cached in the shop's state; a source that fails is just left out.
+"""What the internet is joking about today, for the shop's Trend Scout: Know Your Meme's newest confirmed memes (it documents
+what goes viral on TikTok, X and Instagram, which have no free feeds), the day's top posts in Reddit's meme and funny-phrase
+subreddits, and Bluesky's trending topics. One request per source, once a day; a source that fails is just left out.
 """
 from __future__ import annotations
 
 import html
+import json
 import re
 from typing import Callable, Optional
 
@@ -12,10 +13,12 @@ UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Jarvis/1.0"
 SOURCES = {
     "Know Your Meme (new memes)": "https://knowyourmeme.com/memes.rss",
     # one combined request: Reddit refuses a second one straight after
-    "Reddit today (r/OutOfTheLoop questions and top meme posts)":
-        "https://www.reddit.com/r/OutOfTheLoop+memes+dankmemes+teenagers+GenZ/top/.rss?t=day&limit=40",
+    "Reddit today (meme and funny-phrase subreddits, r/OutOfTheLoop)":
+        "https://www.reddit.com/r/OutOfTheLoop+memes+dankmemes+me_irl+teenagers+GenZ+BrandNewSentence+clevercomebacks+rareinsults"
+        "+TikTokCringe/top/.rss?t=day&limit=60",
+    "Bluesky trending topics": "https://api.bsky.app/xrpc/app.bsky.unspecced.getTrendingTopics?limit=25",
 }
-PER_SOURCE = 25
+PER_SOURCE = 40
 
 
 def titles(xml: str) -> list:
@@ -29,6 +32,15 @@ def titles(xml: str) -> list:
     return out
 
 
+def bluesky_topics(text: str) -> list:
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return []
+    return [str(t.get("topic") or t.get("displayName"))[:120] for t in (data.get("topics") or []) + (data.get("suggested") or [])
+            if t.get("topic") or t.get("displayName")]
+
+
 def fetch(get: Optional[Callable] = None) -> dict:
     """{source name: [titles]}."""
     if get is None:
@@ -39,7 +51,7 @@ def fetch(get: Optional[Callable] = None) -> dict:
         try:
             r = get(url)
             if r.status_code == 200:
-                items = titles(r.text)[:PER_SOURCE]
+                items = (bluesky_topics(r.text) if url.startswith("https://api.bsky.app") else titles(r.text))[:PER_SOURCE]
                 if items:
                     found[name] = items
         except Exception:
