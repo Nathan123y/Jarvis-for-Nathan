@@ -654,8 +654,9 @@ class ShopService:
         if not cfg["enabled"] or "videos" in cfg["off"]:
             return "off"
         try:
-            pa.send_file(video["file"], f"🎬 Video {n} of {of} for today, ready to post on TikTok, Reels or Shorts. "
-                                        f"Caption:\n{video['caption']}", cfg)
+            pa.send_file(video["file"], f"🎬 Video {n} of {of} for today. Not posted yet: save it and post it "
+                                        f"yourself on TikTok, Instagram Reels or YouTube Shorts. "
+                                        f"Copy this caption:\n{video['caption']}", cfg)
             self.mark(shop, video, texted=True)
             return "texted"
         except Exception as exc:
