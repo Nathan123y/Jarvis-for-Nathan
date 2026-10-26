@@ -177,7 +177,8 @@ def _product_page(rec: dict, prod: dict, out_dir: Path, url: str, cfg: dict, whe
     and auto-published Pins must link to the claimed site, so the Pin opens this page rather than Etsy itself."""
     from worker.shop import PRODUCTS
     name = PRODUCTS[prod["kind"]]["name"]
-    title = f"{rec['title'][:99 - len(name)].rstrip()} {name}"
+    from worker.shop import listing_title
+    title = listing_title(rec["title"], name, 100)
     slug = f"{rec['id']}-{prod['kind']}"
     local = []
     for n, src in enumerate(prod["photos"][:4]):

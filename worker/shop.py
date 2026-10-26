@@ -383,8 +383,13 @@ def order_update(order: dict, items: str, channel: str) -> Optional[str]:
     return line + "."
 
 
+GARMENT_WORDS = re.compile(r"\b(?:t-?shirts?|tees?|shirts?|tops?)\b", re.I)
+
+
 def listing_title(base: str, product: str, limit: int) -> str:
-    """'<title> <product>' within the channel's limit, cut at a word so the product name always fits."""
+    """'<title> <product>' within the channel's limit, cut at a word so the product name always fits. The idea's
+    title often says "Shirt" or "Tee" anyway: dropped, so a mug isn't sold as a "Christmas Shirt ... Mug"."""
+    base = " ".join(GARMENT_WORDS.sub(" ", base).split()).strip(" ,-|&")
     room = limit - len(product) - 1
     if len(base) > room:
         base = base[:room].rsplit(" ", 1)[0].rstrip(" ,-|&")

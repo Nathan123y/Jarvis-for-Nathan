@@ -192,7 +192,9 @@ Rules per field kind:
 - Country: "United States" when the applicant's address is in a US state.
 - select with "searchable": true: the text to search for (e.g. "San Jose State University",
   "San Jose, California, United States", "United States").
-- checkboxes: a list of options copied exactly; [] if none apply. A lone checkbox (option "Yes"): ["Yes"] to tick it.
+- checkboxes: a list of options copied exactly; [] if none apply. A lone checkbox (option "Yes"): ["Yes"] to tick it,
+  [] when the true answer is No (e.g. "Prior US Government Employment?" for someone who never had a government
+  job): never "unknown" for these.
 - radio: one option copied EXACTLY from its list.
 - yesno: "Yes" or "No".
 - file: "resume" for a résumé/CV field, "transcript" for a transcript field, "cover_letter" for a cover letter
@@ -472,6 +474,14 @@ def submit(page, get_code: Callable[[float], Optional[str]], timeout_s: float = 
     raise Blocked("no confirmation after Submit" + (f": {errors[0][:120]}" if errors else ""))
 
 
+def _lone_no(f: dict, answers: dict) -> bool:
+    """A yes/no question built as one "Yes" box, answered No: left unticked on purpose, not missing."""
+    if f.get("kind") != "checkboxes" or [norm(o) for o in f.get("options") or []] != ["yes"]:
+        return False
+    v = answers.get(f["id"])
+    return v in ([], "No", "no", False) or (isinstance(v, list) and [norm(x) for x in v] == ["no"])
+
+
 def apply(job: dict, profile: str, resume_text: str, docs: dict, browser_dir: Path, shots: Path,
           ask: Callable, get_code: Callable[[float], Optional[str]], practice: bool) -> dict:
     """One application. Returns {"screenshot", "answers"}; raises NeedsInfo or Blocked."""
@@ -516,7 +526,8 @@ def apply(job: dict, profile: str, resume_text: str, docs: dict, browser_dir: Pa
                 fields = [f for f in read() if f["id"] not in seen]
                 if not fields:
                     break
-            missing = [f["label"] for f in read() if f["required"] and not page.evaluate(ASHBY_FILLED_JS if ashby else FILLED_JS, f)]
+            missing = [f["label"] for f in read() if f["required"] and not _lone_no(f, answers)
+                       and not page.evaluate(ASHBY_FILLED_JS if ashby else FILLED_JS, f)]
             page.screenshot(path=str(shot), full_page=True)
             if missing:
                 raise NeedsInfo(missing)
