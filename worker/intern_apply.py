@@ -421,6 +421,10 @@ def _body(page) -> str:
 
 def submit(page, get_code: Callable[[float], Optional[str]], timeout_s: float = 45, button: str = "button[type=submit]") -> None:
     started = time.time()
+    try:
+        page.wait_for_selector(f"{button}:not([disabled])", timeout=20000)
+    except Exception:
+        raise Blocked("the site kept its Submit button switched off (its robot check, most likely)")
     page.click(button)
     code_sent = False
     while time.time() - started < timeout_s + (120 if code_sent else 0):
@@ -459,7 +463,9 @@ def apply(job: dict, profile: str, resume_text: str, docs: dict, browser_dir: Pa
             page.goto(f"https://jobs.ashbyhq.com/{ashby.group(1)}/{ashby.group(2)}/application" if ashby else job["url"],
                       wait_until="networkidle", timeout=60000)
             button = ".ashby-application-form-submit-button" if ashby else "button[type=submit]"
-            if not page.query_selector(button):
+            try:
+                page.wait_for_selector(button, timeout=20000)      # Ashby builds its form after the page loads
+            except Exception:
                 raise Blocked("the posting has no application form (closed or moved)")
             read = (lambda: page.evaluate(ASHBY_EXTRACT_JS)) if ashby else (lambda: read_form(page))
             fill_in = ashby_fill if ashby else fill
