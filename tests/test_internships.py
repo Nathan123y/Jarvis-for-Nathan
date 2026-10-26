@@ -103,6 +103,33 @@ class ReplyTests(unittest.TestCase):
         self.assertIn("Muon Space wants to talk", sent[0])
 
 
+class NoneAnswerTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.sent = []
+        self.svc = wi.InternshipService(lambda m: None, lambda k, t: self.sent.append(t), state_path=self.dir / "state.json",
+                                        clock=lambda: NOW)
+        self.job = {"id": "q", "company": "quadric.io", "title": "DV Intern", "status": "new", "ats": "ashby", "url": "u"}
+
+    def attempt(self, profile, questions):
+        (self.dir / "profile.md").write_text(profile)
+        with patch.object(wi, "PROFILE", self.dir / "profile.md"), patch.object(wi, "resume_text", return_value=""), \
+                patch.object(wi, "job_description", return_value=""), patch.object(ia, "apply", side_effect=ia.NeedsInfo(questions)):
+            return self.svc.apply_one({"jobs": {"q": self.job}}, self.job, False, "2026-10-26")
+
+    def test_a_required_field_the_user_said_they_dont_have_skips_the_job_quietly(self):
+        self.assertEqual(self.attempt("LinkedIn URL: none\n", ["LinkedIn Profile"]), "skipped")
+        self.assertEqual(self.job["status"], "closed")
+        self.assertEqual(self.sent, [])
+
+    def test_a_blank_answer_still_asks_the_user(self):
+        self.assertEqual(self.attempt("LinkedIn URL:\n", ["LinkedIn Profile"]), "needs_info")
+        self.assertTrue(self.sent)
+
+    def test_none_is_left_out_of_the_cover_letter_contact_line(self):
+        self.assertEqual(ia._line("LinkedIn URL: none\n", "LinkedIn URL"), "")
+
+
 class PacingTests(unittest.TestCase):
     def setUp(self):
         self.path = Path(tempfile.mkdtemp()) / "state.json"

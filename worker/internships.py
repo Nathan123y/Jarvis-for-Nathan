@@ -57,6 +57,7 @@ AUTO = ("greenhouse", "ashby")       # application sites the Applicant can fill 
 REPLIES_EVERY = 600
 UPLOAD = re.compile(r"upload|attach|transcript|cover letter|portfolio|writing sample|\bcv\b", re.I)
 REPLY_HOURS = (7, 23)                # reply texts wait for the morning instead of buzzing at night
+NONE_KEYS = (("linkedin", "linkedin url"), ("github", "github url"), ("website", "personal website / portfolio url"), ("portfolio", "personal website / portfolio url"))  # form label word -> info-file line
 
 CA = re.compile(r",\s*CA\b|california", re.I)
 FIELD = re.compile(r"hardware|electrical|electronic|silicon|asic|analog|mixed.signal|circuit|semiconductor|chip|vlsi|"
@@ -598,6 +599,14 @@ class InternshipService:
         except ia.NeedsInfo as e:
             files = [q for q in e.questions if UPLOAD.search(q)]          # a document to add, not a line to fill in
             asks = [q for q in e.questions if q not in files]
+            had = profile_fields(PROFILE.read_text())
+            if asks and not files and all(had.get(" ".join(q.split()).rstrip(":?*. ").lower(), "").lower() == "none"
+                                          or any(w in q.lower() and had.get(k, "").lower() == "none" for w, k in NONE_KEYS)
+                                          for q in asks):
+                # it requires something the user said they don't have (a LinkedIn profile): skip it quietly
+                job.update(status="closed", why="requires " + "; ".join(asks))
+                self.log(f"internships: skipped {job['company']} ({job['title'][:60]}), it requires " + "; ".join(asks))
+                return "skipped"
             add_questions(asks)
             # stamped after the file is written, so adding the question doesn't count as the user answering it
             job.update(status="needs_info", asked_at=self.clock(), missing=e.questions)

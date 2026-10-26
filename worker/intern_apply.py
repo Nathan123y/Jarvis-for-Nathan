@@ -212,6 +212,8 @@ Rules per field kind:
 - Essay / free-text questions: 60-140 words, first person, plain and specific, built only from the info file and
   résumé, tied to this company and role where the facts allow. No clichés, no claims that aren't in the facts.
 - Optional fields you can't answer from the facts: leave them out. Required ones: list their labels in "unknown".
+- An info-file line answered "none" (e.g. LinkedIn URL: none) means the applicant has none: leave that field
+  out, and if it's required, list its label in "unknown". Never type "none" into a URL field.
 
 Job: {title} at {company} ({location})
 Job description (excerpt): {description}
@@ -274,7 +276,8 @@ body {{ font: 11.5pt/1.45 Georgia, 'Times New Roman', serif; margin: 0.9in 1in; 
 
 def _line(profile: str, key: str) -> str:
     m = re.search(rf"^{re.escape(key)}[^:\n]*:[ \t]*(.*)$", profile, re.I | re.M)
-    return m.group(1).strip() if m else ""
+    v = m.group(1).strip() if m else ""
+    return "" if v.lower() == "none" else v
 
 
 def cover_letter(job: dict, profile: str, resume: str, ask: Callable) -> str:
