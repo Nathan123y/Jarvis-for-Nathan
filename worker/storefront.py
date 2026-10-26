@@ -22,7 +22,10 @@ from typing import Callable, Optional
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO_DIR = ROOT / "config" / "worker" / "storefront-repo"
-DEFAULTS = {"repo": "Nathan123y/Nathan123y.github.io", "name": "Gift Designs", "pinterest_tag": ""}
+DEFAULTS = {"repo": "Nathan123y/Nathan123y.github.io", "name": "Gift Designs", "pinterest_tag": "",
+            # designs made from this time on get a feed item (so a Pin) per product; older ones keep one per design
+            # (their products were pinned by hand from a bulk upload on 2026-10-26)
+            "product_pins_since": 1793044800}
 CAMERAS = {"tee": ("person-1", "front-2", "lifestyle"), "mug": ("context-1", "front"), "sticker": ("context-1", "front")}
 
 
@@ -83,11 +86,12 @@ def _download(url: str, dest: Path) -> bool:
 
 
 def collect(designs: list, printify: Callable) -> list:
-    """Each listed design with its live links and product photos: [{"rec", "links": [(label, url)], "photos": [url]}]."""
+    """Each listed design with its live links and product photos: [{"rec", "links": [(label, url, price)], "photos": [url],
+    "products": [{"kind", "links", "photos"}]}] (products: the ones with an Etsy listing, for a page and a Pin each)."""
     from worker.shop import CHANNELS, PRODUCTS, products_in
     out = []
     for rec in designs:
-        links, photos = [], []
+        links, photos, products = [], [], {}
         for channel in CHANNELS:
             for kind, prod in products_in(dict(rec), channel).items():
                 if not prod.get("published") or kind not in PRODUCTS:
@@ -104,10 +108,15 @@ def collect(designs: list, printify: Callable) -> list:
                         [i["src"] for i in (p.get("images") or [])[:1]]
                 if prod.get("url"):
                     links.append((f"{PRODUCTS[kind]['name']} on {CHANNELS[channel]['name']}", prod["url"], prod.get("price")))
+                    one = products.setdefault(kind, {"kind": kind, "links": [], "photos": []})
+                    one["links"].append((f"Buy on {CHANNELS[channel]['name']}", prod["url"], prod.get("price")))
                 if channel == "etsy":
                     photos += prod.get("photos") or []
+                    if kind in products:
+                        products[kind]["photos"] = prod.get("photos") or []
         if links:
-            out.append({"rec": rec, "links": links, "photos": photos})
+            out.append({"rec": rec, "links": links, "photos": photos,
+                        "products": [p for p in products.values() if p["photos"]]})
     return out
 
 
@@ -145,6 +154,10 @@ def build(designs: list, printify: Callable, out_dir: Path, cfg: Optional[dict] 
         cards.append(f'<a class="card" href="p/{rec["id"]}.html"><img src="{_e(hero)}" alt="{_e(rec["title"])}" '
                      f'loading="lazy"><p>{_e(rec["title"])}</p></a>')
         when = format_datetime(datetime.fromtimestamp(rec["made"], tz=timezone.utc))
+        if rec["made"] >= cfg.get("product_pins_since", 0):
+            for prod in it["products"]:
+                feed.append(_product_page(rec, prod, out_dir, url, cfg, when, download))
+            continue
         feed.append(f"<item><title>{_e(rec['title'])}</title><link>{url}p/{rec['id']}.html</link>"
                     f"<guid>{url}p/{rec['id']}.html</guid><pubDate>{when}</pubDate>"
                     f"<description>{_e(rec.get('description'))}</description>"
@@ -154,9 +167,38 @@ def build(designs: list, printify: Callable, out_dir: Path, cfg: Optional[dict] 
     (out_dir / "feed.xml").write_text(
         f'<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>{_e(cfg["name"])}</title>'
         f"<link>{url}</link><description>New designs on shirts, mugs and stickers</description>"
-        + "".join(feed[:50]) + "</channel></rss>\n")
+        + "".join([f for f in feed if f][:50]) + "</channel></rss>\n")
     (out_dir / ".nojekyll").write_text("")
     return len(items)
+
+
+def _product_page(rec: dict, prod: dict, out_dir: Path, url: str, cfg: dict, when: str, download: Callable) -> str:
+    """One product's page (its photos, Buy on Etsy / eBay) and its feed item. Pinterest makes a Pin per feed item,
+    and auto-published Pins must link to the claimed site, so the Pin opens this page rather than Etsy itself."""
+    from worker.shop import PRODUCTS
+    name = PRODUCTS[prod["kind"]]["name"]
+    title = f"{rec['title'][:99 - len(name)].rstrip()} {name}"
+    slug = f"{rec['id']}-{prod['kind']}"
+    local = []
+    for n, src in enumerate(prod["photos"][:4]):
+        img = f"img/{slug}-{n}.jpg"
+        if download(src, out_dir / img):
+            local.append(img)
+    if not local:
+        return ""
+    desc = f"{rec.get('description') or ''} Available as a {name.lower()}.".strip()
+    buttons = "".join(f'<a href="{_e(u)}" rel="nofollow">{_e(label)}' + (f" · ${price / 100:.2f}" if price else "") + "</a>"
+                      for label, u, price in prod["links"])
+    photos = "".join(f'<img src="../{_e(n)}" alt="{_e(title)}" loading="lazy">' for n in local)
+    body = (f'<h1>{_e(title)}</h1><p>{_e(desc)}</p><div class="buy">{buttons}</div><div class="photos">{photos}</div>'
+            f'<p class="muted"><a href="{rec["id"]}.html">See it on other products</a></p>')
+    (out_dir / "p" / f"{slug}.html").write_text(
+        _page(f"{title} | {cfg['name']}", body, cfg, desc, url + local[0]).replace(
+            'href="feed.xml"', 'href="../feed.xml"').replace('href="./"', 'href="../"'))
+    page = f"{url}p/{slug}.html"
+    return (f"<item><title>{_e(title)}</title><link>{page}</link><guid>{page}</guid><pubDate>{when}</pubDate>"
+            f"<description>{_e(desc)}</description>"
+            f'<enclosure url="{url}{local[0]}" type="image/jpeg" length="0"/></item>')
 
 
 def _git(*args: str, cwd: Path = REPO_DIR, timeout: float = 120) -> subprocess.CompletedProcess:

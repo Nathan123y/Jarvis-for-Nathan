@@ -336,6 +336,33 @@ class StorefrontTests(_Base):
         self.assertIn(f"https://nathan123y.github.io/p/{designs[0]['id']}.html", feed)
         self.assertIn("<enclosure", feed)
 
+    def test_new_designs_get_a_page_and_a_feed_item_per_product(self):
+        from worker import storefront as sf
+        c = FakeClients(shops=[{"id": 9, "sales_channel": "etsy"}])
+        s = self.shop(c)
+        s.make_design()
+        s.list_pending()
+        real = c.printify
+
+        def printify(m, p, b=None):
+            if m == "GET" and p.startswith("shops/9/products/"):
+                pid = p.split("/")[3].split(".")[0]
+                return {"external": {"handle": f"https://www.etsy.com/listing/{pid}"},
+                        "images": [{"src": f"https://img/{pid}?camera_label=front"}]}
+            return real(m, p, b)
+        designs = ws.load_state(self.dir / "s.json")["designs"]
+        rec = designs[0]
+        out = self.dir / "site"
+        sf.build(designs, printify, out, {**sf.DEFAULTS, "product_pins_since": rec["made"]},
+                 download=lambda url, dest: dest.write_bytes(b"jpg") or True)
+        feed = (out / "feed.xml").read_text()
+        kinds = list(rec["products"])
+        self.assertEqual(feed.count("<item>"), len(kinds))
+        page = (out / "p" / f"{rec['id']}-{kinds[0]}.html").read_text()
+        self.assertIn("Buy on Etsy", page)
+        self.assertIn(f"https://nathan123y.github.io/p/{rec['id']}-{kinds[0]}.html", feed)
+        self.assertNotIn(f"https://nathan123y.github.io/p/{rec['id']}.html<", feed)     # no design-level item too
+
     def test_site_url_for_user_and_project_pages(self):
         from worker import storefront as sf
         self.assertEqual(sf.site_url("Nathan123y/Nathan123y.github.io"), "https://nathan123y.github.io/")
