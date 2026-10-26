@@ -165,6 +165,10 @@ use a meme or slang phrase that's been big online in the last few months instead
 
 
 # ── small pieces ─────────────────────────────────────────────────────────────
+# Printify's catalog answers "Too Many Attempts" when every pass asks again; a product's variants don't change
+_VARIANTS: dict = {}
+
+
 def season_for(day) -> Optional[str]:
     """The holiday line a day's extra design is for, or None outside every season."""
     md = (day.month, day.day)
@@ -457,7 +461,7 @@ class Shop:
         self.nb_path = notebook_path or shop_agents.NOTEBOOK
         self.state_path, self.art_dir, self.cfg, self.log, self.clock = state_path, art_dir, cfg, log, clock
         self.notify = notify or (lambda kind, text: None)
-        self._variants: dict = {}
+        self._variants = _VARIANTS if clients is None else {}     # the real catalog is shared across passes
 
     # which Printify stores are connected to which sales channel
     def stores(self) -> dict:
