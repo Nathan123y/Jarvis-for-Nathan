@@ -130,6 +130,25 @@ class NoneAnswerTests(unittest.TestCase):
         self.assertEqual(ia._line("LinkedIn URL: none\n", "LinkedIn URL"), "")
 
 
+class RequeueTests(unittest.TestCase):
+    def test_only_the_users_own_edits_send_waiting_jobs_back_into_the_queue(self):
+        d = Path(tempfile.mkdtemp())
+        prof = d / "profile.md"
+        prof.write_text("First name: Nathan\n")
+        svc = wi.InternshipService(lambda m: None, lambda k, t: None, state_path=d / "state.json", clock=lambda: NOW)
+        st = {"jobs": {"a": {"status": "needs_info"}, "b": {"status": "needs_info"}}}
+        with patch.object(wi, "PROFILE", prof), patch.object(wi, "RESUME", d / "r.pdf"), patch.object(wi, "TRANSCRIPT", d / "t.pdf"):
+            svc._refresh_needs_info(st)                                  # first look: nothing changed yet
+            self.assertEqual(st["jobs"]["a"]["status"], "needs_info")
+            wi.add_questions(["Start date year"], prof)                  # the crew adding a question
+            st["info_sig"] = wi.info_sig()
+            svc._refresh_needs_info(st)
+            self.assertEqual(st["jobs"]["b"]["status"], "needs_info")
+            prof.write_text(prof.read_text().replace("Start date year:", "Start date year: 2027"))
+            svc._refresh_needs_info(st)
+            self.assertEqual({j["status"] for j in st["jobs"].values()}, {"new"})
+
+
 class PacingTests(unittest.TestCase):
     def setUp(self):
         self.path = Path(tempfile.mkdtemp()) / "state.json"

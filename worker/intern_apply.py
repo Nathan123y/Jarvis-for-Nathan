@@ -425,7 +425,8 @@ def _body(page) -> str:
 def submit(page, get_code: Callable[[float], Optional[str]], timeout_s: float = 45, button: str = "button[type=submit]") -> None:
     started = time.time()
     try:
-        page.wait_for_selector(f"{button}:not([disabled])", timeout=20000)
+        # the button that will be clicked (the first match) must switch on, not just any matching button
+        page.wait_for_function("b => { const e = document.querySelector(b); return e && !e.disabled }", arg=button, timeout=20000)
     except Exception:
         raise Blocked("the site kept its Submit button switched off (its robot check, most likely)")
     page.click(button)

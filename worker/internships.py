@@ -20,6 +20,7 @@ State: memory/internships.json; screenshots of every filled form: config/interns
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import threading
@@ -148,6 +149,13 @@ def add_questions(questions: list[str], profile_path: Path = PROFILE) -> list[st
         text = text.rstrip() + "\n" + "\n".join(f"{q}:" for q in new) + "\n"
         profile_path.write_text(text)
     return new
+
+
+def info_sig() -> str:
+    """What the user has given so far: the info file's text and the résumé and transcript files."""
+    parts = [PROFILE.read_text() if PROFILE.exists() else ""]
+    parts += [f"{p.stat().st_size}:{p.stat().st_mtime}" if p.exists() else "-" for p in (RESUME, TRANSCRIPT)]
+    return hashlib.sha1("\n".join(parts).encode()).hexdigest()
 
 
 def resume_text(resume: Path = RESUME, cache: Path = RESUME_TEXT) -> str:
@@ -533,13 +541,18 @@ class InternshipService:
             self.notify((f"📧 Your director emailed: \"{emailed[0][:80]}\"\n" if emailed else "") + director_text(auto, manual))
 
     def _refresh_needs_info(self, st: dict) -> None:
-        """When the user edits the info file, the jobs that were waiting on it get another try."""
-        changed = max(p.stat().st_mtime for p in (PROFILE, RESUME, TRANSCRIPT) if p.exists())
-        again = [j for j in st["jobs"].values() if j["status"] == "needs_info" and j.get("asked_at", 0) < changed]
-        for j in again:
-            j["status"] = "new"
-        if again:
-            save_state(st, self.state_path)
+        """When the user edits the info file (or adds the résumé or transcript), the jobs that were waiting on it get
+        another try. Questions the crew adds to the file itself don't count, or the waiting jobs would set each
+        other off all day."""
+        sig = info_sig()
+        if st.get("info_sig") == sig:
+            return
+        first = "info_sig" not in st
+        st["info_sig"] = sig
+        for j in st["jobs"].values():
+            if j["status"] == "needs_info" and not first:
+                j["status"] = "new"
+        save_state(st, self.state_path)
 
     def _digest(self, st: dict, today: str) -> None:
         st["digest_day"] = today
@@ -608,6 +621,7 @@ class InternshipService:
                 self.log(f"internships: skipped {job['company']} ({job['title'][:60]}), it requires " + "; ".join(asks))
                 return "skipped"
             add_questions(asks)
+            st["info_sig"] = info_sig()                                  # the crew's own edit, not the user's
             # stamped after the file is written, so adding the question doesn't count as the user answering it
             job.update(status="needs_info", asked_at=self.clock(), missing=e.questions)
             lines = []
