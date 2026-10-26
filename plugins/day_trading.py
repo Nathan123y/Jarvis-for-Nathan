@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 BOTS = Path(os.environ.get("OPTIONSBOTS_DIR", Path.home() / "optionsbots")) / "scripts" / "bots.py"
-ACTIONS = ("status", "each", "learned", "start", "stop", "pause", "resume", "crypto", "crypto_start", "crypto_stop", "portfolio", "hype")
+ACTIONS = ("status", "each", "learned", "start", "stop", "pause", "resume", "hold", "release", "crypto", "crypto_start", "crypto_stop", "portfolio", "hype")
 ALIASES = {"bots": "each", "learn": "learned", "learning": "learned", "memecoins": "crypto", "memecoin": "crypto", "meme": "crypto",
            "coins": "crypto", "crypto_status": "crypto", "buzz": "hype", "sentiment": "hype", "start_crypto": "crypto_start", "stop_crypto": "crypto_stop", "everything": "portfolio"}
 
@@ -20,9 +20,11 @@ PLUGIN = {
     "name": "day_trading",
     "description": (
         "Check on and control the automatic PRACTICE OPTIONS trader (optionsbots): eleven rule-based bots trading "
-        "QQQ, SPY and IWM options in an Alpaca paper account with fake money. It starts by itself at 6:25 am on "
-        "weekdays. Use for 'how are the bots doing', 'how is the trader doing', 'did the bots trade today', "
-        "'start the trader', 'stop the trader', 'pause the bots', 'resume the bots', 'how is each bot doing', "
+        "QQQ, SPY and IWM options in an Alpaca paper account with fake money. Use for 'how are the bots doing', "
+        "'how is the trader doing', 'did the bots trade today', 'start the trader', 'how is each bot doing', "
+        "'stop the bots' = stop (lock in the day: the bots sell everything, then shut down), 'pause the bots' = pause (the user is "
+        "going offline: shut down and keep positions), 'resume the bots' = resume (start again and pick the positions back up), "
+        "'stop opening new trades' = hold, and release to allow them again. "
         "'what did the bots learn', 'did the bots change anything'. Every weekday after the close the bots review themselves "
         "on two years of past prices and may adjust one setting each; 'learned' says what changed. "
         "Also the PRACTICE MEMECOIN bot: it trades DOGE, SHIB, PEPE, BONK, WIF and TRUMP in its own Alpaca paper account, "
@@ -31,14 +33,15 @@ PLUGIN = {
         "'how is my whole portfolio doing' (options and memecoins together). The memecoin bot also reads internet hype every hour "
         "(Reddit, 4chan /biz/, CoinGecko trending): a hyped coin is bought sooner, a coin nobody mentions is skipped. Use hype for "
         "'what's the crypto hype', 'which memecoins are trending', 'is anyone talking about PEPE'. "
-        "Actions: status (default), each, learned, start, stop, pause, resume, crypto, crypto_start, crypto_stop, portfolio, hype. This tool can NOT trade real money and can NOT "
+        "Actions: status (default), each, learned, start, stop, pause, resume, hold, release, crypto, crypto_start, crypto_stop, portfolio, hype. This tool can NOT trade real money and can NOT "
         "buy or sell a specific option on request; only the bots trade. Never close or open positions at Alpaca "
         "outside the bots: it blocks them from trading. Never present practice results as proof of future profit."
     ),
     "parameters": {
         "type": "OBJECT",
         "properties": {
-            "action": {"type": "STRING", "description": "status (default), each, learned, start, stop, pause, resume (options trader); "
+            "action": {"type": "STRING", "description": "status (default), each, learned, start, stop (sell all, shut down), pause (shut down, keep positions), "
+                                                        "resume, hold / release (new entries) (options trader); "
                                                         "crypto, crypto_start, crypto_stop (memecoin bot); hype (memecoin buzz); portfolio (both)"},
         },
         "required": [],
@@ -61,7 +64,7 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
         if not BOTS.exists():
             result = "The options trader isn't installed where I expect it, in the optionsbots folder in your home folder."
         elif action not in ACTIONS:
-            result = ("I can show the options trader's status or each bot, what it learned, start, stop, pause or resume it, "
+            result = ("I can show the options trader's status or each bot, what it learned, start, stop (sell everything), pause (keep positions) or resume it, "
                       "and the memecoin bot's status, or start and stop it.")
         else:
             result = bots(action) or "The options trader didn't say anything back. Check it with 'bots' in a terminal."
