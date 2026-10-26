@@ -149,6 +149,19 @@ class RequeueTests(unittest.TestCase):
             self.assertEqual({j["status"] for j in st["jobs"].values()}, {"new"})
 
 
+class SecurityCodeTests(unittest.TestCase):
+    def test_the_code_is_read_from_greenhouses_email_not_a_nearby_word(self):
+        body = ("Copy and paste this code into the security code field on your application: XJwGkSYb After you enter the "
+                "code, resubmit your application.")
+        api = MagicMock()
+        api.list.return_value.execute.return_value = {"messages": [{"id": "m"}]}
+        api.get.return_value.execute.return_value = {"internalDate": str(int(NOW * 1000)), "payload": {}, "snippet": body}
+        service = MagicMock()
+        service.users.return_value.messages.return_value = api
+        with patch("worker.campaign.mail._text", return_value=body):
+            self.assertEqual(wi.security_code(service, NOW), "XJwGkSYb")
+
+
 class PacingTests(unittest.TestCase):
     def setUp(self):
         self.path = Path(tempfile.mkdtemp()) / "state.json"

@@ -447,8 +447,15 @@ def submit(page, get_code: Callable[[float], Optional[str]], timeout_s: float = 
                 code = get_code(started)
                 if not code:
                     raise Blocked("the email security code never arrived")
-                box.fill(code)
-                page.click("button[type=submit]")
+                # newer forms split the code into one box per character and move along as each is typed
+                box.click()
+                page.keyboard.type(code, delay=80)
+                try:
+                    page.wait_for_function("b => { const e = document.querySelector(b); return e && !e.disabled }",
+                                           arg=button, timeout=15000)
+                    page.click(button, timeout=15000)
+                except Exception:
+                    raise Blocked("the email security code was typed in but Submit stayed switched off")
                 code_sent = True
     errors = [e.inner_text().strip() for e in page.query_selector_all("[class*=error], [role=alert]") if e.inner_text().strip()]
     raise Blocked("no confirmation after Submit" + (f": {errors[0][:120]}" if errors else ""))

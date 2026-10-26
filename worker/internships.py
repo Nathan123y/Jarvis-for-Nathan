@@ -423,7 +423,9 @@ def security_code(service, since: float) -> Optional[str]:
             if int(msg.get("internalDate", 0)) / 1000 < since - 30:
                 continue
             body = _text(msg.get("payload", {})) or msg.get("snippet", "")
-            hit = re.search(r"code[^A-Za-z0-9]{1,40}([A-Za-z0-9]{6,10})\b", body)
+            # "...the security code field on your application: XJwGkSYb After you enter the code, resubmit..."
+            hit = (re.search(r"application:\s*([A-Za-z0-9]{6,12})\b", body)
+                   or re.search(r"code(?: is)?:\s*([A-Za-z0-9]{6,12})\b", body))
             if hit:
                 return hit.group(1)
         time.sleep(5)
