@@ -195,8 +195,9 @@ Rules per field kind:
 - checkboxes: a list of options copied exactly; [] if none apply. A lone checkbox (option "Yes"): ["Yes"] to tick it.
 - radio: one option copied EXACTLY from its list.
 - yesno: "Yes" or "No".
-- file: "resume" for a résumé/CV field, "transcript" for a transcript field; leave cover letters and portfolios
-  out. A required upload that's neither: list it in "unknown".
+- file: "resume" for a résumé/CV field, "transcript" for a transcript field, "cover_letter" for a cover letter
+  field, required or not (one is written for this job); leave portfolios and writing samples out. A required upload that's none of
+  these: list it in "unknown".
 - Education block: school, degree (e.g. Bachelor's Degree), discipline (the major), start month/year, end month/year
   (= expected graduation).
 - Questions about a degree, GPA or test the applicant doesn't have (graduate GPA, SAT not given, ...): pick the
@@ -235,6 +236,75 @@ def answer(fields: list[dict], job: dict, profile: str, resume: str, ask: Callab
     if not isinstance(out, dict) or not isinstance(out.get("answers"), dict):
         raise RuntimeError("the Profile keeper didn't answer (Gemini busy?)")
     return out
+
+
+# ── the cover letter ─────────────────────────────────────────────────────────
+COVER_PROMPT = """Write a cover letter for the applicant below, for {title} at {company}, using ONLY facts from their
+info file and résumé. Never invent experience, skills, projects, numbers or feelings about the company that the facts
+don't support; an early-career student's honest letter beats an inflated one.
+
+- 230-320 words, 3-4 short paragraphs, first person, plain and specific. No clichés ("I am writing to express",
+  "passionate", "esteemed", "perfect fit"), no exclamation marks.
+- Open with the role and who they are (school, major, expected graduation). Then the most relevant coursework,
+  lab skills, tools and projects for THIS role, and what they'd bring (reliability, communication from their work).
+  Tie to the company only through what the job description says.
+- Availability and start dates only as the info file states them (its earliest start date and available months);
+  if they don't match the role's dates, don't mention dates at all. No job or requisition numbers.
+- Don't open with "I am writing to".
+- Start with "Dear Hiring Team," and end with "Sincerely," and the applicant's full name on the next line.
+
+Return JSON: {{"letter": "<the letter, paragraphs separated by a blank line>"}}
+
+Job description (excerpt): {description}
+
+Info file:
+{profile}
+
+Résumé text:
+{resume}
+"""
+
+LETTER_HTML = """<html><head><meta charset="utf-8"><style>
+body {{ font: 11.5pt/1.45 Georgia, 'Times New Roman', serif; margin: 0.9in 1in; color: #111; }}
+.head {{ margin-bottom: 26px; }} .name {{ font-size: 17pt; font-weight: bold; }}
+.contact {{ color: #444; }} p {{ margin: 0 0 12px; }}
+</style></head><body><div class="head"><div class="name">{name}</div><div class="contact">{contact}</div></div>
+<p>{date}</p>{body}</body></html>"""
+
+
+def _line(profile: str, key: str) -> str:
+    m = re.search(rf"^{re.escape(key)}[^:\n]*:[ \t]*(.*)$", profile, re.I | re.M)
+    return m.group(1).strip() if m else ""
+
+
+def cover_letter(job: dict, profile: str, resume: str, ask: Callable) -> str:
+    title = re.sub(r"\(#[^)]*\)\s*", "", job["title"]).strip()          # "(#4321158007) Hardware Engineer" -> without the id
+    out = ask(COVER_PROMPT.format(title=title, company=job["company"], description=(job.get("description") or "")[:3000],
+                                  profile=profile, resume=resume[:6000]))
+    letter = (out or {}).get("letter") if isinstance(out, dict) else None
+    if not letter or len(letter.split()) < 120:
+        raise RuntimeError("the cover letter didn't come back (Gemini busy?)")
+    return letter.strip()
+
+
+def letter_pdf(ctx, letter: str, profile: str, path: Path) -> Path:
+    """Renders the letter to a one-page PDF with the browser that's already open."""
+    from datetime import date
+    from html import escape
+    name = f"{_line(profile, 'First name')} {_line(profile, 'Last name')}".strip()
+    place = ", ".join(x for x in (_line(profile, "City"), _line(profile, "State")) if x)
+    digits = re.sub(r"\D", "", _line(profile, "Phone"))[-10:]
+    phone = f"({digits[:3]}) {digits[3:6]}-{digits[6:]}" if len(digits) == 10 else _line(profile, "Phone")
+    contact = " · ".join(escape(x) for x in (_line(profile, "Email"), phone, place, _line(profile, "LinkedIn URL")) if x)
+    body = "".join(f"<p>{escape(p).replace(chr(10), '<br>')}</p>" for p in re.split(r"\n\s*\n", letter) if p.strip())
+    page = ctx.new_page()
+    try:
+        page.set_content(LETTER_HTML.format(name=escape(name), contact=contact, date=f"{date.today():%B %-d, %Y}", body=body))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        page.pdf(path=str(path), format="Letter")
+    finally:
+        page.close()
+    return path
 
 
 # ── filling ──────────────────────────────────────────────────────────────────
@@ -391,20 +461,37 @@ def apply(job: dict, profile: str, resume_text: str, docs: dict, browser_dir: Pa
             button = ".ashby-application-form-submit-button" if ashby else "button[type=submit]"
             if not page.query_selector(button):
                 raise Blocked("the posting has no application form (closed or moved)")
-            fields = page.evaluate(ASHBY_EXTRACT_JS) if ashby else read_form(page)
-            out = answer(fields, job, profile + ("\n(A transcript PDF is on file.)" if Path(docs.get("transcript", "")).exists()
-                                                 else "\n(No transcript PDF on file.)"), resume_text, ask)
-            known = {f["label"] for f in fields if f["required"]}
-            unknown = [u for u in out.get("unknown") or [] if u in known]
-            if unknown:
-                raise NeedsInfo(unknown)
-            missing = (ashby_fill if ashby else fill)(page, fields, out["answers"], docs)
+            read = (lambda: page.evaluate(ASHBY_EXTRACT_JS)) if ashby else (lambda: read_form(page))
+            fill_in = ashby_fill if ashby else fill
+            facts = profile + ("\n(A transcript PDF is on file.)" if Path(docs.get("transcript", "")).exists()
+                               else "\n(No transcript PDF on file.)")
+            fields = read()
+            answers = {}
+            # two rounds: some questions only appear after another is answered (race after "Hispanic or Latino: No")
+            for _ in range(2):
+                out = answer(fields, job, facts, resume_text, ask)
+                unknown = [u for u in out.get("unknown") or [] if u in {f["label"] for f in fields if f["required"]}]
+                if unknown:
+                    raise NeedsInfo(unknown)
+                for f in fields:                            # every cover letter upload gets one, optional or not
+                    if f["kind"] == "file" and re.search(r"cover letter", f["label"], re.I):
+                        out["answers"][f["id"]] = "cover_letter"
+                if "cover_letter" in out["answers"].values() and "cover_letter" not in docs:
+                    letter = cover_letter(job, profile, resume_text, ask)
+                    docs = {**docs, "cover_letter": letter_pdf(ctx, letter, profile, shot.with_name(f"{job['id']}-cover-letter.pdf"))}
+                answers.update(out["answers"])
+                fill_in(page, fields, out["answers"], docs)
+                seen = {f["id"] for f in fields}
+                fields = [f for f in read() if f["id"] not in seen]
+                if not fields:
+                    break
+            missing = [f["label"] for f in read() if f["required"] and not page.evaluate(ASHBY_FILLED_JS if ashby else FILLED_JS, f)]
             page.screenshot(path=str(shot), full_page=True)
             if missing:
                 raise NeedsInfo(missing)
             if not practice:
                 submit(page, get_code, button=button)
                 page.screenshot(path=str(shot.with_name(shot.stem + "-done.png")), full_page=True)
-            return {"screenshot": str(shot), "answers": out["answers"]}
+            return {"screenshot": str(shot), "answers": answers, "cover_letter": str(docs.get("cover_letter") or "")}
         finally:
             ctx.close()
