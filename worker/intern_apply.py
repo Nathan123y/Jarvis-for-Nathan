@@ -1,4 +1,4 @@
-"""The internship Applicant: fills in one Greenhouse application in a hidden browser and submits it.
+"""The internship Applicant: fills in one Greenhouse or Ashby application in a hidden browser and submits it.
 
 Greenhouse's question API leaves out parts of the real form (country, city, the education block), so the form
 is read from the page itself: every labelled field, whether it's required, and each drop-down's own options.
@@ -18,8 +18,9 @@ from pathlib import Path
 from typing import Callable, Optional
 
 GH_URL = re.compile(r"https?://(?:job-boards|boards)(?:\.eu)?\.greenhouse\.io/([\w-]+)/jobs/(\d+)")
+ASHBY_URL = re.compile(r"https?://jobs\.ashbyhq\.com/([\w.%-]+)/([0-9a-f-]{36})")
 MANY = 40                  # a drop-down longer than this is searched by typing, not listed for Gemini
-DONE = re.compile(r"thank you for applying|application (?:has been |was )?(?:received|submitted)|we(?:'|’)ve received your application", re.I)
+DONE = re.compile(r"thank you for applying|application (?:has been |was )?(?:successfully )?(?:received|submitted)|we(?:'|’)ve received your application", re.I)
 CODE_ASKED = re.compile(r"security code|verification code", re.I)
 REFUSED = re.compile(r"flagged|possible spam|recaptcha|are you a robot|unusual traffic", re.I)
 
@@ -82,6 +83,50 @@ FILLED_JS = r"""(f) => {
 }"""
 
 
+# Ashby: one `.ashby-application-form-field-entry` per question (a fieldset for radio groups), its title in
+# `.ashby-application-form-question-title`; ids are UUIDs and the label's `for` names the input
+ASHBY_EXTRACT_JS = r"""() => {
+  const out = [];
+  const all = [...document.querySelectorAll('.ashby-application-form-field-entry, fieldset[class*="_fieldEntry_"]')];
+  for (const entry of all.filter(e => !all.some(o => o !== e && o.contains(e)))) {   // radio groups are bare fieldsets
+    const t = entry.querySelector('.ashby-application-form-question-title');
+    if (!t) continue;
+    const label = t.innerText.replace(/\*\s*$/, '').trim();
+    const required = /_required_/.test(t.className);
+    const path = entry.getAttribute('data-field-path') || t.getAttribute('for') || label;
+    const radios = [...entry.querySelectorAll('input[type=radio]')];
+    const boxes = [...entry.querySelectorAll('input[type=checkbox]')];
+    const lab = e => ((e.labels && e.labels[0] && e.labels[0].innerText) || '').trim();
+    if (radios.length) { out.push({id: path, kind: 'radio', label, required, options: radios.map(lab), ids: radios.map(r => r.id)}); continue; }
+    if (boxes.length > 1) { out.push({id: path, kind: 'checkboxes', label, required, options: boxes.map(lab), ids: boxes.map(r => r.id)}); continue; }
+    if (boxes.length === 1) { out.push({id: path, kind: 'checkboxes', label, required, options: ['Yes'], ids: [boxes[0].id]}); continue; }
+    const file = entry.querySelector('input[type=file]');
+    if (file) { out.push({id: path, input: file.id, kind: 'file', label, required}); continue; }
+    const yn = [...entry.querySelectorAll('button')].filter(b => /^(yes|no)$/i.test(b.innerText.trim()));
+    if (yn.length === 2) { out.push({id: path, kind: 'yesno', label, required, options: ['Yes', 'No']}); continue; }
+    const e = entry.querySelector('textarea, input:not([type=hidden])');
+    if (!e) continue;
+    const kind = e.getAttribute('role') === 'combobox' ? 'select' : e.tagName === 'TEXTAREA' ? 'textarea'
+               : e.type === 'tel' ? 'phone' : 'text';
+    out.push({id: path, input: e.id, kind, label, required: required || e.required});
+  }
+  return out;
+}"""
+
+ASHBY_FILLED_JS = r"""(f) => {
+  const entry = document.querySelector('[data-field-path="' + f.id + '"]')
+             || [...document.querySelectorAll('.ashby-application-form-field-entry')].find(x =>
+                  (x.querySelector('.ashby-application-form-question-title') || {}).getAttribute
+                  && x.querySelector('.ashby-application-form-question-title').getAttribute('for') === f.id);
+  if (f.kind === 'radio' || f.kind === 'checkboxes') return f.ids.some(i => document.getElementById(i) && document.getElementById(i).checked);
+  if (!entry) return false;
+  if (f.kind === 'file') return /\.(pdf|docx?|txt|rtf)\b/i.test(entry.innerText);
+  if (f.kind === 'yesno') return [...entry.querySelectorAll('button')].some(b => /active|selected/i.test(b.className) || b.getAttribute('aria-pressed') === 'true');
+  const e = entry.querySelector('textarea, input:not([type=hidden])');
+  return !!(e && e.value && e.value.trim());
+}"""
+
+
 def by_id(i: str) -> str:
     """A selector for an element id; ids like "864" aren't valid after "#"."""
     return '[id="' + i.replace('"', '\\"') + '"]'
@@ -141,7 +186,9 @@ Rules per field kind:
 - select with "options": one option copied EXACTLY from its list.
 - select with "searchable": true: the text to search for (e.g. "San Jose State University",
   "San Jose, California, United States", "United States").
-- checkboxes: a list of options copied exactly; [] if none apply.
+- checkboxes: a list of options copied exactly; [] if none apply. A lone checkbox (option "Yes"): ["Yes"] to tick it.
+- radio: one option copied EXACTLY from its list.
+- yesno: "Yes" or "No".
 - file: "resume" for a résumé/CV field, "transcript" for a transcript field; leave cover letters and portfolios
   out. A required upload that's neither: list it in "unknown".
 - Education block: school, degree (e.g. Bachelor's Degree), discipline (the major), start month/year, end month/year
@@ -233,6 +280,46 @@ def fill(page, fields: list[dict], answers: dict, docs: dict) -> list[str]:
     return [f["label"] for f in fields if f["required"] and not page.evaluate(FILLED_JS, f)]
 
 
+def ashby_fill(page, fields: list[dict], answers: dict, docs: dict) -> list[str]:
+    for f in fields:
+        v = answers.get(f["id"])
+        if v in (None, "", []) and f["kind"] != "file":
+            continue
+        try:
+            if f["kind"] == "file":
+                doc = docs.get(v if isinstance(v, str) else ("resume" if "resume" in f["id"] else ""))
+                if doc and Path(doc).exists():
+                    page.set_input_files(by_id(f["input"]), str(doc))
+                    page.wait_for_timeout(2500)
+            elif f["kind"] in ("radio", "checkboxes"):
+                want = v if isinstance(v, list) else [v]
+                for label, cid in zip(f["options"], f["ids"]):
+                    if pick([label], str(want[0])) if f["kind"] == "radio" else any(norm(label) == norm(x) for x in want):
+                        page.click(f'label[for="{cid}"]')
+                        if f["kind"] == "radio":
+                            break
+            elif f["kind"] == "yesno":
+                entry = page.locator(f'[data-field-path="{f["id"]}"]')
+                entry.locator("button", has_text=re.compile(rf"^{'Yes' if norm(v).startswith('y') else 'No'}$")).first.click()
+            elif f["kind"] == "select":
+                el = page.locator(by_id(f["input"]))
+                el.click()
+                el.fill(str(v)[:40])
+                page.wait_for_timeout(1500)
+                opts = page.locator("[role=option]")
+                names = [opts.nth(i).inner_text().strip() for i in range(min(opts.count(), 30))]
+                choice = pick(names, str(v)) or (names[0] if names else None)
+                if choice:
+                    opts.nth(names.index(choice)).click()
+            elif f["kind"] == "phone":
+                page.fill(by_id(f["input"]), re.sub(r"\D", "", str(v))[-10:])
+            else:
+                page.fill(by_id(f["input"]), str(v))
+        except Exception:
+            pass
+    return [f["label"] for f in fields if f["required"] and not page.evaluate(ASHBY_FILLED_JS, f)]
+
+
 # ── submitting ───────────────────────────────────────────────────────────────
 def _body(page) -> str:
     try:
@@ -241,9 +328,9 @@ def _body(page) -> str:
         return ""
 
 
-def submit(page, get_code: Callable[[float], Optional[str]], timeout_s: float = 45) -> None:
+def submit(page, get_code: Callable[[float], Optional[str]], timeout_s: float = 45, button: str = "button[type=submit]") -> None:
     started = time.time()
-    page.click("button[type=submit]")
+    page.click(button)
     code_sent = False
     while time.time() - started < timeout_s + (120 if code_sent else 0):
         page.wait_for_timeout(1500)
@@ -251,7 +338,7 @@ def submit(page, get_code: Callable[[float], Optional[str]], timeout_s: float = 
         if "confirmation" in page.url or DONE.search(text):
             return
         if REFUSED.search(text):
-            raise Blocked("Greenhouse's robot check refused the automatic submit")
+            raise Blocked("the site's robot check refused the automatic submit")
         if not code_sent and CODE_ASKED.search(text):
             box = page.query_selector("input[id*=security], input[name*=security], input[id*=code], input[autocomplete=one-time-code]")
             if box:
@@ -277,22 +364,25 @@ def apply(job: dict, profile: str, resume_text: str, docs: dict, browser_dir: Pa
                                                    timezone_id="America/Los_Angeles")
         try:
             page = ctx.new_page()
-            page.goto(job["url"], wait_until="networkidle", timeout=60000)
-            if not page.query_selector("button[type=submit]"):
+            ashby = ASHBY_URL.match(job["url"])
+            page.goto(f"https://jobs.ashbyhq.com/{ashby.group(1)}/{ashby.group(2)}/application" if ashby else job["url"],
+                      wait_until="networkidle", timeout=60000)
+            button = ".ashby-application-form-submit-button" if ashby else "button[type=submit]"
+            if not page.query_selector(button):
                 raise Blocked("the posting has no application form (closed or moved)")
-            fields = read_form(page)
+            fields = page.evaluate(ASHBY_EXTRACT_JS) if ashby else read_form(page)
             out = answer(fields, job, profile + ("\n(A transcript PDF is on file.)" if Path(docs.get("transcript", "")).exists()
                                                  else "\n(No transcript PDF on file.)"), resume_text, ask)
             known = {f["label"] for f in fields if f["required"]}
             unknown = [u for u in out.get("unknown") or [] if u in known]
             if unknown:
                 raise NeedsInfo(unknown)
-            missing = fill(page, fields, out["answers"], docs)
+            missing = (ashby_fill if ashby else fill)(page, fields, out["answers"], docs)
             page.screenshot(path=str(shot), full_page=True)
             if missing:
                 raise NeedsInfo(missing)
             if not practice:
-                submit(page, get_code)
+                submit(page, get_code, button=button)
                 page.screenshot(path=str(shot.with_name(shot.stem + "-done.png")), full_page=True)
             return {"screenshot": str(shot), "answers": out["answers"]}
         finally:

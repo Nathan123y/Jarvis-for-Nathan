@@ -2,7 +2,8 @@
 
 The crew finds Summer 2027 hardware / electrical / semiconductor internships in California, applies to the
 Greenhouse ones from the user's info file and résumé (up to a few a day), texts every application and every
-reply from a company, and texts a few hand-apply links each morning. Here: how it's going, pause, resume,
+reply from a company, and texts a few hand-apply links each morning. It also follows the SJSU director's co-op /
+internship sheet and emails: EE listings on a company's own site are applied to right away, the rest texted. Here: how it's going, pause, resume,
 go live after the practice run, applications a day, and opening the info file.
 """
 from __future__ import annotations
@@ -60,6 +61,10 @@ def _status() -> str:
                     if cfg["practice"] else f"Applying to up to {cfg['per_day']} a day. ")
                  + f"The Scout has {len(jobs)} Summer 2027 postings: {c['new']} waiting, {len(applied)} applied, "
                  f"{c['needs_info']} need your answers, {c['manual']} to apply to by hand.")
+    mine = [j for j in jobs if j.get("source") == "director"]
+    if mine:
+        parts.append(f"Your director's list: {len(mine)} EE listings, {sum(1 for j in mine if j.get('applied_at'))} applied on "
+                     f"company sites, {sum(1 for j in mine if j['ats'] == 'handshake')} to apply to on Handshake yourself.")
     if applied:
         parts.append("Latest: " + "; ".join(f"{j['company']} ({j['title'][:40]})" for j in applied[:5]) + ".")
     return " ".join(parts)
