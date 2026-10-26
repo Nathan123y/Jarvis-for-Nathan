@@ -429,7 +429,10 @@ def submit(page, get_code: Callable[[float], Optional[str]], timeout_s: float = 
         page.wait_for_function("b => { const e = document.querySelector(b); return e && !e.disabled }", arg=button, timeout=20000)
     except Exception:
         raise Blocked("the site kept its Submit button switched off (its robot check, most likely)")
-    page.click(button)
+    try:
+        page.click(button, timeout=15000)
+    except Exception:                                              # it switched itself back off before the click
+        raise Blocked("the site kept its Submit button switched off (its robot check, most likely)")
     code_sent = False
     while time.time() - started < timeout_s + (120 if code_sent else 0):
         page.wait_for_timeout(1500)
