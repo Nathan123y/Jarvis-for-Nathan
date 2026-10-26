@@ -186,7 +186,10 @@ Return JSON: {{"answers": {{"<field id>": <value>}}, "unknown": ["<label of a RE
 
 Rules per field kind:
 - text / phone / textarea: a string. Phone: digits only, no country code.
-- select with "options": one option copied EXACTLY from its list.
+- select with "options": one option copied EXACTLY from its list. A long list may show only its first page
+  (schools, countries): when the right answer isn't in it, give the answer as text (e.g. "San Jose State University",
+  "United States") and it will be searched for. Never call such a field unknown when the info file has the answer.
+- Country: "United States" when the applicant's address is in a US state.
 - select with "searchable": true: the text to search for (e.g. "San Jose State University",
   "San Jose, California, United States", "United States").
 - checkboxes: a list of options copied exactly; [] if none apply. A lone checkbox (option "Yes"): ["Yes"] to tick it.
