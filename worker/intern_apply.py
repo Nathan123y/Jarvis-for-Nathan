@@ -14,12 +14,13 @@ from __future__ import annotations
 import json
 import re
 import time
+import unicodedata
 from pathlib import Path
 from typing import Callable, Optional
 
 GH_URL = re.compile(r"https?://(?:job-boards|boards)(?:\.eu)?\.greenhouse\.io/([\w-]+)/jobs/(\d+)")
 ASHBY_URL = re.compile(r"https?://jobs\.ashbyhq\.com/([\w.%-]+)/([0-9a-f-]{36})")
-MANY = 40                  # a drop-down longer than this is searched by typing, not listed for Gemini
+MANY = 150                 # a drop-down longer than this (countries, schools) is searched by typing, not listed for Gemini
 DONE = re.compile(r"thank you for applying|application (?:has been |was )?(?:successfully )?(?:received|submitted)|we(?:'|’)ve received your application", re.I)
 CODE_ASKED = re.compile(r"security code|verification code", re.I)
 REFUSED = re.compile(r"flagged|possible spam|recaptcha|are you a robot|unusual traffic", re.I)
@@ -133,7 +134,9 @@ def by_id(i: str) -> str:
 
 
 def norm(s: str) -> str:
-    return " ".join(str(s).replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"').lower().split())
+    s = str(s).replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()          # San José -> San Jose
+    return " ".join(s.lower().split())
 
 
 def pick(options: list[str], want: str) -> Optional[str]:
@@ -230,26 +233,39 @@ def answer(fields: list[dict], job: dict, profile: str, resume: str, ask: Callab
 
 
 # ── filling ──────────────────────────────────────────────────────────────────
+def searches(value: str) -> list[str]:
+    """What to type into a searchable drop-down, most specific first: "San José State University" ->
+    the text as given, without accents, then its first words ("San Jose State", "San Jose", "San")."""
+    plain = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode()
+    words = plain.split(",")[0].split()
+    return list(dict.fromkeys(x for x in (value.split(",")[0], plain.split(",")[0], *(" ".join(words[:n]) for n in (3, 2, 1))) if x))
+
+
 def _select(page, f: dict, value: str) -> bool:
     el = page.query_selector(by_id(f["id"]))
     if not el:
         return False
-    el.click()
-    el.fill("")
     want = value if f.get("searchable") else (pick(f["options"], value) or value)
-    el.type((want.split(",")[0] if f.get("searchable") else want)[:40], delay=25)
-    page.wait_for_timeout(1500 if f.get("searchable") else 500)
-    opts = _options(page, el)
-    choice = pick(opts, want) or (opts[0] if f.get("searchable") and opts else None)
-    if not choice:
-        page.keyboard.press("Escape")
-        return False
-    lb = el.get_attribute("aria-controls")
-    for o in page.query_selector_all(f"{by_id(lb)} [role=option]"):
-        if o.inner_text().strip() == choice:
-            o.click()
-            page.wait_for_timeout(250)
-            return True
+    for typed in searches(want):                    # a long list may show only its first page (schools): search it too
+        el.click()
+        el.fill("")
+        el.type(typed[:40], delay=25)
+        opts = []
+        for _ in range(8):                         # some lists load from the server as you type
+            page.wait_for_timeout(500)
+            opts = [o for o in _options(page, el) if not re.match(r"no options|loading", o, re.I)]
+            if opts:
+                break
+        choice = pick(opts, want) or (opts[0] if f.get("searchable") and len(opts) == 1 else None)
+        if not choice:
+            continue
+        lb = el.get_attribute("aria-controls")
+        for o in page.query_selector_all(f"{by_id(lb)} [role=option]"):
+            if o.inner_text().strip() == choice:
+                o.click()
+                page.wait_for_timeout(250)
+                return True
+    page.keyboard.press("Escape")
     return False
 
 

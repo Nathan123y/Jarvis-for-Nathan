@@ -596,10 +596,11 @@ class InternshipService:
                            get_code=lambda since: security_code(gmail._service("personal"), since),
                            practice=practice)
         except ia.NeedsInfo as e:
-            job.update(status="needs_info", asked_at=self.clock(), missing=e.questions)
             files = [q for q in e.questions if UPLOAD.search(q)]          # a document to add, not a line to fill in
             asks = [q for q in e.questions if q not in files]
             add_questions(asks)
+            # stamped after the file is written, so adding the question doesn't count as the user answering it
+            job.update(status="needs_info", asked_at=self.clock(), missing=e.questions)
             lines = []
             if asks:
                 lines.append("it asks things your info file doesn't cover (" + "; ".join(q.rstrip(".") for q in asks[:5])
