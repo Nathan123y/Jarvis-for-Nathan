@@ -217,6 +217,8 @@ Rules per field kind:
   start or availability dates within the info file's availability, "how did you hear", interests, rankings,
   "why this company" style choices, and yes/no questions a reasonable applicant would answer the obvious way
   (willing to work onsite, comfortable with the schedule, agree to a background check or drug test).
+- Past employment questions ("have you worked for <company> / the US government / a competitor before"): the
+  résumé lists every job the applicant has had, so the answer is No unless it names that employer.
 - Only facts about the applicant's own life that the info file and résumé don't give are "unknown": documents
   (transcript, ID), personal history (past employers, test scores, certifications, clearances), contact details,
   and links. Never make those up.

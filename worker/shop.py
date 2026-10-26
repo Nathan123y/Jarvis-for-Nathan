@@ -56,7 +56,40 @@ PRODUCTS = {
             "art": "slogan", "colors": ("Black", "Dark Navy", "Dark Green", "Royal"), "sizes": ("One size",), "fill": 0.95},
     "mug": {"name": "Mug", "blueprint": 478, "provider": 99, "profit": 6.0, "sizes": ("11oz",), "fill": 0.9},
     "sticker": {"name": "Sticker", "blueprint": 400, "provider": 99, "profit": 2.5, "fill": 1.0},   # no longer made (2026-10-24)
+    # added 2026-10-26
+    "crewneck": {"name": "Crewneck Sweatshirt", "blueprint": 49, "provider": 99, "profit": 10.0,   # Gildan 18000
+                 "colors": ("White", "Sport Grey", "Ash", "Sand", "Light Pink", "Light Blue"),
+                 "sizes": ("S", "M", "L", "XL", "2XL"), "fill": 0.9},
+    "poster": {"name": "Poster", "blueprint": 282, "provider": 99, "profit": 8.0,             # matte, vertical
+               "sizes": ("11\u2033 x 14\u2033", "12\u2033 x 18\u2033", "16\u2033 x 20\u2033", "18\u2033 x 24\u2033"), "fill": 0.85},
+    "phone": {"name": "Phone Case", "blueprint": 421, "provider": 99, "profit": 7.0,          # Tough Case, glossy
+              "sizes": ("iPhone 13", "iPhone 14", "iPhone 15", "iPhone 15 Pro", "iPhone 15 Pro Max", "iPhone 16",
+                        "iPhone 16 Pro", "iPhone 16 Pro Max", "iPhone 17"), "fill": 0.8},
+    "tote": {"name": "Tote Bag", "blueprint": 1313, "provider": 99, "profit": 6.0, "fill": 0.85},  # Liberty Bags canvas
+    "ornament": {"name": "Christmas Ornament", "blueprint": 1599, "provider": 99, "profit": 6.0,    # ceramic, 4 shapes
+                 "fill": 0.92},
+    "tumbler": {"name": "Tumbler", "blueprint": 353, "provider": 1, "profit": 7.0, "fill": 0.8},   # 20oz
 }
+# Holiday lines: while a season runs, one extra design a day is made for it, on the products that sell for it.
+# (start, end) are (month, day); the end leaves time to ship before the holiday. Two lines running at once
+# take turns, a day each. Halloween is left out this
+# year: added on Oct 26, too late to arrive by the 31st.
+SEASONS = {
+    "christmas": {"start": (10, 26), "end": (12, 14),
+                  "products": ["tee", "crewneck", "hoodie", "mug", "ornament", "tumbler", "poster", "tote"],
+                  "note": "a Christmas / holiday-season gift (ugly-sweater energy, holiday stress, family chaos, "
+                          "Santa, elves, reindeer, snowmen, gingerbread, gift-giving, winter break)"},
+    "thanksgiving": {"start": (11, 1), "end": (11, 18),
+                     "products": ["tee", "crewneck", "hoodie", "mug", "tote"],
+                     "note": "Thanksgiving (turkey, pie, food coma, family dinner chaos, Friendsgiving, being thankful "
+                             "ironically)"},
+    "halloween": {"start": (9, 15), "end": (10, 20),
+                  "products": ["tee", "crewneck", "hoodie", "mug", "tote"],
+                  "note": "Halloween (spooky season, ghosts, skeletons, pumpkins, witches, costumes, candy)"},
+}
+SEASON_NOTE = """This design is for the shop's {name} line: make it about {note}. Same voice: funny, edgy,
+meme-literate and giftable, not a generic greeting card. Put the holiday in the title and tags (e.g. "funny
+christmas shirt", "christmas gift for coworker", "ugly christmas sweater")."""
 # Sales channels connected in Printify that every design is listed on. eBay titles stop at 80 characters.
 CHANNELS = {"etsy": {"name": "Etsy", "title_max": 140}, "ebay": {"name": "eBay", "title_max": 80}}
 # Printify renders dozens of product photos but sends Etsy one or two, and only says what they are when the
@@ -68,7 +101,9 @@ EXTRA_PHOTOS = {"tee": ("person-1", "person-2", "lifestyle", "hanging-1", "duo")
                 "mug": (),
                 "sticker": ("context-1", "context-2")}
 DEFAULTS = {"enabled": True, "designs_per_day": 1, "time": "06:00",  # live before the 7 AM text
-            "products": ["tee", "hoodie", "tank", "shorts", "pants", "hat", "mug"],    # the user's lineup (2026-10-24): no stickers
+            "products": ["tee", "hoodie", "tank", "shorts", "pants", "hat", "mug",    # the user's lineup (2026-10-24): no stickers
+                         "crewneck", "poster", "phone", "tote"],                    # added 2026-10-26
+            "holiday_per_day": 1,                # extra designs a day for the running holiday line (0 = none)
             "video_times": ""}                 # e.g. "11:00,15:00,19:00", one video at each; empty = no videos (off: user prefers the photos)
 
 BLOCKED = re.compile(r"(?<![a-z])(" + "|".join([
@@ -79,6 +114,8 @@ BLOCKED = re.compile(r"(?<![a-z])(" + "|".join([
     "nfl", "nba", "mlb", "nhl", "fifa", "ncaa", "olympic", "taylor swift", "swiftie", "beyonce", "elvis", "beatles",
     "friends tv", "the office", "stranger things", "game of thrones", "lord of the rings", "hobbit", "grinch",
     "dr\\.? seuss", "winnie", "bluey", "paw patrol", "peppa", "baby shark", "yoda", "grogu", "trump", "biden",
+    "rudolph", "frosty", "elf on the shelf", "charlie brown", "home alone", "christmas story", "lampoon",
+    "griswold", "mariah", "polar express", "nightmare before christmas", "jack skellington", "hocus pocus",
     "harley", "jeep", "jordans?", "air jordan", "skibidi", "windows xp", "microsoft", "apple", "iphone", "google", "chatgpt", "openai", "tiktok", "instagram", "netflix", "amazon", "ford", "chevy", "john deere", "yeti", "stanley cup", "lego", "crocs",
 ]) + r")(?![a-z])", re.I)
 
@@ -128,6 +165,13 @@ use a meme or slang phrase that's been big online in the last few months instead
 
 
 # ── small pieces ─────────────────────────────────────────────────────────────
+def season_for(day) -> Optional[str]:
+    """The holiday line a day's extra design is for, or None outside every season."""
+    md = (day.month, day.day)
+    running = [n for n, x in SEASONS.items() if x["start"] <= md <= x["end"]]
+    return running[day.toordinal() % len(running)] if running else None
+
+
 def settings() -> dict:
     try:
         from memory.config_manager import get_plugin_config
@@ -140,6 +184,10 @@ def settings() -> dict:
         out["designs_per_day"] = max(0, min(5, int(out["designs_per_day"])))
     except (TypeError, ValueError):
         out["designs_per_day"] = DEFAULTS["designs_per_day"]
+    try:
+        out["holiday_per_day"] = max(0, min(3, int(out["holiday_per_day"])))
+    except (TypeError, ValueError):
+        out["holiday_per_day"] = DEFAULTS["holiday_per_day"]
     return out
 
 
@@ -474,7 +522,7 @@ class Shop:
         return text
 
     # one design, start to finish
-    def make_design(self, only: Optional[list] = None, spinoff: Optional[str] = None) -> dict:
+    def make_design(self, only: Optional[list] = None, spinoff: Optional[str] = None, season: Optional[str] = None) -> dict:
         """only: the product kinds this design goes on (e.g. ["tee"]); None means the usual set. spinoff: the id of a winning
         design to riff on instead of today's trends."""
         from worker import shop_agents
@@ -484,6 +532,8 @@ class Shop:
         trending = "" if parent else self.trending(st)
         nb = shop_agents.load(self.nb_path)
         notes = shop_agents.designer_notes(nb, parent)
+        if season:
+            notes = SEASON_NOTE.format(name=season.title(), note=SEASONS[season]["note"]) + "\n\n" + notes
         last_error = None
         for _ in range(3):                                      # a refused idea gets another try
             try:
@@ -510,6 +560,8 @@ class Shop:
             rec["only"] = list(only)
         if parent:
             rec["spinoff_of"] = parent["id"]
+        if season:
+            rec["season"] = season
         st["designs"].append(rec)
         save_state(st, self.state_path)
         self.log(f"shop: designed '{idea['title']}' ({idea['slogan']})")
@@ -731,7 +783,14 @@ class ShopService:
         st = load_state(shop.state_path)
         today = now.date().isoformat()
         h, m = (int(x) for x in str(cfg["time"]).split(":"))
-        made_today = sum(1 for d in st["designs"] if datetime.fromtimestamp(d["made"]).date().isoformat() == today)
+        made_today = sum(1 for d in st["designs"] if datetime.fromtimestamp(d["made"]).date().isoformat() == today
+                         and not d.get("season"))
+        season = season_for(now.date())
+        holiday_today = sum(1 for d in st["designs"] if datetime.fromtimestamp(d["made"]).date().isoformat() == today
+                            and d.get("season"))
+        # the holiday line's design(s), from half an hour after the daily one
+        holiday = bool(season) and holiday_today < cfg["holiday_per_day"] and \
+            now.hour * 60 + now.minute >= h * 60 + m + 30 + holiday_today * 240
         queued = int(st.get("make_now") or 0)              # "make N new products now", from the plugin; one per pass
         spin_q = list(st.get("make_spinoff") or [])        # spin-offs of a design that just sold, queued by the Analyst
         cooling = time.time() - st.get("last_fail_at", 0) < 3600
@@ -739,7 +798,7 @@ class ShopService:
         n = cfg["designs_per_day"]
         gap = (24 * 60 - (h * 60 + m)) / n if n else 0
         daily = made_today < n and now.hour * 60 + now.minute >= h * 60 + m + made_today * gap
-        if not cooling and (spin_q or queued or daily):
+        if not cooling and (spin_q or queued or daily or holiday):
             from worker import shop_agents
             try:
                 if spin_q:
@@ -751,6 +810,8 @@ class ShopService:
                     queued = 0
                 elif queued:
                     shop.make_design(only=st.get("make_only"))
+                elif holiday and not daily:
+                    shop.make_design(only=SEASONS[season]["products"], season=season)
                 else:                                      # the daily design: every other one riffs on a winner, if there is one
                     win = shop_agents.next_spinoff(shop_agents.load(shop.nb_path), bool(st.get("last_was_spinoff")),
                                                    int(st.get("spinoffs_made") or 0))

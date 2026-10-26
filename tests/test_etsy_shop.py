@@ -304,10 +304,6 @@ class ScheduleTests(_Base):
         self.assertEqual({b["blueprint_id"] for _, _, b in created}, {12})                # t-shirts only
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class StorefrontTests(_Base):
     def test_site_has_a_page_per_listed_design_buy_links_and_a_feed(self):
         from worker import storefront as sf
@@ -461,3 +457,16 @@ class VideoTests(_Base):
         self.assertEqual(copy["hook"], "Made for plant lovers")                       # protected name refused
         self.assertEqual(copy["pov"], "POV: you water daily")
         self.assertEqual(copy["hashtags"], ["plantmom", "gift"])
+
+
+class SeasonTests(unittest.TestCase):
+    def test_holiday_lines_run_in_their_windows_and_take_turns(self):
+        from datetime import date
+        self.assertEqual(ws.season_for(date(2026, 10, 27)), "christmas")
+        self.assertEqual({ws.season_for(date(2026, 11, 1)), ws.season_for(date(2026, 11, 2))}, {"christmas", "thanksgiving"})
+        self.assertEqual(ws.season_for(date(2026, 11, 25)), "christmas")
+        self.assertIsNone(ws.season_for(date(2026, 12, 20)))
+
+
+if __name__ == "__main__":
+    unittest.main()
