@@ -202,7 +202,9 @@ Rules per field kind:
 - Questions about a degree, GPA or test the applicant doesn't have (graduate GPA, SAT not given, ...): pick the
   "not applicable / did not take / do not recall" option.
 - Voluntary self-identification (gender, race, Hispanic/Latino, veteran, disability): use the info file; when it says
-  decline or is blank, pick the decline / "don't wish to answer" option.
+  decline or is blank, pick the decline / "don't wish to answer" option. Always answer these, even when not marked
+  required: some become required only after another answer. Race lists that follow the US EEO categories have no
+  Middle Eastern option; it falls under "White" there (pick a Middle Eastern / North African option when one exists).
 - "How did you hear about us": the info file's default (pick the closest option).
 - A required acknowledgement of a privacy notice or of how the application is processed: acknowledge / agree (the
   applicant agreed to apply). Opt-ins to marketing, SMS or WhatsApp messages, or talent newsletters: no.
