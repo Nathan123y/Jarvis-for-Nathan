@@ -211,6 +211,15 @@ Rules per field kind:
   applicant agreed to apply). Opt-ins to marketing, SMS or WhatsApp messages, or talent newsletters: no.
 - Essay / free-text questions: 60-140 words, first person, plain and specific, built only from the info file and
   résumé, tied to this company and role where the facts allow. No clichés, no claims that aren't in the facts.
+- Preference and common questions are YOURS to answer, never "unknown" (the applicant asked for this): preferred
+  locations (California first, then the nearest West Coast ones; pick as many as asked), team / program / product
+  area (the one closest to electrical, hardware or semiconductor work), shift, travel, relocation, remote/onsite,
+  start or availability dates within the info file's availability, "how did you hear", interests, rankings,
+  "why this company" style choices, and yes/no questions a reasonable applicant would answer the obvious way
+  (willing to work onsite, comfortable with the schedule, agree to a background check or drug test).
+- Only facts about the applicant's own life that the info file and résumé don't give are "unknown": documents
+  (transcript, ID), personal history (past employers, test scores, certifications, clearances), contact details,
+  and links. Never make those up.
 - Optional fields you can't answer from the facts: leave them out. Required ones: list their labels in "unknown".
 - An info-file line answered "none" (e.g. LinkedIn URL: none) means the applicant has none: leave that field
   out, and if it's required, list its label in "unknown". Never type "none" into a URL field.
