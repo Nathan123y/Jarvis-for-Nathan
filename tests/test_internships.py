@@ -43,7 +43,7 @@ class ScoutTests(unittest.TestCase):
         feed = [listing(), listing(id="b2", url="https://nvidia.wd5.myworkdayjobs.com/x")]
         self.assertEqual(wi.scout(st, lambda u: json.dumps(feed).encode(), {}, NOW), 2)
         self.assertEqual(st["jobs"]["a1"]["ats"], "greenhouse")
-        self.assertEqual(st["jobs"]["b2"]["ats"], "manual")
+        self.assertEqual(st["jobs"]["b2"]["ats"], "workday")
         self.assertEqual(wi.scout(st, lambda u: json.dumps(feed).encode(), {}, NOW), 0)
         feed[0]["active"] = False
         wi.scout(st, lambda u: json.dumps(feed).encode(), {}, NOW)
@@ -160,6 +160,18 @@ class SecurityCodeTests(unittest.TestCase):
         service.users.return_value.messages.return_value = api
         with patch("worker.campaign.mail._text", return_value=body):
             self.assertEqual(wi.security_code(service, NOW), "XJwGkSYb")
+
+
+class WorkdayTests(unittest.TestCase):
+    def test_an_answer_copied_with_its_label_is_cleaned(self):
+        from worker import intern_workday as wd
+        self.assertEqual(wd._clean("Last name: Yousif", "Last Name"), "Yousif")
+        self.assertEqual(wd._clean("Yousif", "Last Name"), "Yousif")
+        self.assertEqual(wd._clean("Note: kept as written", "Essay"), "Note: kept as written")
+
+    def test_workday_links_are_recognised(self):
+        self.assertEqual(wi.ats_of("https://moog.wd5.myworkdayjobs.com/moog_external_career_site/job/Torrance-CA/x_R-1"), "workday")
+        self.assertEqual(wi.ats_of("https://amazon.jobs/en/jobs/1"), "manual")
 
 
 class PacingTests(unittest.TestCase):

@@ -40,6 +40,7 @@ RESUME_TEXT = DIR / "resume.txt"
 TRANSCRIPT = DIR / "transcript.pdf"     # optional: some applications require an unofficial transcript
 SHOTS = DIR / "applications"
 BROWSER = DIR / "browser"
+WD_BROWSER = DIR / "workday-browser"   # its own profile: Workday sign-ins stay apart from Greenhouse
 STATE = ROOT / "memory" / "internships.json"
 SHEETS_TOKEN = DIR / "sheets_token.json"  # the school Google account, read-only Sheets access
 SHEET_ID = "1zTUWkmcpoMHfp_m_XNFydN5R5OO51g5eTs_3wvFd6Rg"   # "Spring / Summer / Fall 2027 - Current Co-ops on Handshake"
@@ -54,7 +55,7 @@ DEFAULTS = {"enabled": True, "per_day": 5, "start": "06:00", "end": "21:00", "pr
 SCOUT_AT = (5, 45)                   # before the first application of the day
 DIGEST_AT = (8, 0)                   # the morning "apply to these yourself" text
 MANUAL_PER_DAY = 3
-AUTO = ("greenhouse", "ashby")       # application sites the Applicant can fill in
+AUTO = ("greenhouse", "ashby", "workday")   # application sites the Applicant can fill in
 REPLIES_EVERY = 600
 UPLOAD = re.compile(r"upload|attach|transcript|cover letter|portfolio|writing sample|\bcv\b", re.I)
 REPLY_HOURS = (7, 23)                # reply texts wait for the morning instead of buzzing at night
@@ -196,7 +197,9 @@ def wanted(item: dict, prof: dict) -> bool:
 
 def ats_of(url: str) -> str:
     from worker.intern_apply import ASHBY_URL, GH_URL
-    return "greenhouse" if GH_URL.match(url or "") else "ashby" if ASHBY_URL.match(url or "") else "manual"
+    from worker.intern_workday import WD_URL
+    return ("greenhouse" if GH_URL.match(url or "") else "ashby" if ASHBY_URL.match(url or "")
+            else "workday" if WD_URL.match(url or "") else "manual")
 
 
 def scout(st: dict, get: Callable[[str], bytes], prof: dict, now: float) -> int:
@@ -229,6 +232,8 @@ def job_description(job: dict, get: Callable[[str], bytes]) -> str:
         elif m := ASHBY_URL.match(job["url"]):
             jobs = json.loads(get(f"https://api.ashbyhq.com/posting-api/job-board/{m.group(1)}")).get("jobs") or []
             html = next((j.get("descriptionHtml") for j in jobs if j.get("id") == m.group(2)), "")
+        elif m := re.match(r"(https://([\w-]+)\.wd\d+\.myworkdayjobs\.com)/(?:[a-z]{2}-[A-Za-z]{2}/)?([^/]+)/job/(.+)$", job["url"]):
+            html = json.loads(get(f"{m[1]}/wday/cxs/{m[2]}/{m[3]}/job/{m[4]}")).get("jobPostingInfo", {}).get("jobDescription")
         else:
             return ""
     except Exception:
@@ -606,11 +611,19 @@ class InternshipService:
         job["attempts"] = job.get("attempts", 0) + 1
         save_state(st, self.state_path)
         job["description"] = job_description(job, self.get)
+        ask = lambda prompt: gemini.as_json(prompt, tier=gemini.SMART, timeout_ms=120_000)
+        docs = {"resume": RESUME, "transcript": TRANSCRIPT}
         try:
-            out = ia.apply(job, PROFILE.read_text(), resume_text(), {"resume": RESUME, "transcript": TRANSCRIPT}, BROWSER, SHOTS,
-                           ask=lambda prompt: gemini.as_json(prompt, tier=gemini.SMART, timeout_ms=120_000),
-                           get_code=lambda since: security_code(gmail._service("personal"), since),
-                           practice=practice)
+            if job["ats"] == "workday":
+                from worker import intern_workday
+                profile = PROFILE.read_text()
+                out = intern_workday.apply(job, profile, resume_text(), docs, WD_BROWSER, SHOTS, ask,
+                                           mail=gmail._service("personal"), email=profile_fields(profile).get("email", ""),
+                                           practice=practice, log=self.log)
+            else:
+                out = ia.apply(job, PROFILE.read_text(), resume_text(), docs, BROWSER, SHOTS, ask=ask,
+                               get_code=lambda since: security_code(gmail._service("personal"), since),
+                               practice=practice)
         except ia.NeedsInfo as e:
             files = [q for q in e.questions if UPLOAD.search(q)]          # a document to add, not a line to fill in
             asks = [q for q in e.questions if q not in files]
