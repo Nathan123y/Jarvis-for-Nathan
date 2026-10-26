@@ -388,7 +388,8 @@ def check_replies(st: dict, service, notify: Callable[[str], None]) -> int:
     if not applied:
         return 0
     names = sorted({j["company"] for j in applied})
-    q = ("newer_than:3d -from:me -category:promotions -category:social ("
+    # the account emails Workday sends while applying (verify your account, security codes) aren't replies
+    q = ("newer_than:3d -from:me -from:otp.workday.com -category:promotions -category:social ("
          + " OR ".join(f'"{n}"' for n in names[:40]) + ")")
     api = service.users().messages()
     seen = set(st["replies_seen"])
