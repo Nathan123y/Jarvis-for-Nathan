@@ -114,10 +114,11 @@ class NoneAnswerTests(unittest.TestCase):
                                         clock=lambda: NOW)
         self.job = {"id": "q", "company": "quadric.io", "title": "DV Intern", "status": "new", "ats": "ashby", "url": "u"}
 
-    def attempt(self, profile, questions):
+    def attempt(self, profile, questions, filled=None):
         (self.dir / "profile.md").write_text(profile)
         with patch.object(wi, "PROFILE", self.dir / "profile.md"), patch.object(wi, "resume_text", return_value=""), \
-                patch.object(wi, "job_description", return_value=""), patch.object(ia, "apply", side_effect=ia.NeedsInfo(questions)):
+                patch.object(wi, "job_description", return_value=""), patch.object(ia, "apply", side_effect=ia.NeedsInfo(questions)), \
+                patch.object(wi, "fill_in", return_value=filled or {}):
             return self.svc.apply_one({"jobs": {"q": self.job}}, self.job, False, "2026-10-26")
 
     def test_a_required_field_the_user_said_they_dont_have_skips_the_job_quietly(self):
@@ -125,9 +126,20 @@ class NoneAnswerTests(unittest.TestCase):
         self.assertEqual(self.job["status"], "closed")
         self.assertEqual(self.sent, [])
 
-    def test_a_blank_answer_still_asks_the_user(self):
-        self.assertEqual(self.attempt("LinkedIn URL:\n", ["LinkedIn Profile"]), "needs_info")
-        self.assertTrue(self.sent)
+    def test_what_only_the_user_knows_sends_the_job_link_not_a_file_edit(self):
+        self.assertEqual(self.attempt("LinkedIn URL:\n", ["LinkedIn Profile"]), "manual")
+        self.assertIn("Apply here: u", self.sent[0])
+
+    def test_a_question_the_crew_can_answer_is_written_in_and_retried_without_a_text(self):
+        self.assertEqual(self.attempt("Graduation month and year: December 2028\nTo:\n", ["To"], {"To": "12/2028"}),
+                         "answered")
+        self.assertEqual(self.job["status"], "new")
+        self.assertEqual(self.sent, [])
+        self.assertIn("To: 12/2028", (self.dir / "profile.md").read_text())
+
+    def test_fill_in_drops_unknowns(self):
+        ask = lambda p: {"answers": {"To": "12/2028", "Passport number": "unknown"}}
+        self.assertEqual(wi.fill_in(["To", "Passport number"], self.job, "", "", ask), {"To": "12/2028"})
 
     def test_none_is_left_out_of_the_cover_letter_contact_line(self):
         self.assertEqual(ia._line("LinkedIn URL: none\n", "LinkedIn URL"), "")

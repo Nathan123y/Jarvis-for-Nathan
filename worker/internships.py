@@ -143,18 +143,56 @@ def profile_gaps(profile_path: Path = PROFILE, resume: Path = RESUME) -> list[st
     return gaps
 
 
-def add_questions(questions: list[str], profile_path: Path = PROFILE) -> list[str]:
-    """Adds required questions the file doesn't answer to its last section, once each. Returns the new ones."""
+def add_questions(questions: list[str], profile_path: Path = PROFILE, answers: Optional[dict] = None) -> list[str]:
+    """Adds required questions the file doesn't answer to its last section, once each, with the answer when
+    there is one (a blank line it already has is filled in). Returns the new ones."""
+    answers = {" ".join(q.split()).rstrip(":?*. "): a for q, a in (answers or {}).items()}
     text = profile_path.read_text()
     head = "## Extra answers (questions applications asked that this file didn't cover)"
     have = {k for k in profile_fields(text)}
-    new = [q for q in dict.fromkeys(" ".join(q.split()).rstrip(":?*. ") for q in questions) if q.lower() not in have]
+    qs = list(dict.fromkeys(" ".join(q.split()).rstrip(":?*. ") for q in questions))
+    for q in qs:
+        if answers.get(q) and q.lower() in have:
+            text = re.sub(rf"(?m)^{re.escape(q)}:[ \t]*$", lambda m: f"{q}: {answers[q]}", text, count=1)
+    new = [q for q in qs if q.lower() not in have]
     if new:
         if head not in text:
             text = text.rstrip() + f"\n\n{head}\n"
-        text = text.rstrip() + "\n" + "\n".join(f"{q}:" for q in new) + "\n"
+        text = text.rstrip() + "\n" + "\n".join(f"{q}: {answers.get(q, '')}".rstrip() for q in new) + "\n"
+    if text != profile_path.read_text():
         profile_path.write_text(text)
     return new
+
+
+FILL_IN_PROMPT = """An internship application for {company} ({title}) has required questions the applicant's info file
+doesn't answer. Answer each one for them from the info file and résumé below, the way a sensible applicant
+would: a form label torn from its context (like "To", "From", "End date") is part of the education or
+availability section, so use the info file's dates (graduation, start date, available months); preference,
+yes/no and common questions get the obvious answer for this applicant. Write "unknown" only for a fact about
+their own life that nothing below gives and that can't be reasonably chosen for them.
+
+Questions:
+{questions}
+
+Info file:
+{profile}
+
+Résumé:
+{resume}
+
+Return JSON: {{"answers": {{"<question exactly as given>": "<answer or unknown>"}}}}"""
+
+
+def fill_in(questions: list[str], job: dict, profile: str, resume: str, ask: Callable) -> dict:
+    """{question: answer} for the questions Gemini could answer for the user; the rest are left out."""
+    try:
+        out = ask(FILL_IN_PROMPT.format(company=job["company"], title=job["title"], questions="\n".join(questions),
+                                        profile=profile, resume=resume)) or {}
+    except Exception:
+        return {}
+    got = out.get("answers") if isinstance(out, dict) else None
+    return {q: str(a).strip() for q, a in (got or {}).items()
+            if q in questions and str(a).strip() and str(a).strip().lower() != "unknown"}
 
 
 def info_sig() -> str:
@@ -645,19 +683,21 @@ class InternshipService:
                 job.update(status="closed", why="requires " + "; ".join(asks))
                 self.log(f"internships: skipped {job['company']} ({job['title'][:60]}), it requires " + "; ".join(asks))
                 return "skipped"
-            add_questions(asks)
+            # the crew answers what it can itself (the user doesn't want texts to edit the file)
+            filled = fill_in(asks, job, PROFILE.read_text(), resume_text(), ask) if asks else {}
+            add_questions(asks, PROFILE, answers=filled)
             st["info_sig"] = info_sig()                                  # the crew's own edit, not the user's
-            # stamped after the file is written, so adding the question doesn't count as the user answering it
-            job.update(status="needs_info", asked_at=self.clock(), missing=e.questions)
-            lines = []
-            if asks:
-                lines.append("it asks things your info file doesn't cover (" + "; ".join(q.rstrip(".") for q in asks[:5])
-                             + "). They're at the bottom of the file now: fill them in")
-            if files:
-                lines.append("it needs a file: " + "; ".join(q.rstrip(".") for q in files[:3])
-                             + (" (save it as transcript.pdf in the internships folder)" if any("transcript" in q.lower() for q in files) else ""))
-            self.notify(f"❓ {job['company']} ({job['title'][:60]}): " + ", and ".join(lines) + ", and I'll apply.")
-            return "needs_info"
+            left = [q for q in asks if q not in filled]
+            if not left and not files:
+                job["attempts"] -= 1                                     # answered now; it goes again next slot
+                job["status"] = "new"
+                self.log(f"internships: answered {len(filled)} new question(s) for {job['company']} myself")
+                return "answered"
+            job.update(status="manual", why="needs " + "; ".join((left + files)[:5]), missing=left + files)
+            need = "; ".join(q.rstrip(".") for q in (left + files)[:3])
+            self.notify(f"🔗 {job['company']}: {job['title'][:60]} asks something only you can answer ({need}). "
+                        f"Apply here: {job['url']}")
+            return "manual"
         except ia.Blocked as e:
             job.update(status="manual", why=str(e))
             self.notify(f"🔗 Couldn't submit {job['company']}: {job['title'][:60]} automatically ({e}). Apply here: {job['url']}")
