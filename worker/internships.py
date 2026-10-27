@@ -58,6 +58,8 @@ MANUAL_PER_DAY = 3
 AUTO = ("greenhouse", "ashby", "workday")   # application sites the Applicant can fill in
 REPLIES_EVERY = 600
 UPLOAD = re.compile(r"upload|attach|transcript|cover letter|portfolio|writing sample|\bcv\b", re.I)
+OFFLINE = re.compile(r"ERR_INTERNET_DISCONNECTED|ERR_NETWORK_CHANGED|ERR_NAME_NOT_RESOLVED|ServerNotFound|"
+                     r"ConnectionError|nodename nor servname|Network is unreachable")
 REPLY_HOURS = (7, 23)                # reply texts wait for the morning instead of buzzing at night
 NONE_KEYS = (("linkedin", "linkedin url"), ("github", "github url"), ("website", "personal website / portfolio url"), ("portfolio", "personal website / portfolio url"))  # form label word -> info-file line
 
@@ -655,6 +657,8 @@ class InternshipService:
             return "manual"
         except Exception as e:
             self.log(f"internships: {job['company']} failed: {e!r}")
+            if OFFLINE.search(repr(e)):                           # the Mac's Wi-Fi dropped: not the site's fault
+                job["attempts"] -= 1
             if job["attempts"] >= 2:
                 job.update(status="manual", why=f"failed twice ({type(e).__name__})")
             else:
