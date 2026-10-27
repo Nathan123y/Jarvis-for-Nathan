@@ -78,7 +78,10 @@ SEASONS = {
     "christmas": {"start": (10, 26), "end": (12, 14),
                   "products": ["tee", "crewneck", "hoodie", "mug", "ornament", "tumbler", "poster", "tote"],
                   "note": "a Christmas / holiday-season gift (ugly-sweater energy, holiday stress, family chaos, "
-                          "Santa, elves, reindeer, snowmen, gingerbread, gift-giving, winter break)"},
+                          "Santa, elves, reindeer, snowmen, gingerbread, gift-giving, winter break). Aim most designs "
+                          "at what people search for in December: a white elephant / Secret Santa gag gift, a gift for "
+                          "a coworker or boss, an ugly Christmas sweater party, a matching family or friend-group "
+                          "shirt; say which one in the title and tags"},
     "thanksgiving": {"start": (11, 1), "end": (11, 18),
                      "products": ["tee", "crewneck", "hoodie", "mug", "tote"],
                      "note": "Thanksgiving (turkey, pie, food coma, family dinner chaos, Friendsgiving, being thankful "
