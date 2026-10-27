@@ -30,7 +30,7 @@ PLUGIN = {
         "type": "OBJECT",
         "properties": {
             "action": {"type": "STRING", "enum": ["status", "replies", "pause", "resume", "go_live", "practice", "per_day", "open_info"]},
-            "value": {"type": "INTEGER", "description": "For per_day: applications a day (0-40)"},
+            "value": {"type": "INTEGER", "description": "For per_day: applications a day (0-100)"},
         },
         "required": [],
     },
@@ -105,9 +105,9 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
             return "Okay: the next application is filled in but not submitted, and I'll text you when it's ready to look at."
         if action == "per_day":
             try:
-                n = max(0, min(40, int(args.get("value"))))
+                n = max(0, min(wi.MAX_PER_DAY, int(args.get("value"))))
             except (TypeError, ValueError):
-                return "How many applications a day? Up to 40."
+                return f"How many applications a day? Up to {wi.MAX_PER_DAY}."
             save_plugin_config(wi.NS, {"per_day": n})
             return f"Okay, up to {n} applications a day."
         if action == "open_info":
