@@ -74,8 +74,10 @@ PRODUCTS = {
                     "colors": ("Black", "Canvas Red", "Forest"), "sizes": ("S", "M", "L", "XL", "2XL"), "fill": 0.9},
     "sweater_hoodie": {"name": "Hoodie", "blueprint": 77, "provider": 99, "profit": 10.0,
                        "colors": ("Black", "Red", "Navy", "Forest Green"), "sizes": ("S", "M", "L", "XL", "2XL"), "fill": 0.9},
-    "ugly_sweater": {"name": "Ugly Christmas Sweater", "blueprint": 1748, "provider": 332, "profit": 12.0,  # knit, printed all over
-                     "art": "sweater", "sizes": ("S", "M", "L", "XL", "2XL"), "match": {"depth": "Regular"}},
+    # printed all over (sleeves, cuffs, waistband); Printify photographs it on a person, unlike the knit sweater
+    # (blueprint 1748), whose only photo is the flat printing template
+    "ugly_sweater": {"name": "Ugly Christmas Sweater", "blueprint": 1023, "provider": 90, "profit": 12.0,
+                     "art": "sweater", "sizes": ("S", "M", "L", "XL", "2XL")},
 }
 SWEATER_PRODUCTS = ["ugly_sweater", "sweater_tee", "sweater_hoodie"]
 SWEATER_NOTE = """This one is an UGLY CHRISTMAS SWEATER design: the picture is always a Christmas tree with glowing
@@ -676,7 +678,8 @@ class Shop:
         holders = [{"position": pos, "images": [{"id": ups[pos], "x": 0.5, "y": 0.5, "scale": 1, "angle": 0}]}
                    for pos in _AREAS[kind]]
         desc = f"{rec['description']}\n\n{rec['slogan'].title()}." + \
-            ("\n\nA soft knit crew neck sweater printed all over: the lights and stitches are printed, not real. "
+            ("\n\nA lightweight crew neck sweatshirt printed all over, sleeves and cuffs included: the knit, the lights and "
+             "the stitches are printed, not real. "
              "Designed in our studio, then printed on demand and shipped by our production partner. "
              "Made for you after you order, so allow about two weeks.")
         body = {"title": listing_title(rec["title"], p["name"], title_max), "description": desc, "tags": rec["tags"],
