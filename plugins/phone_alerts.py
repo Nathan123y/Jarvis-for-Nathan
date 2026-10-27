@@ -55,7 +55,7 @@ PLUGIN_SETTINGS = {
         {"key": "loss_alert", "type": "text", "label": "Text me when a paper trade loses more than ($)", "placeholder": "500"},
         {"key": "canvas_hours", "type": "text", "label": "Warn about Canvas work due within (hours)", "placeholder": "3"},
         {"key": "calendar_minutes", "type": "text", "label": "Text me before calendar events (minutes)", "placeholder": "15"},
-        {"key": "morning_time", "type": "text", "label": "Morning text time (HH:MM)", "placeholder": "07:00"},
+        {"key": "morning_time", "type": "text", "label": "Morning text time (HH:MM, or per day: tue 09:00, mon 10:00, 12:00)", "placeholder": "07:00"},
         {"key": "trading_time", "type": "text", "label": "Weekday trading summary time (HH:MM)", "placeholder": "13:30"},
         {"key": "tonight_time", "type": "text", "label": "'Still due tonight' Canvas check time (HH:MM)", "placeholder": "20:00"},
         {"key": "weekly_time", "type": "text", "label": "Sunday recap time (HH:MM)", "placeholder": "18:00"},

@@ -247,6 +247,15 @@ class ScannerTests(_Base):
         self.assertEqual(s.alerts.flush(), "empty")
         self.assertEqual(s.morning(gather=gather), "")
 
+    def test_morning_text_time_can_differ_by_weekday(self):
+        from worker.alerts import _day_time
+        when = "tue 09:00, mon 10:00, wed 10:00, 12:00"
+        self.assertEqual(_day_time(when, 1, (7, 0)), (9, 0))
+        self.assertEqual(_day_time(when, 0, (7, 0)), (10, 0))
+        self.assertEqual(_day_time(when, 2, (7, 0)), (10, 0))
+        self.assertEqual(_day_time(when, 5, (7, 0)), (12, 0))
+        self.assertEqual(_day_time("07:00", 3, (8, 0)), (7, 0))
+
     def test_trading_summary_on_weekdays_after_the_close(self):
         s = self.scanner()
         summary = lambda: "Options: up $120 today."
