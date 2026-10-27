@@ -19,7 +19,7 @@ starts from "now" the first time, so turning this on never texts a backlog.
   bots       every pass   the options bots' nightly review, once it's written (weekdays ~1:35 PM)
   sales      every 10 min a new Gumroad sale
   fantasy    every 20 min an injury / status change on your teams, a starter who must be swapped out
-  morning    once a day   at morning_time: weather, calendar, Canvas, fantasy, packages, overnight news
+  morning    once a day   at morning_time (can differ by weekday): weather, calendar, Canvas, fantasy, packages, overnight news
   trading    weekdays     at trading_time: the day's paper results
   tonight    once a day   at tonight_time: Canvas work due later today
   weekly     Sundays      at weekly_time: trading, memecoins, sales, spending, workouts, grades, the week ahead
@@ -92,6 +92,23 @@ def _hhmm(value: str, default: tuple[int, int]) -> tuple[int, int]:
         return (h, m) if 0 <= h < 24 and 0 <= m < 60 else default
     except ValueError:
         return default
+
+
+DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def _day_time(value: str, weekday: int, default: tuple[int, int]) -> tuple[int, int]:
+    """A time that can differ by weekday: "tue 09:00, mon 10:00, wed 10:00, 12:00" (a bare time covers the
+    other days). A plain "07:00" still works."""
+    other = default
+    for part in str(value).split(","):
+        bits = part.split()
+        if len(bits) == 2 and bits[0].lower()[:3] in DAYS:
+            if DAYS.index(bits[0].lower()[:3]) == weekday:
+                return _hhmm(bits[1], default)
+        elif len(bits) == 1:
+            other = _hhmm(bits[0], default)
+    return other
 
 
 class Scanner:
@@ -303,7 +320,7 @@ class Scanner:
     def morning(self, gather=None, force: bool = False) -> str:
         cfg = self.cfg()
         now = datetime.fromtimestamp(self.clock())
-        h, m = _hhmm(cfg["morning_time"], (7, 0))
+        h, m = _day_time(cfg["morning_time"], now.weekday(), (7, 0))
         start = now.replace(hour=h, minute=m, second=0, microsecond=0)
         cur = self._cur()
         today = now.date().isoformat()
