@@ -668,7 +668,8 @@ class Shop:
         p = PRODUCTS[kind]
         ups = rec.setdefault("panel_uploads", {})
         with Image.open(rec["file"]) as art:
-            panels = sweater.panels(art.convert("RGBA"), {k: v for k, v in _AREAS[kind].items() if k not in ups})
+            panels = sweater.panels(art.convert("RGBA"), {k: v for k, v in _AREAS[kind].items() if k not in ups},
+                                    seed=int(re.sub(r"\D", "", rec["id"]) or 0))
         for pos, img in panels.items():
             buf = io.BytesIO()
             img.save(buf, "JPEG", quality=92)
@@ -895,7 +896,8 @@ class ShopService:
                     shop.make_design(only=st.get("make_only"))
                 elif holiday and not daily:
                     # each Christmas day starts with an ugly-sweater design (sweater, tee, hoodie)
-                    if season == "christmas" and holiday_today == 0:
+                    # (and its last one too: the user liked the line, 2026-10-26)
+                    if season == "christmas" and holiday_today in (0, cfg["holiday_per_day"] - 1):
                         shop.make_design(season=season, style="sweater")
                     else:
                         shop.make_design(only=SEASONS[season]["products"], season=season)

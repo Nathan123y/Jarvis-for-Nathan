@@ -18,6 +18,8 @@ GREEN = (40, 160, 70, 255)
 DARK_GREEN = (25, 110, 50, 255)
 GOLD = (250, 200, 50, 255)
 BLACK = (18, 18, 20, 255)
+# (body, accent) of the all-over sweater, picked per design so the line doesn't all look the same
+SCHEMES = [(BLACK, RED), ((22, 32, 74, 255), RED), ((105, 16, 30, 255), (30, 120, 60, 255)), (BLACK, (30, 120, 60, 255))]
 LIGHTS = {"warm": [(255, 225, 140)], "multi": [(255, 90, 90), (90, 200, 255), (255, 220, 90), (150, 255, 140), (255, 140, 230)]}
 STITCH = 24                       # pixels per knit stitch at print size
 
@@ -123,11 +125,11 @@ def design(slogan: str, seed: int, width: int = 3600):
     return canvas
 
 
-def _band(width: int, rows: int = 9):
+def _band(width: int, rows: int = 9, accent=RED):
     """A fair-isle band: red and white diamonds between two white rows, knitted."""
     from PIL import Image, ImageDraw
     s = STITCH * 2
-    img = Image.new("RGBA", (width, rows * s), RED)
+    img = Image.new("RGBA", (width, rows * s), accent)
     d = ImageDraw.Draw(img)
     d.rectangle([0, 0, width, s - 1], fill=WHITE)
     d.rectangle([0, (rows - 1) * s, width, rows * s], fill=WHITE)
@@ -140,34 +142,36 @@ def _band(width: int, rows: int = 9):
     return _knit(img, STITCH)
 
 
-def _stripes(size: tuple, stripe: int = 150):
+def _stripes(size: tuple, stripe: int = 150, accent=RED):
     from PIL import Image, ImageDraw
     img = Image.new("RGBA", size, WHITE)
     d = ImageDraw.Draw(img)
     for i, y in enumerate(range(0, size[1], stripe)):
         if i % 2 == 0:
-            d.rectangle([0, y, size[0], y + stripe - 1], fill=RED)
+            d.rectangle([0, y, size[0], y + stripe - 1], fill=accent)
     return _knit(img, STITCH)
 
 
-def _rib(size: tuple):
+def _rib(size: tuple, accent=RED):
     """Red ribbing: vertical knit ribs."""
     from PIL import Image, ImageDraw
-    img = Image.new("RGBA", size, RED)
+    img = Image.new("RGBA", size, accent)
     d = ImageDraw.Draw(img)
     for x in range(0, size[0], STITCH * 2):
-        d.rectangle([x, 0, x + 5, size[1]], fill=(160, 20, 30, 255))
+        d.rectangle([x, 0, x + 5, size[1]], fill=tuple(round(c * 0.8) for c in accent[:3]) + (255,))
     return img
 
 
-def panels(art, sizes: dict) -> dict:
-    """{position: RGB image the size of that print area}. sizes: {position: (w, h)} from the catalog."""
+def panels(art, sizes: dict, seed: int = 0) -> dict:
+    """{position: RGB image the size of that print area}. sizes: {position: (w, h)} from the catalog; seed picks
+    the colour scheme."""
     from PIL import Image
+    body, accent = SCHEMES[seed % len(SCHEMES)]
     out = {}
     for pos, (w, h) in sizes.items():
         if pos in ("front", "back"):
-            img = Image.new("RGBA", (w, h), BLACK)
-            band = _band(w)
+            img = Image.new("RGBA", (w, h), body)
+            band = _band(w, accent=accent)
             img.alpha_composite(band, (0, round(h * 0.05)))
             img.alpha_composite(band, (0, h - band.height - round(h * 0.03)))
             if pos == "front":
@@ -176,8 +180,8 @@ def panels(art, sizes: dict) -> dict:
                 a = art.resize((round(art.width * k), round(art.height * k)), Image.LANCZOS)
                 img.alpha_composite(a, ((w - a.width) // 2, round(h * 0.05) + band.height + round(h * 0.04)))
         elif "sleeve" in pos:
-            img = _stripes((w, h))
+            img = _stripes((w, h), accent=accent)
         else:                                                  # cuffs, collar, waistband
-            img = _rib((w, h))
+            img = _rib((w, h), accent)
         out[pos] = img.convert("RGB")
     return out
