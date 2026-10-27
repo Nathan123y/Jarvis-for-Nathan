@@ -81,7 +81,7 @@ PRODUCTS = {
 }
 SWEATER_PRODUCTS = ["ugly_sweater", "sweater_tee", "sweater_hoodie"]
 SWEATER_NOTE = """This one is an UGLY CHRISTMAS SWEATER design: the picture is always a Christmas tree with glowing
-lights (drawn for you), so only the words matter. The slogan is a short, punchy pun of 2-5 words that plays on
+lights (drawn for you), so only the words matter. The slogan is a short, punchy pun of 2-4 words (never a sentence) that plays on
 lights, trees, being lit, ornaments, tinsel, Santa or the season, in the spirit of "GET LIT" but your own. Put
 "ugly christmas sweater" in the title and tags; image_prompt can just be "christmas tree"."""
 # Holiday lines: while a season runs, one extra design a day is made for it, on the products that sell for it.
@@ -405,6 +405,13 @@ def order_update(order: dict, items: str, channel: str) -> Optional[str]:
 GARMENT_WORDS = re.compile(r"\b(?:t-?shirts?|tees?|shirts?|tops?)\b", re.I)
 
 
+def sweater_title(title: str) -> str:
+    """The sweater line's search words up front ("Ugly Christmas Sweater" is what people type), in title case."""
+    rest = re.sub(r"\bugly\s+christmas\s+sweat(?:er|\s*shirt)s?\b|\bsweat\s*shirts?\b|\bsweaters?\b", " ", title, flags=re.I)
+    words = [w if any(c.isupper() for c in w[1:]) else w[:1].upper() + w[1:] for w in rest.split()]
+    return " ".join(["Ugly Christmas Sweater"] + words)[:110]
+
+
 def listing_title(base: str, product: str, limit: int) -> str:
     """'<title> <product>' within the channel's limit, cut at a word so the product name always fits. The idea's
     title often says "Shirt" or "Tee" anyway: dropped, so a mug isn't sold as a "Christmas Shirt ... Mug"."""
@@ -582,6 +589,8 @@ class Shop:
                 shop_agents.save(nb, self.nb_path)
         else:
             raise RuntimeError(f"no usable idea in three tries ({last_error})")
+        if style == "sweater":
+            idea["title"] = sweater_title(idea["title"])
         from PIL import Image
         stamp = datetime.fromtimestamp(self.clock()).strftime("%Y%m%d-%H%M%S")
         self.art_dir.mkdir(parents=True, exist_ok=True)

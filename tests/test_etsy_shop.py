@@ -416,6 +416,11 @@ class EtsyPhotoTests(_Base):
         self.assertEqual(body["title"].lower().count("ugly christmas sweater"), 1)
         self.assertGreater(prod["price"], 3100)
 
+    def test_sweater_titles_lead_with_the_search_words(self):
+        self.assertEqual(ws.sweater_title("funny christmas sweater shirt sarcastic holiday sweatshirt xmas gift"),
+                         "Ugly Christmas Sweater Funny Christmas Shirt Sarcastic Holiday Xmas Gift")
+        self.assertEqual(ws.sweater_title("Funny Ugly Christmas Sweat Shirt Gag Gift"), "Ugly Christmas Sweater Funny Gag Gift")
+
     def test_listing_id_and_a_stale_approval_is_refused(self):
         from worker import etsy_api
         self.assertEqual(etsy_api.listing_id("https://www.etsy.com/listing/4602580828/funny"), "4602580828")
