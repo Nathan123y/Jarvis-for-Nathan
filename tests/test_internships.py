@@ -79,6 +79,9 @@ class ReplyTests(unittest.TestCase):
         self.assertEqual(wi.classify("Your CodeSignal assessment", "")[0], "coding test")
         self.assertEqual(wi.classify("Your application", "Unfortunately we will not be moving forward")[0], "rejection")
         self.assertEqual(wi.classify("Thank you for applying to Muon Space", "")[0], "received")
+        self.assertEqual(wi.classify("Marvell | Application Confirmation | Silicon Validation Intern",
+                                     "Next steps: if selected for an interview we'll contact you")[0], "received")
+        self.assertEqual(wi.classify("Interview invitation", "thank you for applying")[0], "interview")
         self.assertIsNone(wi.classify("Security code for your application", "")[1])
 
     def test_company_match(self):

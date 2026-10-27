@@ -100,6 +100,7 @@ EXTRA_PHOTOS = {"tee": ("person-1", "person-2", "lifestyle", "hanging-1", "duo")
                 "hoodie": ("person-1", "person-2", "lifestyle", "duo"), "tank": ("person-1", "person-2", "lifestyle"),
                 "mug": (),
                 "sticker": ("context-1", "context-2")}
+MAX_MOCKUPS = 7                     # kinds not listed above get every other angle, up to this many
 DEFAULTS = {"enabled": True, "designs_per_day": 1, "time": "06:00",  # live before the 7 AM text
             "products": ["tee", "hoodie", "tank", "shorts", "pants", "hat", "mug",    # the user's lineup (2026-10-24): no stickers
                          "crewneck", "poster", "phone", "tote"],                    # added 2026-10-26
@@ -640,9 +641,14 @@ class Shop:
                 design_closeup(Path(rec["file"]), closeup, detail=detail)
             if closeup.exists():
                 saved.append(str(closeup))
-        for cam in EXTRA_PHOTOS.get(kind, ()):
-            img = next((i for i in images if i["src"].endswith(f"camera_label={cam}")
-                        and (first is None or first in i.get("variant_ids", []))), None)
+        mine = [i for i in images if first is None or first in i.get("variant_ids", [])]
+        labels = [m.group(1) for i in mine if (m := re.search(r"camera_label=([\w-]+)$", i["src"]))]
+        # the chosen shots, or for a kind without a list every other angle Printify rendered (not the main
+        # photo, which Etsy already has), up to Etsy's 10 with Printify's own and the two close-ups
+        cams = list(EXTRA_PHOTOS[kind]) if kind in EXTRA_PHOTOS else \
+            [c for c in dict.fromkeys(labels) if labels and c != labels[0]]
+        for cam in cams[:MAX_MOCKUPS]:
+            img = next((i for i in mine if i["src"].endswith(f"camera_label={cam}")), None)
             if not img:
                 continue
             dest = folder / f"{rec['id']}-{kind}-{cam}.jpg"
@@ -930,9 +936,30 @@ class ShopService:
                 v.update(kv)
         save_state(st, shop.state_path)
 
+    def more_photos(self, shop: "Shop", limit: int = 10) -> None:
+        """Products listed before every angle was saved (only the two close-ups) get the angles Printify
+        still has, once each."""
+        st = load_state(shop.state_path)
+        n = 0
+        for rec in st["designs"]:
+            for kind, prod in rec.get("products", {}).items():
+                if n >= limit or prod.get("photos_added") or prod.get("photos_checked") or len(prod.get("extra_photos") or []) > 2:
+                    continue
+                n += 1
+                try:
+                    p = shop.c.printify("GET", f"shops/{prod['shop']}/products/{prod['id']}.json")
+                except Exception:
+                    continue
+                prod["extra_photos"] = list(dict.fromkeys((prod.get("extra_photos") or []) +
+                                                          shop.save_photos(rec, kind, p.get("images") or [])))
+                prod["photos_checked"] = True
+        if n:
+            save_state(st, shop.state_path)
+
     def etsy_photos(self, shop: "Shop") -> None:
         """Add the saved extra photos to each Etsy listing, once Jarvis is connected to Etsy itself."""
         from worker import etsy_api
+        self.more_photos(shop)
         if not etsy_api.connected():
             return
         st = load_state(shop.state_path)

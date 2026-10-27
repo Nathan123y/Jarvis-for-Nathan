@@ -384,6 +384,17 @@ class EtsyPhotoTests(_Base):
             svc.etsy_photos(s)
         self.assertEqual(sorted(uploads), ["100", "200", "300"])
 
+    def test_a_kind_without_a_shot_list_saves_every_other_angle(self):
+        s = self.shop(FakeClients(shops=[{"id": 9, "sales_channel": "etsy"}]))
+        rec = s.make_design()
+        imgs = [{"src": f"https://x/m.jpg?camera_label={c}", "variant_ids": [1]}
+                for c in ("front", "front-2", "close-up", "context-1", "front")]
+        with patch("requests.get", lambda *a, **k: type("R", (), {"status_code": 200, "content": b"x" * 6000})()):
+            saved = s.save_photos(rec, "poster", imgs)
+            self.assertEqual([Path(p).name.split("poster-")[-1] for p in saved if "-poster-" in p],
+                             ["front-2.jpg", "close-up.jpg", "context-1.jpg"])
+            self.assertFalse([p for p in s.save_photos(rec, "mug", imgs) if "-mug-" in p])   # side views left out
+
     def test_listing_id_and_a_stale_approval_is_refused(self):
         from worker import etsy_api
         self.assertEqual(etsy_api.listing_id("https://www.etsy.com/listing/4602580828/funny"), "4602580828")

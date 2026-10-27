@@ -71,6 +71,9 @@ OTHER = re.compile(r"software|firmware|embedded|machine learning|\bml\b|\bai\b|d
                    r"finance|sales|recruit|design intern - ux|ux|ui\b", re.I)
 REQUIRED_KEYS = ("first name", "last name", "email", "phone", "city", "graduation month and year", "gpa",
                  "authorized to work in the us for any employer", "will you need visa sponsorship now or in the future")
+CONFIRMATION = re.compile(r"received your application|thank you for (?:applying|your application|your interest)|"
+                          r"application (?:was )?received|application (?:confirmation|submitted)|"
+                          r"confirm(?:ation of|ing) your application", re.I)
 REPLY_KINDS = (                      # first match wins
     ("security", re.compile(r"security code|verification code|verify your email", re.I), None),
     ("interview", re.compile(r"interview|schedule a (?:call|time|chat)|availability|next steps?|phone screen|recruiter call", re.I),
@@ -79,7 +82,7 @@ REPLY_KINDS = (                      # first match wins
      "🧪 {company} sent an assessment / coding test"),
     ("rejection", re.compile(r"unfortunately|not (?:be )?moving forward|other candidates|decided to|not selected|regret", re.I),
      "❌ {company} said no this time"),
-    ("received", re.compile(r"received your application|thank you for (?:applying|your application|your interest)|application (?:was )?received", re.I),
+    ("received", CONFIRMATION,
      "📨 {company} confirmed they got your application"),
 )
 
@@ -369,7 +372,11 @@ def director_emails(st: dict, service) -> list[str]:
 # ── Inbox watcher ────────────────────────────────────────────────────────────
 def classify(subject: str, snippet: str) -> tuple[str, Optional[str]]:
     text = f"{subject} {snippet}"
+    confirming = CONFIRMATION.search(text)
     for kind, rx, line in REPLY_KINDS:
+        # a confirmation's body talks about "next steps" and interviews to come; only its subject counts
+        if confirming and kind in ("interview", "coding test") and not rx.search(subject):
+            continue
         if rx.search(text):
             return kind, line
     return "other", "✉️ {company} emailed you about your application"
