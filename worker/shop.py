@@ -69,7 +69,19 @@ PRODUCTS = {
     "ornament": {"name": "Christmas Ornament", "blueprint": 1599, "provider": 99, "profit": 6.0,    # ceramic, 4 shapes
                  "fill": 0.92},
     "tumbler": {"name": "Tumbler", "blueprint": 353, "provider": 1, "profit": 7.0, "fill": 0.8},   # 20oz
+    # the ugly-sweater line (2026-10-26, from the user's "GET LIT" photo): its art is light on dark, so dark garments
+    "sweater_tee": {"name": "T-Shirt", "blueprint": 12, "provider": 99, "profit": 8.0,
+                    "colors": ("Black", "Canvas Red", "Forest"), "sizes": ("S", "M", "L", "XL", "2XL"), "fill": 0.9},
+    "sweater_hoodie": {"name": "Hoodie", "blueprint": 77, "provider": 99, "profit": 10.0,
+                       "colors": ("Black", "Red", "Navy", "Forest Green"), "sizes": ("S", "M", "L", "XL", "2XL"), "fill": 0.9},
+    "ugly_sweater": {"name": "Ugly Christmas Sweater", "blueprint": 1748, "provider": 332, "profit": 12.0,  # knit, printed all over
+                     "art": "sweater", "sizes": ("S", "M", "L", "XL", "2XL"), "match": {"depth": "Regular"}},
 }
+SWEATER_PRODUCTS = ["ugly_sweater", "sweater_tee", "sweater_hoodie"]
+SWEATER_NOTE = """This one is an UGLY CHRISTMAS SWEATER design: the picture is always a Christmas tree with glowing
+lights (drawn for you), so only the words matter. The slogan is a short, punchy pun of 2-5 words that plays on
+lights, trees, being lit, ornaments, tinsel, Santa or the season, in the spirit of "GET LIT" but your own. Put
+"ugly christmas sweater" in the title and tags; image_prompt can just be "christmas tree"."""
 # Holiday lines: while a season runs, one extra design a day is made for it, on the products that sell for it.
 # (start, end) are (month, day); the end leaves time to ship before the holiday. Two lines running at once
 # take turns, a day each. Halloween is left out this
@@ -171,6 +183,7 @@ use a meme or slang phrase that's been big online in the last few months instead
 # ── small pieces ─────────────────────────────────────────────────────────────
 # Printify's catalog answers "Too Many Attempts" when every pass asks again; a product's variants don't change
 _VARIANTS: dict = {}
+_AREAS: dict = {}                    # kind -> {print position: (w, h)}, for the all-over-print sweater
 
 
 def season_for(day) -> Optional[str]:
@@ -393,7 +406,8 @@ GARMENT_WORDS = re.compile(r"\b(?:t-?shirts?|tees?|shirts?|tops?)\b", re.I)
 def listing_title(base: str, product: str, limit: int) -> str:
     """'<title> <product>' within the channel's limit, cut at a word so the product name always fits. The idea's
     title often says "Shirt" or "Tee" anyway: dropped, so a mug isn't sold as a "Christmas Shirt ... Mug"."""
-    base = " ".join(GARMENT_WORDS.sub(" ", base).split()).strip(" ,-|&")
+    base = re.sub(rf"\b{re.escape(product)}\b", " ", GARMENT_WORDS.sub(" ", base), flags=re.I)   # said once, at the end
+    base = " ".join(base.split()).strip(" ,-|&")
     room = limit - len(product) - 1
     if len(base) > room:
         base = base[:room].rsplit(" ", 1)[0].rstrip(" ,-|&")
@@ -505,6 +519,8 @@ class Shop:
             opts = v.get("options") or {}
             if "colors" in p and opts.get("color") not in p["colors"]:
                 continue
+            if any(opts.get(k) != want for k, want in (p.get("match") or {}).items()):
+                continue
             size = opts.get("size") or title.split(" / ")[-1]
             if "sizes" in p and size not in p["sizes"] and not any(title.startswith(s) for s in p["sizes"]):
                 continue
@@ -515,6 +531,7 @@ class Shop:
         if not chosen:
             raise RuntimeError(f"no {p['name']} variants matched")
         front = next(ph for ph in chosen[0]["placeholders"] if ph["position"] == p.get("position", "front"))
+        _AREAS[kind] = {ph["position"]: (ph["width"], ph["height"]) for ph in chosen[0]["placeholders"]}
         self._variants[kind] = ([v["id"] for v in chosen][:100], (front["width"], front["height"]))
         return self._variants[kind]
 
@@ -535,7 +552,8 @@ class Shop:
         return text
 
     # one design, start to finish
-    def make_design(self, only: Optional[list] = None, spinoff: Optional[str] = None, season: Optional[str] = None) -> dict:
+    def make_design(self, only: Optional[list] = None, spinoff: Optional[str] = None, season: Optional[str] = None,
+                    style: Optional[str] = None) -> dict:
         """only: the product kinds this design goes on (e.g. ["tee"]); None means the usual set. spinoff: the id of a winning
         design to riff on instead of today's trends."""
         from worker import shop_agents
@@ -547,6 +565,9 @@ class Shop:
         notes = shop_agents.designer_notes(nb, parent)
         if season:
             notes = SEASON_NOTE.format(name=season.title(), note=SEASONS[season]["note"]) + "\n\n" + notes
+        if style == "sweater":
+            notes = SWEATER_NOTE + "\n\n" + notes
+            only = only or SWEATER_PRODUCTS
         last_error = None
         for _ in range(3):                                      # a refused idea gets another try
             try:
@@ -560,14 +581,18 @@ class Shop:
         else:
             raise RuntimeError(f"no usable idea in three tries ({last_error})")
         from PIL import Image
-        raw = self.c.draw(idea["image_prompt"])
-        art = cut_background(Image.open(io.BytesIO(raw)))
-        design = compose(art, idea["slogan"])
         stamp = datetime.fromtimestamp(self.clock()).strftime("%Y%m%d-%H%M%S")
         self.art_dir.mkdir(parents=True, exist_ok=True)
         path = self.art_dir / f"{stamp}.png"
+        if style == "sweater":
+            from worker import sweater
+            design = sweater.design(idea["slogan"] or idea["title"][:30], seed=int(self.clock()))
+        else:
+            raw = self.c.draw(idea["image_prompt"])
+            art = cut_background(Image.open(io.BytesIO(raw)))
+            design = compose(art, idea["slogan"])
+            (self.art_dir / f"{stamp}-raw.jpg").write_bytes(raw)
         design.save(path, "PNG", optimize=True)
-        (self.art_dir / f"{stamp}-raw.jpg").write_bytes(raw)
         rec = {"id": stamp, **idea, "file": str(path), "size": list(design.size), "made": self.clock(), "products": {}}
         if only:
             rec["only"] = list(only)
@@ -575,6 +600,8 @@ class Shop:
             rec["spinoff_of"] = parent["id"]
         if season:
             rec["season"] = season
+        if style:
+            rec["style"] = style
         st["designs"].append(rec)
         save_state(st, self.state_path)
         self.log(f"shop: designed '{idea['title']}' ({idea['slogan']})")
@@ -611,6 +638,8 @@ class Shop:
         art_size = rec["size"]
         if p.get("art") == "slogan":
             image_id, art_size = self.upload_slogan(rec)
+        if p.get("art") == "sweater":
+            return self.create_sweater(rec, kind, shop_id, ids, title_max)
         images = placements(kind, image_id, art_size, (pw, ph))
         title = listing_title(rec["title"], p["name"], title_max)
         desc = (f"{rec['description']}\n\n{rec['slogan'].title()}." if rec.get("slogan") else rec["description"]) + \
@@ -628,6 +657,39 @@ class Shop:
         if priced and all(v.get("cost") for v in product["variants"] if v["id"] in ids):
             self.c.printify("PUT", f"shops/{shop_id}/products/{product['id']}.json", {"variants": priced})
         return {"id": product["id"], "shop": shop_id, "price": min((v["price"] for v in priced), default=2999),
+                "published": False, "extra_photos": extra}
+
+    def create_sweater(self, rec: dict, kind: str, shop_id: int, ids: list, title_max: int) -> dict:
+        """The all-over-print sweater: every panel (front, back, sleeves, cuffs, collar, waistband) is its own image."""
+        from PIL import Image
+        from worker import sweater
+        p = PRODUCTS[kind]
+        ups = rec.setdefault("panel_uploads", {})
+        with Image.open(rec["file"]) as art:
+            panels = sweater.panels(art.convert("RGBA"), {k: v for k, v in _AREAS[kind].items() if k not in ups})
+        for pos, img in panels.items():
+            buf = io.BytesIO()
+            img.save(buf, "JPEG", quality=92)
+            up = self.c.printify("POST", "uploads/images.json", {"file_name": f"{rec['id']}-{pos}.jpg",
+                                                                 "contents": base64.b64encode(buf.getvalue()).decode()})
+            ups[pos] = up["id"]
+        holders = [{"position": pos, "images": [{"id": ups[pos], "x": 0.5, "y": 0.5, "scale": 1, "angle": 0}]}
+                   for pos in _AREAS[kind]]
+        desc = f"{rec['description']}\n\n{rec['slogan'].title()}." + \
+            ("\n\nA soft knit crew neck sweater printed all over: the lights and stitches are printed, not real. "
+             "Designed in our studio, then printed on demand and shipped by our production partner. "
+             "Made for you after you order, so allow about two weeks.")
+        body = {"title": listing_title(rec["title"], p["name"], title_max), "description": desc, "tags": rec["tags"],
+                "blueprint_id": p["blueprint"], "print_provider_id": p["provider"],
+                "variants": [{"id": i, "price": 5999, "is_enabled": True} for i in ids],
+                "print_areas": [{"variant_ids": ids, "placeholders": holders}]}
+        product = self.c.printify("POST", f"shops/{shop_id}/products.json", body)
+        extra = self.save_photos(rec, kind, product.get("images") or [])
+        priced = [{"id": v["id"], "price": price_for(int(v.get("cost") or 0), p["profit"]), "is_enabled": True}
+                  for v in product.get("variants") or [] if v["id"] in ids]
+        if priced and all(v.get("cost") for v in product["variants"] if v["id"] in ids):
+            self.c.printify("PUT", f"shops/{shop_id}/products/{product['id']}.json", {"variants": priced})
+        return {"id": product["id"], "shop": shop_id, "price": min((v["price"] for v in priced), default=5999),
                 "published": False, "extra_photos": extra}
 
     def save_photos(self, rec: dict, kind: str, images: list) -> list:
@@ -829,7 +891,11 @@ class ShopService:
                 elif queued:
                     shop.make_design(only=st.get("make_only"))
                 elif holiday and not daily:
-                    shop.make_design(only=SEASONS[season]["products"], season=season)
+                    # each Christmas day starts with an ugly-sweater design (sweater, tee, hoodie)
+                    if season == "christmas" and holiday_today == 0:
+                        shop.make_design(season=season, style="sweater")
+                    else:
+                        shop.make_design(only=SEASONS[season]["products"], season=season)
                 else:                                      # the daily design: every other one riffs on a winner, if there is one
                     win = shop_agents.next_spinoff(shop_agents.load(shop.nb_path), bool(st.get("last_was_spinoff")),
                                                    int(st.get("spinoffs_made") or 0))
