@@ -57,12 +57,12 @@ class FakeClients:
                                   "placeholders": [{"position": "front", "width": 2475, "height": 1155}]},
                                  {"id": 11, "title": "15oz", "options": {"size": "15oz"},
                                   "placeholders": [{"position": "front", "width": 2475, "height": 1155}]}]}
-        if path.startswith("catalog/blueprints/1748/"):
+        if path.startswith("catalog/blueprints/1023/"):
             areas = [{"position": pos, "width": w, "height": h} for pos, w, h in
                      (("front", 2601, 2611), ("back", 2612, 2662), ("right_sleeve", 2023, 2370), ("left_sleeve", 2023, 2370),
                       ("collar", 2267, 228), ("waistband", 5818, 575))]
-            return {"variants": [{"id": 1748 * 10 + i, "title": f"{size} / {depth}", "options": {"size": size, "depth": depth},
-                                  "placeholders": areas} for i, (size, depth) in enumerate((("M", "Regular"), ("M", "Plus")))]}
+            return {"variants": [{"id": 1023 * 10 + i, "title": size, "options": {"size": size},
+                                  "placeholders": areas} for i, size in enumerate(("M", "3XL"))]}
         if path.startswith("catalog/blueprints/400/"):
             return {"variants": [{"id": 20, "title": '3" × 3" / White', "options": {"size": '3" × 3"'},
                                   "placeholders": [{"position": "front", "width": 559, "height": 559}]}]}
@@ -78,7 +78,7 @@ class FakeClients:
             return {"id": f"img{len([c for c in self.calls if c[1] == 'uploads/images.json'])}"}
         if method == "POST" and path.endswith("/products.json"):
             self.next_id += 1
-            costs = {1748: 3100, 12: 1129, 478: 503, 400: 158, 77: 2150, 39: 1050, 1574: 2290, 1588: 2340, 1128: 1490}
+            costs = {1023: 3100, 12: 1129, 478: 503, 400: 158, 77: 2150, 39: 1050, 1574: 2290, 1588: 2340, 1128: 1490}
             return {"id": f"p{self.next_id}", "variants": [{"id": v["id"], "cost": costs[body["blueprint_id"]]}
                                                           for v in body["variants"]]}
         if "/orders.json" in path:
@@ -409,7 +409,7 @@ class EtsyPhotoTests(_Base):
         self.assertEqual(rec["only"], ws.SWEATER_PRODUCTS)
         prod = s.create(rec, "ugly_sweater", 9, "unused")
         body = next(b for m, p, b in c.calls if m == "POST" and p.endswith("/products.json"))
-        self.assertEqual([v["id"] for v in body["variants"]], [17480])                     # Regular only
+        self.assertEqual([v["id"] for v in body["variants"]], [10230])                       # the chosen sizes only
         self.assertEqual({h["position"] for h in body["print_areas"][0]["placeholders"]},
                          {"front", "back", "right_sleeve", "left_sleeve", "collar", "waistband"})
         self.assertTrue(body["title"].endswith("Ugly Christmas Sweater"))
