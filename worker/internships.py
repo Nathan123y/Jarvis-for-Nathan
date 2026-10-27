@@ -51,6 +51,7 @@ DIRECTOR_QUERY = ("from:(universitycomm@sjsu.edu OR electrical.engineering@sjsu.
 NS = "internships"
 FEED = "https://raw.githubusercontent.com/SimplifyJobs/Summer2027-Internships/dev/.github/scripts/listings.json"
 TERM = "Summer 2027"
+MAX_PER_DAY = 100                    # tries still stay 10 minutes apart, so ~100 is as fast as it goes
 DEFAULTS = {"enabled": True, "per_day": 5, "start": "06:00", "end": "21:00", "practice": True}
 SCOUT_AT = (5, 45)                   # before the first application of the day
 DIGEST_AT = (8, 0)                   # the morning "apply to these yourself" text
@@ -97,7 +98,7 @@ def settings() -> dict:
     out = dict(DEFAULTS)
     out.update({k: v for k, v in stored.items() if k in DEFAULTS and v not in (None, "")})
     try:
-        out["per_day"] = max(0, min(40, int(out["per_day"])))
+        out["per_day"] = max(0, min(MAX_PER_DAY, int(out["per_day"])))
     except (TypeError, ValueError):
         out["per_day"] = DEFAULTS["per_day"]
     return out
@@ -436,12 +437,14 @@ def check_replies(st: dict, service, notify: Callable[[str], None]) -> int:
         return 0
     names = sorted({j["company"] for j in applied})
     # the account emails Workday sends while applying (verify your account, security codes) aren't replies
-    q = ("newer_than:3d -from:me -from:otp.workday.com -category:promotions -category:social ("
-         + " OR ".join(f'"{n}"' for n in names[:40]) + ")")
+    # 40 names a search, so every company is looked for however many there are
+    qs = ["newer_than:3d -from:me -from:otp.workday.com -category:promotions -category:social ("
+          + " OR ".join(f'"{n}"' for n in names[i:i + 40]) + ")" for i in range(0, len(names), 40)]
     api = service.users().messages()
     seen = set(st["replies_seen"])
     n = 0
-    for m in api.list(userId="me", q=q, maxResults=25).execute().get("messages", []):
+    found = [m for q in qs for m in api.list(userId="me", q=q, maxResults=25).execute().get("messages", [])]
+    for m in found:
         if m["id"] in seen:
             continue
         seen.add(m["id"])
