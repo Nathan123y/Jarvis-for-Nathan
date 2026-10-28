@@ -95,7 +95,8 @@ class _Base(unittest.TestCase):
 
     def shop(self, clients, **cfg):
         fetch = cfg.pop("trends_fetch", None)
-        settings = dict(ws.DEFAULTS, **{"products": ["tee", "mug", "sticker"], **cfg})   # the original three, unless a test says
+        settings = dict(ws.DEFAULTS, **{"products": ["tee", "mug", "sticker"],   # the original three, unless a test says
+                                        "etsy_per_day": 99, "etsy_holiday_only": False, "etsy_products": [], **cfg})
         return ws.Shop(clients, state_path=self.dir / "s.json", art_dir=self.dir / "art", cfg=lambda: settings,
                        log=lambda m: None, notify=lambda k, t: self.sent.append((k, t)), clock=lambda: 1_792_900_000,
                        trends_fetch=fetch or (lambda: {}), notebook_path=self.dir / "notebook.json")
@@ -189,6 +190,25 @@ class ListingTests(_Base):
         self.assertFalse([p for m, p, b in c.calls if p.startswith("shops/3/")])           # not a sales channel
         rec = ws.load_state(self.dir / "s.json")["designs"][0]
         self.assertEqual(set(rec["channels"]["ebay"]), {"tee", "mug", "sticker"})
+
+    def test_etsy_gets_one_holiday_design_a_day_on_its_products_ebay_stops_at_its_free_limit(self):
+        c = FakeClients(shops=[{"id": 9, "sales_channel": "etsy"}, {"id": 5, "sales_channel": "ebay"},
+                               {"id": 7, "sales_channel": "printify_pop_up"}])
+        s = self.shop(c, etsy_per_day=1, etsy_holiday_only=True, etsy_products=["tee", "mug"], ebay_max=4)
+        s.make_design()                                   # an everyday design: not for Etsy
+        s.make_design(season="christmas")                 # the day's holiday pick
+        s.make_design(season="christmas")                 # a second one: over Etsy's one a day
+        s.list_pending()
+        posts = lambda shop: [b for m, p, b in c.calls if m == "POST" and p == f"shops/{shop}/products.json"]
+        self.assertEqual(len(posts(9)), 2)                # tee + mug of the first holiday design, no sticker
+        self.assertEqual(len(posts(5)), 4)                # eBay stops at its limit
+        self.assertEqual(len(posts(7)), 9)                # the Pop-Up Store gets everything
+        designs = ws.load_state(self.dir / "s.json")["designs"]
+        self.assertEqual([d["etsy"] for d in designs], [False, True, False])
+        self.assertEqual(len([t for k, t in self.sent if "free limit" in t]), 1)
+        s.list_pending()                                  # nothing more, and no second text
+        self.assertEqual((len(posts(9)), len(posts(5))), (2, 4))
+        self.assertEqual(len([t for k, t in self.sent if "free limit" in t]), 1)
 
     def test_a_failing_channel_does_not_hold_up_the_other(self):
         c = FakeClients(shops=[{"id": 9, "sales_channel": "etsy"}, {"id": 5, "sales_channel": "ebay"}])

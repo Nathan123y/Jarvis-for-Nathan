@@ -107,8 +107,10 @@ SEASONS = {
 SEASON_NOTE = """This design is for the shop's {name} line: make it about {note}. Same voice: funny, edgy,
 meme-literate and giftable, not a generic greeting card. Put the holiday in the title and tags (e.g. "funny
 christmas shirt", "christmas gift for coworker", "ugly christmas sweater")."""
-# Sales channels connected in Printify that every design is listed on. eBay titles stop at 80 characters.
-CHANNELS = {"etsy": {"name": "Etsy", "title_max": 140}, "ebay": {"name": "eBay", "title_max": 80}}
+# Sales channels connected in Printify that designs are listed on. eBay titles stop at 80 characters. The
+# Printify Pop-Up Store charges nothing to list, so it gets every design and comes first on the site's buy links.
+CHANNELS = {"popup": {"name": "our shop", "title_max": 140}, "etsy": {"name": "Etsy", "title_max": 140},
+            "ebay": {"name": "eBay", "title_max": 80}}
 # Printify renders dozens of product photos but sends Etsy one or two, and only says what they are when the
 # product is created; these are saved then, for the listing (once Jarvis can reach Etsy) and the storefront.
 # Left out: the folded shirt (it hides the design) and the mug scenes (they look at the side of the mug,
@@ -122,6 +124,12 @@ DEFAULTS = {"enabled": True, "designs_per_day": 1, "time": "06:00",  # live befo
             "products": ["tee", "hoodie", "tank", "shorts", "pants", "hat", "mug",    # the user's lineup (2026-10-24): no stickers
                          "crewneck", "poster", "phone", "tote"],                    # added 2026-10-26
             "holiday_per_day": 1,                # extra designs a day for the running holiday line (0 = none)
+            # Etsy charges $0.20 a listing (2026-10-27, user: keep it to ~$0.80 a day): one holiday design a day,
+            # on the products that sell for the holidays. 0 a day = nothing new on Etsy.
+            "etsy_per_day": 1, "etsy_holiday_only": True,
+            "etsy_products": ["ugly_sweater", "sweater_tee", "sweater_hoodie", "tee", "hoodie", "mug"],
+            # eBay lists 250 a month free, and its listings renew monthly against that, so live listings stay under it
+            "ebay_max": 250,
             "video_times": ""}                 # e.g. "11:00,15:00,19:00", one video at each; empty = no videos (off: user prefers the photos)
 
 BLOCKED = re.compile(r"(?<![a-z])(" + "|".join([
@@ -211,6 +219,11 @@ def settings() -> dict:
         out["holiday_per_day"] = max(0, min(3, int(out["holiday_per_day"])))
     except (TypeError, ValueError):
         out["holiday_per_day"] = DEFAULTS["holiday_per_day"]
+    for key in ("etsy_per_day", "ebay_max"):
+        try:
+            out[key] = max(0, int(out[key]))
+        except (TypeError, ValueError):
+            out[key] = DEFAULTS[key]
     return out
 
 
@@ -497,12 +510,26 @@ class Shop:
 
     # which Printify stores are connected to which sales channel
     def stores(self) -> dict:
-        """{"etsy": store, "ebay": store} for the channels connected in Printify."""
+        """{"etsy": store, "ebay": store, "popup": store} for the channels connected in Printify."""
         out = {}
         for shop in self.c.printify("GET", "shops.json"):
-            if shop.get("sales_channel") in CHANNELS:
-                out.setdefault(shop["sales_channel"], shop)
+            channel = str(shop.get("sales_channel") or "")
+            if "pop" in channel.lower():                  # the Pop-Up Store
+                channel = "popup"
+            if channel in CHANNELS:
+                out.setdefault(channel, shop)
         return out
+
+    def on_etsy(self, rec: dict, st: dict) -> bool:
+        """Whether a design goes on Etsy: the first holiday design (or winner spin-off) of each day, up to
+        etsy_per_day. Decided once per design and kept."""
+        if "etsy" not in rec:
+            cfg = self.cfg()
+            day = datetime.fromtimestamp(rec["made"]).date()
+            picked = sum(1 for d in st["designs"] if d.get("etsy") and datetime.fromtimestamp(d["made"]).date() == day)
+            wanted = bool(rec.get("season") or rec.get("spinoff_of")) or not cfg.get("etsy_holiday_only")
+            rec["etsy"] = wanted and picked < cfg.get("etsy_per_day", 1)
+        return rec["etsy"]
 
     def etsy_shop(self) -> Optional[dict]:
         return self.stores().get("etsy")
@@ -755,7 +782,9 @@ class Shop:
         if not stores:
             return []
         st = load_state(self.state_path)
+        cfg = self.cfg()
         done = []
+        on_ebay = sum(len(d.get("channels", {}).get("ebay", {})) for d in st["designs"])
         for rec in st["designs"]:
             if rec.get("failed"):
                 continue
@@ -764,10 +793,22 @@ class Shop:
                 if self.clock() < retry.get(channel, rec.get("retry_at", 0) if channel == "etsy" else 0):
                     continue
                 listed = products_in(rec, channel)
-                for kind in rec.get("only") or self.cfg()["products"]:
+                kinds = rec.get("only") or cfg["products"]
+                if channel == "etsy":
+                    kinds = [k for k in kinds if k in listed or
+                             (self.on_etsy(rec, st) and k in (cfg.get("etsy_products") or kinds))]
+                for kind in kinds:
                     if kind not in PRODUCTS:
                         continue
                     prod = listed.get(kind)
+                    if channel == "ebay" and prod is None:
+                        if on_ebay >= cfg.get("ebay_max", 250):
+                            if st.get("ebay_full_texted") != datetime.fromtimestamp(self.clock()).strftime("%Y-%m"):
+                                st["ebay_full_texted"] = datetime.fromtimestamp(self.clock()).strftime("%Y-%m")
+                                self.notify("shop", f"🛍️ eBay has {on_ebay} listings, its free limit: new designs "
+                                                    "now go only on the free Pop-Up Store (and Etsy's daily pick).")
+                            continue
+                        on_ebay += 1
                     try:
                         if prod is None or prod.get("shop") != shop["id"]:
                             rec["upload_id"] = self.upload(rec)
