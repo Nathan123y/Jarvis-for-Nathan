@@ -795,7 +795,7 @@ class Shop:
                 listed = products_in(rec, channel)
                 kinds = rec.get("only") or cfg["products"]
                 if channel == "etsy":
-                    kinds = [k for k in kinds if k in listed or
+                    kinds = [k for k in kinds if (listed.get(k) or {}).get("published") or   # unpublished drafts cost nothing yet
                              (self.on_etsy(rec, st) and k in (cfg.get("etsy_products") or kinds))]
                 for kind in kinds:
                     if kind not in PRODUCTS:
