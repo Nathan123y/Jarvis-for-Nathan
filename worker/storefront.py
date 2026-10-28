@@ -87,7 +87,7 @@ def _download(url: str, dest: Path) -> bool:
 
 def collect(designs: list, printify: Callable) -> list:
     """Each listed design with its live links and product photos: [{"rec", "links": [(label, url, price)], "photos": [url],
-    "products": [{"kind", "links", "photos"}]}] (products: the ones with an Etsy listing, for a page and a Pin each)."""
+    "products": [{"kind", "links", "photos"}]}] (products: the ones with photos, for a page and a Pin each)."""
     from worker.shop import CHANNELS, PRODUCTS, products_in
     out = []
     for rec in designs:
@@ -96,7 +96,7 @@ def collect(designs: list, printify: Callable) -> list:
             for kind, prod in products_in(dict(rec), channel).items():
                 if not prod.get("published") or kind not in PRODUCTS:
                     continue
-                if not prod.get("url") or (channel == "etsy" and not prod.get("photos")):
+                if not prod.get("url") or (kind not in products and not prod.get("photos")):
                     try:
                         p = printify("GET", f"shops/{prod['shop']}/products/{prod['id']}.json")
                     except Exception:
@@ -110,10 +110,9 @@ def collect(designs: list, printify: Callable) -> list:
                     links.append((f"{PRODUCTS[kind]['name']} on {CHANNELS[channel]['name']}", prod["url"], prod.get("price")))
                     one = products.setdefault(kind, {"kind": kind, "links": [], "photos": []})
                     one["links"].append((f"Buy on {CHANNELS[channel]['name']}", prod["url"], prod.get("price")))
-                if channel == "etsy":
+                if kind in products and not products[kind]["photos"]:   # the first channel's photos (Pop-Up Store, else Etsy)
                     photos += prod.get("photos") or []
-                    if kind in products:
-                        products[kind]["photos"] = prod.get("photos") or []
+                    products[kind]["photos"] = prod.get("photos") or []
         if links:
             out.append({"rec": rec, "links": links, "photos": photos,
                         "products": [p for p in products.values() if p["photos"]]})
