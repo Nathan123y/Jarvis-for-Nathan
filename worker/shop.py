@@ -514,7 +514,7 @@ class Shop:
         out = {}
         for shop in self.c.printify("GET", "shops.json"):
             channel = str(shop.get("sales_channel") or "")
-            if "pop" in channel.lower():                  # the Pop-Up Store
+            if channel == "storefront" or "pop" in channel.lower():   # the Pop-Up Store ("storefront" in the API)
                 channel = "popup"
             if channel in CHANNELS:
                 out.setdefault(channel, shop)

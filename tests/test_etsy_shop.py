@@ -193,7 +193,7 @@ class ListingTests(_Base):
 
     def test_etsy_gets_one_holiday_design_a_day_on_its_products_ebay_stops_at_its_free_limit(self):
         c = FakeClients(shops=[{"id": 9, "sales_channel": "etsy"}, {"id": 5, "sales_channel": "ebay"},
-                               {"id": 7, "sales_channel": "printify_pop_up"}])
+                               {"id": 7, "sales_channel": "storefront"}])
         s = self.shop(c, etsy_per_day=1, etsy_holiday_only=True, etsy_products=["tee", "mug"], ebay_max=4)
         s.make_design()                                   # an everyday design: not for Etsy
         s.make_design(season="christmas")                 # the day's holiday pick
