@@ -207,7 +207,7 @@ class ListingTests(_Base):
         with Image.open(light) as im:
             ink = max(im.getcolors(1 << 20), key=lambda x: x[0] if x[1][3] else 0)[1]
         self.assertGreater(sum(ink[:3]), 600)                                           # cream, not dark
-        tile = next((self.dir / "art").glob("*-tile.jpg"))
+        tile = next((self.dir / "art").glob("*-tile-*.jpg"))
         with Image.open(tile) as im:
             self.assertGreater(im.width, 1000)
 
@@ -223,6 +223,12 @@ class ListingTests(_Base):
         self.assertIn(rec["audience"], ws.LINES["pet"]["audiences"])
         plain = s.make_design()
         self.assertIn(plain["audience"], ws.AUDIENCES)
+
+    def test_the_gift_extras_never_go_on_etsy_where_each_listing_costs(self):
+        extras = {"pajamas", "puzzle", "card", "doormat", "desk_mat", "can_cooler", "emb_hat", "emb_beanie", "wrap",
+                  "stocking", "blanket", "baby_bodysuit"}
+        self.assertFalse(extras & set(ws.DEFAULTS["etsy_products"]))
+        self.assertEqual(ws.DEFAULTS["etsy_per_design"], 3)
 
     def test_christmas_days_rotate_lines_with_a_sweater_every_day(self):
         for d in range(8):
