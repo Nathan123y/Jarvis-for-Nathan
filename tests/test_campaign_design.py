@@ -173,7 +173,7 @@ class OutageTests(unittest.TestCase):
                 calls.append(kw["model"])
                 raise RuntimeError("503 UNAVAILABLE")
         fake_client = types.SimpleNamespace(models=Models())
-        gem = types.SimpleNamespace(api_key=lambda: "k", client=lambda **kw: fake_client)
+        gem = types.SimpleNamespace(api_key=lambda: "k", claude_text=lambda *a, **kw: "", client=lambda **kw: fake_client)
         gtypes = types.SimpleNamespace(GenerateContentConfig=lambda **kw: kw)
         with mock.patch.dict(sys.modules, {"core.gemini": gem, "google": types.SimpleNamespace(genai=types.SimpleNamespace(types=gtypes)),
                                            "google.genai": types.SimpleNamespace(types=gtypes), "google.genai.types": gtypes}), \
@@ -200,7 +200,7 @@ class OutageTests(unittest.TestCase):
                 if kw["model"] != "gemini-3.7-flash":
                     raise RuntimeError("404 not found")
                 return types.SimpleNamespace(text="hello")
-        gem = types.SimpleNamespace(api_key=lambda: "k", client=lambda **kw: types.SimpleNamespace(models=Models()))
+        gem = types.SimpleNamespace(api_key=lambda: "k", claude_text=lambda *a, **kw: "", client=lambda **kw: types.SimpleNamespace(models=Models()))
         gtypes = types.SimpleNamespace(GenerateContentConfig=lambda **kw: kw)
         with mock.patch.dict(sys.modules, {"core.gemini": gem, "google": types.SimpleNamespace(genai=types.SimpleNamespace(types=gtypes)),
                                            "google.genai": types.SimpleNamespace(types=gtypes), "google.genai.types": gtypes}), \
