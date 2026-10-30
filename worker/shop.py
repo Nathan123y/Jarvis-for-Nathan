@@ -78,6 +78,29 @@ PRODUCTS = {
     # (blueprint 1748), whose only photo is the flat printing template
     "ugly_sweater": {"name": "Ugly Christmas Sweater", "blueprint": 1023, "provider": 90, "profit": 12.0,
                      "art": "sweater", "sizes": ("S", "M", "L", "XL", "2XL")},
+    # added 2026-10-30, for the family, pet and couple lines (all Printify Choice)
+    "youth_tee": {"name": "Youth T-Shirt", "blueprint": 420, "provider": 99, "profit": 7.0,    # Bella+Canvas 3001Y
+                  "colors": ("White", "Natural", "Ash", "Athletic Heather"), "sizes": ("S", "M", "L", "XL"), "fill": 0.9},
+    "toddler_tee": {"name": "Toddler T-Shirt", "blueprint": 580, "provider": 99, "profit": 7.0,  # Bella+Canvas 3001T
+                    "colors": ("White", "Natural", "Athletic Heather"), "sizes": ("2T", "3T", "4T", "5T"), "fill": 1.0},
+    "baby_bodysuit": {"name": "Baby Bodysuit", "blueprint": 33, "provider": 99, "profit": 7.0,   # Rabbit Skins 4424
+                      "colors": ("White", "Ash", "Heather"), "sizes": ("NB (0-3M)", "6M", "12M", "18M", "24M"), "fill": 1.0},
+    "pet_bandana": {"name": "Dog Bandana", "blueprint": 562, "provider": 99, "profit": 5.0, "fill": 0.75, "y": 0.38},
+    # not in the pet line: about $54 at our margin, against ~$30 dog hoodies elsewhere
+    "pet_hoodie": {"name": "Dog Hoodie", "blueprint": 10741, "provider": 99, "profit": 8.0, "position": "back_dtg",
+                   "colors": ("Grey", "Pink"), "sizes": ("XS", "S", "M", "L", "XL", "2XL"), "fill": 0.85},
+    # embroidered: the slogan alone in cream thread on dark caps (the drawing's gradients don't stitch)
+    "emb_hat": {"name": "Embroidered Dad Hat", "blueprint": 1729, "provider": 99, "profit": 9.0, "art": "slogan",
+                "ink": (245, 238, 222, 255), "colors": ("Black", "Dark Navy", "Charcoal Grey"), "sizes": ("One size",),
+                "fill": 0.9},
+    "emb_beanie": {"name": "Embroidered Beanie", "blueprint": 1691, "provider": 99, "profit": 8.0, "art": "slogan",
+                   "ink": (245, 238, 222, 255), "colors": ("Black", "Navy", "Red", "Spruce", "Dark Grey"),
+                   "sizes": ("One size",), "fill": 0.9},
+    "stocking": {"name": "Christmas Stocking", "blueprint": 734, "provider": 99, "profit": 7.0, "fill": 0.7},
+    "blanket": {"name": "Sherpa Fleece Blanket", "blueprint": 238, "provider": 99, "profit": 12.0,
+                "sizes": ('50" \u00d7 60"', '60" \u00d7 80"'), "fill": 0.75},
+    "wrap": {"name": "Wrapping Paper", "blueprint": 1367, "provider": 99, "profit": 5.0, "art": "tile", "fill": 1.0,
+             "sizes": ('30" x 36"', '30" x 72"')},     # one sheet's art repeats along a roll; the 15 ft roll leads with a strip photo
 }
 SWEATER_PRODUCTS = ["ugly_sweater", "sweater_tee", "sweater_hoodie"]
 SWEATER_NOTE = """This one is an UGLY CHRISTMAS SWEATER design: the picture is always a Christmas tree with glowing
@@ -90,7 +113,8 @@ lights, trees, being lit, ornaments, tinsel, Santa or the season, in the spirit 
 # year: added on Oct 26, too late to arrive by the 31st.
 SEASONS = {
     "christmas": {"start": (10, 26), "end": (12, 14),
-                  "products": ["tee", "crewneck", "hoodie", "mug", "ornament", "tumbler", "poster", "tote"],
+                  "products": ["tee", "crewneck", "hoodie", "mug", "ornament", "tumbler", "poster", "tote",
+                               "emb_beanie", "stocking", "wrap"],
                   "note": "a Christmas / holiday-season gift (ugly-sweater energy, holiday stress, family chaos, "
                           "Santa, elves, reindeer, snowmen, gingerbread, gift-giving, winter break). Aim most designs "
                           "at what people search for in December: a white elephant / Secret Santa gag gift, a gift for "
@@ -107,6 +131,53 @@ SEASONS = {
 SEASON_NOTE = """This design is for the shop's {name} line: make it about {note}. Same voice: funny, edgy,
 meme-literate and giftable, not a generic greeting card. Put the holiday in the title and tags (e.g. "funny
 christmas shirt", "christmas gift for coworker", "ugly christmas sweater")."""
+# Narrow audiences (2026-10-30): "funny christmas shirt" is up against millions of listings, "christmas gift for
+# an ER nurse" against a few hundred, and its buyer already knows what they want. Every design is aimed at one,
+# the one used least lately.
+AUDIENCES = ["nurses", "ER nurses", "teachers", "kindergarten teachers", "accountants", "software engineers",
+             "construction workers", "electricians", "truck drivers", "hairstylists", "dental hygienists",
+             "pharmacists", "paramedics", "firefighters", "lawyers", "librarians", "retail workers", "servers and bartenders",
+             "warehouse workers", "remote workers", "gym lovers", "runners", "golfers", "fishermen", "hunters",
+             "gamers", "book lovers", "coffee addicts", "plant lovers", "bakers", "home cooks", "gardeners",
+             "introverts", "new dads", "new moms", "grandmas", "grandpas", "college students", "grad students",
+             "dog dads", "dog moms", "cat moms", "cat dads", "chicken keepers", "horse girls", "camping lovers"]
+AUDIENCE_NOTE = """Aim this design at ONE narrow audience: {}. The joke is one only they'd fully get (their daily
+life, in-jokes, pet peeves, jargon), and the title and at least 6 of the tags say who it's for, the way gift shoppers
+search (e.g. "funny nurse christmas shirt", "gift for nurse", "er nurse humor", "nurse gift idea")."""
+# Christmas lines beside the plain and ugly-sweater designs (2026-10-30): matching family shirts (bought 4-6 at a
+# time), pet gear, and couples' "first Christmas" keepsakes. Each has its own audiences and products.
+LINES = {
+    "family": {"products": ["tee", "youth_tee", "toddler_tee", "baby_bodysuit", "crewneck", "hoodie"],
+               "audiences": ["the whole family, parents and kids", "a family with a new baby (baby's first Christmas)",
+                             "a friend group (Friendsmas)", "cousins at Grandma's house", "grandparents and grandkids",
+                             "a loud, chaotic family with too many kids", "siblings who fight over everything",
+                             "a family that's competitive at board games", "a family whose dog runs the house",
+                             "a family that's always late"],
+               "note": """This is a MATCHING FAMILY / GROUP shirt: everyone (adults, kids, toddlers, the baby) wears
+the same design in a photo, so the slogan must work on all of them and stay kid-appropriate (no swearing, nothing
+crude). Think "CERTIFIED CHRISTMAS CHAOS CREW" energy, but your own. Title and tags say "matching family christmas
+shirts", "family christmas pajama shirt", "christmas group shirts" and the audience."""},
+    "pet": {"products": ["pet_bandana", "ornament", "mug", "tee", "stocking"],
+            "audiences": ["golden retrievers", "french bulldogs", "labradors", "german shepherds", "dachshunds",
+                          "corgis", "pit bulls", "huskies", "chihuahuas", "australian shepherds", "beagles",
+                          "doodles (goldendoodles, labradoodles)", "border collies", "shih tzus", "boxers",
+                          "black cats", "orange cats", "tuxedo cats", "rescue dogs", "senior dogs"],
+            "note": """This is a PET line design, for {audience} and the people who own them: it's sold as a dog
+bandana (worn by the pet) and as an ornament, mug, shirt and stocking for the owner. Draw that breed
+or kind of animal (cute, funny, a little unhinged), with a short slogan that works both on the pet and on the owner's
+mug. No swearing. Title and tags name the breed (e.g. "corgi christmas", "corgi mom gift", "dog christmas bandana")."""},
+    "couple": {"products": ["ornament", "mug", "blanket", "stocking", "tee"],
+               "audiences": ["couples' first Christmas together", "first Christmas married", "first Christmas engaged",
+                             "first Christmas as parents", "first Christmas in our new home",
+                             "a long-distance couple's Christmas", "first Christmas with our rescue pet"],
+               "note": """This is a COUPLES / MILESTONE keepsake for {audience}, mostly bought as an ornament. Sweet
+with a wink (cute, funny, never crude): a cosy illustration and a slogan with the year {year}, e.g. "OUR FIRST
+CHRISTMAS {year}" but your own twist. Title and tags say "our first christmas ornament {year}" (or the milestone),
+"couples christmas gift", "keepsake ornament"."""},
+}
+# a Christmas day's holiday designs, by slot: the first is the one Etsy gets, so it rotates through the lines;
+# the ugly sweater (the user's favourite) is always second
+CHRISTMAS_ROTATION = ["family", "pet", "couple", "plain"]
 # Sales channels connected in Printify that designs are listed on. eBay titles stop at 80 characters. The
 # Printify Pop-Up Store charges nothing to list, so it gets every design and comes first on the site's buy links.
 CHANNELS = {"popup": {"name": "our shop", "title_max": 140}, "etsy": {"name": "Etsy", "title_max": 140},
@@ -127,7 +198,10 @@ DEFAULTS = {"enabled": True, "designs_per_day": 1, "time": "06:00",  # live befo
             # Etsy charges $0.20 a listing (2026-10-27, user: keep it to ~$0.80 a day): one holiday design a day,
             # on the products that sell for the holidays. 0 a day = nothing new on Etsy.
             "etsy_per_day": 1, "etsy_holiday_only": True,
-            "etsy_products": ["ugly_sweater", "sweater_tee", "sweater_hoodie", "tee", "hoodie", "mug"],
+            # in this order of preference, and at most etsy_per_design of them (3 = $0.60 a day)
+            "etsy_products": ["ugly_sweater", "sweater_tee", "sweater_hoodie", "pet_bandana", "ornament", "tee",
+                              "youth_tee", "toddler_tee", "hoodie", "mug"],
+            "etsy_per_design": 3,
             # eBay lists 250 a month free, and its listings renew monthly against that, so live listings stay under it
             "ebay_max": 250,
             "video_times": ""}                 # e.g. "11:00,15:00,19:00", one video at each; empty = no videos (off: user prefers the photos)
@@ -203,6 +277,21 @@ def season_for(day) -> Optional[str]:
     return running[day.toordinal() % len(running)] if running else None
 
 
+def pick_audience(pool: list, designs: list, line: str) -> str:
+    """The audience in `pool` used least by the recent designs of the same line (ties go round in order)."""
+    recent = [d.get("audience") for d in designs[-80:] if (d.get("style") or "plain") == line]
+    return min(pool, key=lambda a: (recent.count(a), (pool.index(a) - len(designs)) % len(pool)))
+
+
+def christmas_style(day, slot: int, per_day: int) -> str:
+    """The line a Christmas day's holiday design `slot` is for: first a rotating line (Etsy's pick), then the ugly
+    sweater, then the next lines along."""
+    if slot == 1 or per_day == 1 and day.toordinal() % 3 == 0:
+        return "sweater"
+    turn = day.toordinal() + (slot - 1 if slot > 1 else 0)
+    return CHRISTMAS_ROTATION[turn % len(CHRISTMAS_ROTATION)]
+
+
 def settings() -> dict:
     try:
         from memory.config_manager import get_plugin_config
@@ -219,7 +308,7 @@ def settings() -> dict:
         out["holiday_per_day"] = max(0, min(3, int(out["holiday_per_day"])))
     except (TypeError, ValueError):
         out["holiday_per_day"] = DEFAULTS["holiday_per_day"]
-    for key in ("etsy_per_day", "ebay_max"):
+    for key in ("etsy_per_day", "etsy_per_design", "ebay_max"):
         try:
             out[key] = max(0, int(out[key]))
         except (TypeError, ValueError):
@@ -331,8 +420,9 @@ def compose(art, slogan: str, width: int = DESIGN_W):
     return canvas
 
 
-def slogan_art(slogan: str, size: tuple = (3300, 1500)):
-    """The slogan alone, for a trucker hat's wide front panel (white foam on every colour): bold dark letters."""
+def slogan_art(slogan: str, size: tuple = (3300, 1500), ink: tuple = (34, 30, 38, 255)):
+    """The slogan alone, for a trucker hat's wide front panel (white foam on every colour): bold dark letters.
+    Embroidered caps get light thread (`ink`) on dark colours."""
     from PIL import Image, ImageDraw, ImageFont
     w, h = size
     draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
@@ -349,8 +439,25 @@ def slogan_art(slogan: str, size: tuple = (3300, 1500)):
     y = (h - line_h * len(lines)) / 2
     for line in lines:
         tw = d.textlength(line, font=font)
-        d.text(((w - tw) / 2, y), line, font=font, fill=(34, 30, 38, 255))
+        d.text(((w - tw) / 2, y), line, font=font, fill=ink)
         y += line_h
+    return canvas
+
+
+def tile_art(design, size: tuple, across: int = 4):
+    """Wrapping paper: the design repeated in staggered rows over the whole sheet, on white."""
+    from PIL import Image
+    w, h = size
+    cell = w // across
+    art = design.copy()
+    art.thumbnail((int(cell * 0.8), int(cell * 0.8)), Image.LANCZOS)
+    canvas = Image.new("RGB", size, (255, 255, 255))
+    row_h = int(art.height * 1.15) or 1
+    for row in range(-1, h // row_h + 2):
+        shift = cell // 2 if row % 2 else 0
+        for col in range(-1, across + 1):
+            x = col * cell + shift + (cell - art.width) // 2
+            canvas.paste(art, (x, row * row_h), art)
     return canvas
 
 
@@ -604,6 +711,14 @@ class Shop:
         if style == "sweater":
             notes = SWEATER_NOTE + "\n\n" + notes
             only = only or SWEATER_PRODUCTS
+        line = LINES.get(style or "")
+        audience = None if parent else pick_audience(line["audiences"] if line else AUDIENCES, st["designs"], style or "plain")
+        if line:
+            year = datetime.fromtimestamp(self.clock()).year
+            notes = line["note"].format(audience=audience, year=year) + "\n\n" + notes
+            only = only or line["products"]
+        elif audience:
+            notes = AUDIENCE_NOTE.format(audience) + "\n\n" + notes
         last_error = None
         for _ in range(3):                                      # a refused idea gets another try
             try:
@@ -640,6 +755,8 @@ class Shop:
             rec["season"] = season
         if style:
             rec["style"] = style
+        if audience:
+            rec["audience"] = audience
         st["designs"].append(rec)
         save_state(st, self.state_path)
         self.log(f"shop: designed '{idea['title']}' ({idea['slogan']})")
@@ -657,25 +774,44 @@ class Shop:
                              {"file_name": Path(rec["file"]).name, "contents": base64.b64encode(data).decode()})
         return up["id"]
 
-    def upload_slogan(self, rec: dict) -> tuple:
-        """(Printify image id, size) of the slogan-only art, made and uploaded once per design."""
-        path = Path(rec["file"]).with_name(f"{rec['id']}-slogan.png")
+    def upload_slogan(self, rec: dict, ink: Optional[tuple] = None) -> tuple:
+        """(Printify image id, size) of the slogan-only art, made and uploaded once per design (and ink)."""
+        light = ink is not None
+        path = Path(rec["file"]).with_name(f"{rec['id']}-slogan{'-light' if light else ''}.png")
+        key = "slogan_light_upload_id" if light else "slogan_upload_id"
         if not path.exists():
-            slogan_art(rec.get("slogan") or rec["title"][:40]).save(path, "PNG", optimize=True)
-        if not rec.get("slogan_upload_id"):
+            slogan_art(rec.get("slogan") or rec["title"][:40], **({"ink": tuple(ink)} if light else {})).save(
+                path, "PNG", optimize=True)
+        if not rec.get(key):
             up = self.c.printify("POST", "uploads/images.json",
                                  {"file_name": path.name, "contents": base64.b64encode(path.read_bytes()).decode()})
-            rec["slogan_upload_id"] = up["id"]
+            rec[key] = up["id"]
         from PIL import Image
         with Image.open(path) as im:
-            return rec["slogan_upload_id"], im.size
+            return rec[key], im.size
+
+    def upload_tile(self, rec: dict, area: tuple) -> tuple:
+        """(Printify image id, size) of the wrapping-paper pattern, at half the sheet's print size (plenty for paper)."""
+        from PIL import Image
+        size = (area[0] // 2, area[1] // 2)
+        path = Path(rec["file"]).with_name(f"{rec['id']}-tile.jpg")
+        if not path.exists():
+            with Image.open(rec["file"]) as art:
+                tile_art(art.convert("RGBA"), size).save(path, "JPEG", quality=88)
+        if not rec.get("tile_upload_id"):
+            up = self.c.printify("POST", "uploads/images.json",
+                                 {"file_name": path.name, "contents": base64.b64encode(path.read_bytes()).decode()})
+            rec["tile_upload_id"] = up["id"]
+        return rec["tile_upload_id"], size
 
     def create(self, rec: dict, kind: str, shop_id: int, image_id: str, title_max: int = 140) -> dict:
         p = PRODUCTS[kind]
         ids, (pw, ph) = self.variants(kind)
         art_size = rec["size"]
         if p.get("art") == "slogan":
-            image_id, art_size = self.upload_slogan(rec)
+            image_id, art_size = self.upload_slogan(rec, p.get("ink"))
+        if p.get("art") == "tile":
+            image_id, art_size = self.upload_tile(rec, (pw, ph))
         if p.get("art") == "sweater":
             return self.create_sweater(rec, kind, shop_id, ids, title_max)
         images = placements(kind, image_id, art_size, (pw, ph))
@@ -795,8 +931,11 @@ class Shop:
                 listed = products_in(rec, channel)
                 kinds = rec.get("only") or cfg["products"]
                 if channel == "etsy":
-                    kinds = [k for k in kinds if (listed.get(k) or {}).get("published") or   # unpublished drafts cost nothing yet
-                             (self.on_etsy(rec, st) and k in (cfg.get("etsy_products") or kinds))]
+                    live = [k for k in kinds if (listed.get(k) or {}).get("published")]   # unpublished drafts cost nothing yet
+                    if "etsy_kinds" not in rec:      # decided once; a design already on Etsy gets nothing more
+                        picks = [k for k in (cfg.get("etsy_products") or kinds) if k in kinds]
+                        rec["etsy_kinds"] = live or (picks[:cfg.get("etsy_per_design", 3)] if self.on_etsy(rec, st) else [])
+                    kinds = [k for k in kinds if k in live or k in rec["etsy_kinds"]]
                 for kind in kinds:
                     if kind not in PRODUCTS:
                         continue
@@ -943,14 +1082,18 @@ class ShopService:
                     save_state(st, shop.state_path)
                     queued = 0
                 elif queued:
-                    shop.make_design(only=st.get("make_only"))
+                    style = st.get("make_style")
+                    shop.make_design(only=st.get("make_only"), style=style,
+                                     season=season_for(now.date()) if style else None)
                 elif holiday and not daily:
-                    # each Christmas day starts with an ugly-sweater design (sweater, tee, hoodie)
-                    # (and its last one too: the user liked the line, 2026-10-26)
-                    if season == "christmas" and holiday_today in (0, cfg["holiday_per_day"] - 1):
-                        shop.make_design(season=season, style="sweater")
-                    else:
+                    # Christmas days take turns between the lines (family, pet, couple, plain), with an
+                    # ugly-sweater design every day (the user's favourite, 2026-10-26)
+                    style = christmas_style(now.date(), holiday_today, cfg["holiday_per_day"]) \
+                        if season == "christmas" else "plain"
+                    if style == "plain":
                         shop.make_design(only=SEASONS[season]["products"], season=season)
+                    else:
+                        shop.make_design(season=season, style=style)
                 else:                                      # the daily design: every other one riffs on a winner, if there is one
                     win = shop_agents.next_spinoff(shop_agents.load(shop.nb_path), bool(st.get("last_was_spinoff")),
                                                    int(st.get("spinoffs_made") or 0))
@@ -965,6 +1108,7 @@ class ShopService:
                     st["make_now"] = queued - 1
                     if queued == 1:
                         st.pop("make_only", None)
+                        st.pop("make_style", None)
                     save_state(st, shop.state_path)
             except Exception as exc:
                 self.log(f"shop: today's design failed: {exc}")

@@ -70,16 +70,18 @@ class FakeClients:
                                     (39, "front", 3210, 3852, {"color": "White", "size": "L"}),
                                     (1574, "front_left_leg", 2100, 2400, {"color": "Ivory", "size": "S"}),
                                     (1588, "left_leg_front", 1048, 3130, {"color": "Ivory", "size": "XL"}),
-                                    (1128, "front", 1650, 750, {"color": "Black", "size": "One size"})):
+                                    (1128, "front", 1650, 750, {"color": "Black", "size": "One size"}),
+                                    (1691, "front", 1500, 525, {"color": "Black", "size": "One size"}),
+                                    (1367, "front", 9075, 10800, {"size": '30" x 36"'})):
             if path.startswith(f"catalog/blueprints/{bp}/"):
-                return {"variants": [{"id": bp * 10, "title": f"{opts['color']} / {opts['size']}", "options": opts,
+                return {"variants": [{"id": bp * 10, "title": " / ".join(opts.values()), "options": opts,
                                       "placeholders": [{"position": pos, "width": w, "height": h}]}]}
         if path == "uploads/images.json":
             return {"id": f"img{len([c for c in self.calls if c[1] == 'uploads/images.json'])}"}
         if method == "POST" and path.endswith("/products.json"):
             self.next_id += 1
             costs = {1023: 3100, 12: 1129, 478: 503, 400: 158, 77: 2150, 39: 1050, 1574: 2290, 1588: 2340, 1128: 1490}
-            return {"id": f"p{self.next_id}", "variants": [{"id": v["id"], "cost": costs[body["blueprint_id"]]}
+            return {"id": f"p{self.next_id}", "variants": [{"id": v["id"], "cost": costs.get(body["blueprint_id"], 1500)}
                                                           for v in body["variants"]]}
         if "/orders.json" in path:
             return {"data": self.orders}
@@ -96,7 +98,8 @@ class _Base(unittest.TestCase):
     def shop(self, clients, **cfg):
         fetch = cfg.pop("trends_fetch", None)
         settings = dict(ws.DEFAULTS, **{"products": ["tee", "mug", "sticker"],   # the original three, unless a test says
-                                        "etsy_per_day": 99, "etsy_holiday_only": False, "etsy_products": [], **cfg})
+                                        "etsy_per_day": 99, "etsy_holiday_only": False, "etsy_products": [],
+                                        "etsy_per_design": 99, **cfg})
         return ws.Shop(clients, state_path=self.dir / "s.json", art_dir=self.dir / "art", cfg=lambda: settings,
                        log=lambda m: None, notify=lambda k, t: self.sent.append((k, t)), clock=lambda: 1_792_900_000,
                        trends_fetch=fetch or (lambda: {}), notebook_path=self.dir / "notebook.json")
@@ -175,6 +178,60 @@ class ListingTests(_Base):
         hat_img = pos(1128)["images"][0]["id"]
         self.assertNotEqual(hat_img, pos(12)["images"][0]["id"])                         # the hat gets the slogan-only art
         self.assertTrue(list((self.dir / "art").glob("*-slogan.png")))
+
+    def test_etsy_gets_at_most_etsy_per_design_listings_in_order_of_preference(self):
+        c = FakeClients(shops=[{"id": 9, "sales_channel": "etsy"}])
+        s = self.shop(c, products=["mug", "tee", "hoodie", "tank"], etsy_products=["tee", "hoodie", "mug"],
+                      etsy_per_design=2)
+        s.make_design()
+        s.list_pending()
+        created = [b["blueprint_id"] for m, path, b in c.calls if m == "POST" and path == "shops/9/products.json"]
+        self.assertEqual(sorted(created), [12, 77])                                     # tee and hoodie, not the mug
+
+    def test_a_design_already_on_etsy_gets_no_new_etsy_listings(self):
+        c = FakeClients(shops=[{"id": 9, "sales_channel": "etsy"}])
+        s = self.shop(c, products=["tee", "mug"])
+        rec = s.make_design()
+        st = ws.load_state(s.state_path)
+        st["designs"][0]["products"] = {"tee": {"id": "p1", "shop": 9, "price": 2999, "published": True}}
+        ws.save_state(st, s.state_path)
+        self.assertEqual(s.list_pending(), [])
+        self.assertEqual(ws.load_state(s.state_path)["designs"][0]["etsy_kinds"], ["tee"])
+
+    def test_embroidered_caps_get_the_slogan_in_light_thread_and_wrapping_paper_a_tiled_sheet(self):
+        c = FakeClients(shops=[{"id": 9, "sales_channel": "etsy"}])
+        s = self.shop(c, products=["emb_beanie", "wrap"])
+        s.make_design()
+        s.list_pending()
+        light = next((self.dir / "art").glob("*-slogan-light.png"))
+        with Image.open(light) as im:
+            ink = max(im.getcolors(1 << 20), key=lambda x: x[0] if x[1][3] else 0)[1]
+        self.assertGreater(sum(ink[:3]), 600)                                           # cream, not dark
+        tile = next((self.dir / "art").glob("*-tile.jpg"))
+        with Image.open(tile) as im:
+            self.assertGreater(im.width, 1000)
+
+    def test_audiences_rotate_and_lines_get_their_own_products(self):
+        pool = ["a", "b", "c"]
+        designs = [{"audience": "a"}, {"audience": "b"}]
+        self.assertEqual(ws.pick_audience(pool, designs, "plain"), "c")
+        self.assertEqual(ws.pick_audience(pool, designs, "pet"), "c")                   # ties go round in order
+        c = FakeClients(shops=[])
+        s = self.shop(c)
+        rec = s.make_design(style="pet", season="christmas")
+        self.assertEqual(rec["only"], ws.LINES["pet"]["products"])
+        self.assertIn(rec["audience"], ws.LINES["pet"]["audiences"])
+        plain = s.make_design()
+        self.assertIn(plain["audience"], ws.AUDIENCES)
+
+    def test_christmas_days_rotate_lines_with_a_sweater_every_day(self):
+        for d in range(8):
+            day = datetime(2026, 11, 1 + d).date()
+            styles = [ws.christmas_style(day, i, 3) for i in range(3)]
+            self.assertEqual(styles[1], "sweater")
+            self.assertNotEqual(styles[0], styles[2])
+        firsts = {ws.christmas_style(datetime(2026, 11, 1 + d).date(), 0, 3) for d in range(4)}
+        self.assertEqual(firsts, {"family", "pet", "couple", "plain"})
 
     def test_every_design_goes_to_ebay_too_with_short_titles(self):
         c = FakeClients(shops=[{"id": 9, "sales_channel": "etsy"}, {"id": 5, "sales_channel": "ebay"},
