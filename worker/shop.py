@@ -101,6 +101,20 @@ PRODUCTS = {
                 "sizes": ('50" \u00d7 60"', '60" \u00d7 80"'), "fill": 0.75},
     "wrap": {"name": "Wrapping Paper", "blueprint": 1367, "provider": 99, "profit": 5.0, "art": "tile", "fill": 1.0,
              "sizes": ('30" x 36"', '30" x 72"')},     # one sheet's art repeats along a roll; the 15 ft roll leads with a strip photo
+    # added 2026-10-30 (user: "do all of those", but Etsy listings cost: none of these are in etsy_products).
+    # Left out: the paw stocking (printed in China) and the holiday cards from Australia: too slow for Christmas.
+    "pajamas": {"name": "Christmas Pajama Pants", "blueprint": 1254, "provider": 99, "profit": 6.0, "art": "tile",
+                "position": "left_leg", "positions": ("left_leg", "right_leg"), "sizes": ("S", "M", "L", "XL", "2XL"),
+                "fill": 1.0},
+    "puzzle": {"name": "Jigsaw Puzzle", "blueprint": 1149, "provider": 99, "profit": 7.0, "art": "backdrop",  # a third of
+               "sizes": ("252 pcs (Vertical)", "520 pcs (Vertical)"), "fill": 1.0},                   # blueprint 596's cost
+    "card": {"name": "Christmas Card", "blueprint": 10717, "provider": 28, "profit": 3.0,       # District Photo, US
+             "sizes": ('5" x 7" (square corner) / Eggshell / 1 pc', '5" x 7" (square corner) / Eggshell / 10 pcs'),
+             "fill": 0.85},
+    "doormat": {"name": "Doormat", "blueprint": 1346, "provider": 99, "profit": 6.0, "art": "slogan", "fill": 0.85},
+    "desk_mat": {"name": "Desk Mat", "blueprint": 975, "provider": 99, "profit": 7.0, "art": "tile", "fill": 1.0},
+    "can_cooler": {"name": "Can Cooler", "blueprint": 636, "provider": 99, "profit": 5.0,
+                   "positions": ("front", "back"), "fill": 0.9},
 }
 SWEATER_PRODUCTS = ["ugly_sweater", "sweater_tee", "sweater_hoodie"]
 SWEATER_NOTE = """This one is an UGLY CHRISTMAS SWEATER design: the picture is always a Christmas tree with glowing
@@ -114,7 +128,8 @@ lights, trees, being lit, ornaments, tinsel, Santa or the season, in the spirit 
 SEASONS = {
     "christmas": {"start": (10, 26), "end": (12, 14),
                   "products": ["tee", "crewneck", "hoodie", "mug", "ornament", "tumbler", "poster", "tote",
-                               "emb_beanie", "stocking", "wrap"],
+                               "emb_beanie", "stocking", "wrap", "emb_hat", "puzzle", "card", "doormat",
+                               "desk_mat", "can_cooler"],
                   "note": "a Christmas / holiday-season gift (ugly-sweater energy, holiday stress, family chaos, "
                           "Santa, elves, reindeer, snowmen, gingerbread, gift-giving, winter break). Aim most designs "
                           "at what people search for in December: a white elephant / Secret Santa gag gift, a gift for "
@@ -147,7 +162,7 @@ search (e.g. "funny nurse christmas shirt", "gift for nurse", "er nurse humor", 
 # Christmas lines beside the plain and ugly-sweater designs (2026-10-30): matching family shirts (bought 4-6 at a
 # time), pet gear, and couples' "first Christmas" keepsakes. Each has its own audiences and products.
 LINES = {
-    "family": {"products": ["tee", "youth_tee", "toddler_tee", "baby_bodysuit", "crewneck", "hoodie"],
+    "family": {"products": ["tee", "youth_tee", "toddler_tee", "baby_bodysuit", "crewneck", "hoodie", "pajamas"],
                "audiences": ["the whole family, parents and kids", "a family with a new baby (baby's first Christmas)",
                              "a friend group (Friendsmas)", "cousins at Grandma's house", "grandparents and grandkids",
                              "a loud, chaotic family with too many kids", "siblings who fight over everything",
@@ -157,7 +172,7 @@ LINES = {
 the same design in a photo, so the slogan must work on all of them and stay kid-appropriate (no swearing, nothing
 crude). Think "CERTIFIED CHRISTMAS CHAOS CREW" energy, but your own. Title and tags say "matching family christmas
 shirts", "family christmas pajama shirt", "christmas group shirts" and the audience."""},
-    "pet": {"products": ["pet_bandana", "ornament", "mug", "tee", "stocking"],
+    "pet": {"products": ["pet_bandana", "ornament", "mug", "tee", "stocking", "doormat"],
             "audiences": ["golden retrievers", "french bulldogs", "labradors", "german shepherds", "dachshunds",
                           "corgis", "pit bulls", "huskies", "chihuahuas", "australian shepherds", "beagles",
                           "doodles (goldendoodles, labradoodles)", "border collies", "shih tzus", "boxers",
@@ -166,7 +181,7 @@ shirts", "family christmas pajama shirt", "christmas group shirts" and the audie
 bandana (worn by the pet) and as an ornament, mug, shirt and stocking for the owner. Draw that breed
 or kind of animal (cute, funny, a little unhinged), with a short slogan that works both on the pet and on the owner's
 mug. No swearing. Title and tags name the breed (e.g. "corgi christmas", "corgi mom gift", "dog christmas bandana")."""},
-    "couple": {"products": ["ornament", "mug", "blanket", "stocking", "tee"],
+    "couple": {"products": ["ornament", "mug", "blanket", "stocking", "tee", "puzzle", "doormat", "card"],
                "audiences": ["couples' first Christmas together", "first Christmas married", "first Christmas engaged",
                              "first Christmas as parents", "first Christmas in our new home",
                              "a long-distance couple's Christmas", "first Christmas with our rescue pet"],
@@ -458,6 +473,16 @@ def tile_art(design, size: tuple, across: int = 4):
         for col in range(-1, across + 1):
             x = col * cell + shift + (cell - art.width) // 2
             canvas.paste(art, (x, row * row_h), art)
+    return canvas
+
+
+def backdrop_art(design, size: tuple, color: tuple = (244, 239, 230)):
+    """A puzzle's picture: the design in the middle of a soft cream sheet the shape of the print area."""
+    from PIL import Image
+    art = design.copy()
+    art.thumbnail((int(size[0] * 0.82), int(size[1] * 0.82)), Image.LANCZOS)
+    canvas = Image.new("RGB", size, color)
+    canvas.paste(art, ((size[0] - art.width) // 2, (size[1] - art.height) // 2), art)
     return canvas
 
 
@@ -790,19 +815,25 @@ class Shop:
         with Image.open(path) as im:
             return rec[key], im.size
 
-    def upload_tile(self, rec: dict, area: tuple) -> tuple:
-        """(Printify image id, size) of the wrapping-paper pattern, at half the sheet's print size (plenty for paper)."""
+    def upload_sheet(self, rec: dict, art: str, area: tuple) -> tuple:
+        """(Printify image id, size) of a full-sheet picture for a print area: the design tiled ("tile": wrapping
+        paper, pajamas, desk mats) or on a cream backdrop ("backdrop": puzzles), at half the print size (plenty
+        for these). One per design, kind of art and area shape."""
         from PIL import Image
         size = (area[0] // 2, area[1] // 2)
-        path = Path(rec["file"]).with_name(f"{rec['id']}-tile.jpg")
+        key = f"{art}-{size[0]}x{size[1]}"
+        path = Path(rec["file"]).with_name(f"{rec['id']}-{key}.jpg")
         if not path.exists():
-            with Image.open(rec["file"]) as art:
-                tile_art(art.convert("RGBA"), size).save(path, "JPEG", quality=88)
-        if not rec.get("tile_upload_id"):
+            with Image.open(rec["file"]) as im:
+                im = im.convert("RGBA")
+                (tile_art(im, size, across=max(3, round(3 * size[0] / size[1]))) if art == "tile"
+                 else backdrop_art(im, size)).save(path, "JPEG", quality=88)
+        ups = rec.setdefault("sheet_uploads", {})
+        if not ups.get(key):
             up = self.c.printify("POST", "uploads/images.json",
                                  {"file_name": path.name, "contents": base64.b64encode(path.read_bytes()).decode()})
-            rec["tile_upload_id"] = up["id"]
-        return rec["tile_upload_id"], size
+            ups[key] = up["id"]
+        return ups[key], size
 
     def create(self, rec: dict, kind: str, shop_id: int, image_id: str, title_max: int = 140) -> dict:
         p = PRODUCTS[kind]
@@ -810,8 +841,8 @@ class Shop:
         art_size = rec["size"]
         if p.get("art") == "slogan":
             image_id, art_size = self.upload_slogan(rec, p.get("ink"))
-        if p.get("art") == "tile":
-            image_id, art_size = self.upload_tile(rec, (pw, ph))
+        if p.get("art") in ("tile", "backdrop"):
+            image_id, art_size = self.upload_sheet(rec, p["art"], (pw, ph))
         if p.get("art") == "sweater":
             return self.create_sweater(rec, kind, shop_id, ids, title_max)
         images = placements(kind, image_id, art_size, (pw, ph))
@@ -823,7 +854,7 @@ class Shop:
                 "print_provider_id": p["provider"],
                 "variants": [{"id": i, "price": 2999, "is_enabled": True} for i in ids],
                 "print_areas": [{"variant_ids": ids, "placeholders": [
-                    {"position": p.get("position", "front"), "images": images}]}]}
+                    {"position": pos, "images": images} for pos in p.get("positions") or (p.get("position", "front"),)]}]}
         product = self.c.printify("POST", f"shops/{shop_id}/products.json", body)
         extra = self.save_photos(rec, kind, product.get("images") or [])
         priced = [{"id": v["id"], "price": price_for(int(v.get("cost") or 0), p["profit"]), "is_enabled": True}
