@@ -113,6 +113,34 @@ SEARCH = "search"  # grounded search — REST only, see below
 #     on REST — see SEARCH.
 LIVE = "live"
 
+# A rung that means "ask Claude", through the Claude Code CLI on this Mac.
+#
+# WHY IT LEADS THE REASONING LADDER (2026-10-30)
+#     The user's Claude membership already pays for the best models, and the
+#     work on SMART — shop ideas, internship answers, website copy, code — is
+#     where gemini-3.5-flash was visibly weakest. `claude -p` runs on that
+#     membership's login, so there is no API key and no new bill. It shares the
+#     membership's usage limit, and when that runs out the rung cools off and
+#     the Gemini rungs behind it take over, exactly like a 429.
+#
+# WHAT IT COSTS, MEASURED
+#     short JSON, no tools          ~2s   (claude-opus-5-5)
+#     one image read from a file    ~6s
+#     So it stays off FAST, where a phone is ringing or the screen agent is
+#     mid-loop, and off SEARCH, which needs Gemini's grounding metadata.
+#
+# HOW IT IS KEPT A PLAIN FUNCTION
+#     No tools except Read (only when an image or PDF was passed, and only on
+#     a throwaway folder holding those files), no MCP servers, no settings,
+#     plugins, skills or session history, and it runs in that throwaway folder
+#     so no CLAUDE.md or memory is picked up. `--bare` would be tidier but it
+#     only accepts API keys, not the membership login.
+CLAUDE = "claude"
+_CLAUDE_TIMEOUT_S = 180.0                  # its own floor: Gemini's 10s default is far too short for a CLI start + Opus
+_CLAUDE_SLOTS = threading.BoundedSemaphore(2)
+_CLAUDE_SLOT_WAIT = 60.0
+_CLAUDE_LIMIT_COOLDOWN_S = 1800            # usage limit reached: Gemini answers for half an hour
+
 # The REST text models. The 2.5 generation was retired for this key in October
 # 2026 (404 "no longer available to new users") and every side call fell through
 # to the Live rung or failed outright. Measured 2026-10-13, one short prompt:
@@ -125,7 +153,7 @@ LITE_MODEL = "gemini-3.1-flash-lite"
 
 _LADDERS = {
     FAST: (LIVE, LITE_MODEL, TEXT_MODEL),
-    SMART: (LIVE, TEXT_MODEL, LITE_MODEL),
+    SMART: (CLAUDE, LIVE, TEXT_MODEL, LITE_MODEL),
     # Grounded search needs response.candidates[...].grounding_metadata, which a
     # Live turn does not produce. REST only, and it says so rather than silently
     # returning an answer with no sources behind it.
@@ -188,9 +216,9 @@ _cooldown: dict[str, float] = {}
 _cool_lock = threading.Lock()
 
 
-def _cool(model: str) -> None:
+def _cool(model: str, seconds: float = _COOLDOWN_SECONDS) -> None:
     with _cool_lock:
-        _cooldown[model] = time.monotonic() + _COOLDOWN_SECONDS
+        _cooldown[model] = time.monotonic() + seconds
 
 
 def _cooling(model: str) -> bool:
@@ -371,6 +399,120 @@ def _live_call(contents, config, timeout_ms: int, key: str):
     return _Reply(text) if text else None
 
 
+def _claude_bin() -> str:
+    """The Claude Code CLI. The app may start with launchd's bare PATH, so the
+    installer's usual places are checked too."""
+    import os
+    import shutil
+
+    found = shutil.which("claude")
+    if found:
+        return found
+    for p in (Path.home() / ".local/bin/claude", Path("/opt/homebrew/bin/claude"), Path("/usr/local/bin/claude")):
+        if os.access(p, os.X_OK):
+            return str(p)
+    return ""
+
+
+def _config_value(config, name: str):
+    if config is None:
+        return None
+    if isinstance(config, dict):
+        return config.get(name)
+    return getattr(config, name, None)
+
+
+def _claude_off() -> bool:
+    """Off under a test runner (a test must never spend the membership's usage
+    limit) and when JARVIS_NO_CLAUDE is set. `python -m unittest` sets argv[0]
+    to "python -m unittest"."""
+    import os
+
+    argv0 = sys.argv[0] if sys.argv else ""
+    return bool(os.environ.get("JARVIS_NO_CLAUDE")) or "unittest" in argv0 or "pytest" in sys.modules
+
+
+def _claude_call(contents, config, timeout_ms: int):
+    """One `claude -p` turn on the membership login. Returns a _Reply, or raises
+    so the ladder moves on to Gemini."""
+    import base64
+    import os
+    import subprocess
+    import tempfile
+
+    if _claude_off():
+        raise RuntimeError("Claude is switched off here")
+    if _config_value(config, "tools"):
+        raise RuntimeError("Gemini tools (search grounding) were asked for")
+    exe = _claude_bin()
+    if not exe:
+        raise RuntimeError("the Claude Code CLI is not installed")
+
+    system = _ONE_SHOT_SYSTEM
+    extra = _config_value(config, "system_instruction")
+    if extra:
+        system += f"\n\n{extra}"
+    if _config_value(config, "response_mime_type") == "application/json" or _config_value(config, "response_schema"):
+        system += "\n\nReply with only valid JSON."
+
+    if not _CLAUDE_SLOTS.acquire(timeout=_CLAUDE_SLOT_WAIT):
+        raise RuntimeError("two Claude calls are already running")
+    try:
+        with tempfile.TemporaryDirectory(prefix="jarvis-claude-") as tmp:
+            texts, files = [], []
+            ext = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif",
+                   "application/pdf": ".pdf"}
+            for part in _to_live_parts(contents):
+                if "text" in part:
+                    texts.append(part["text"])
+                elif "inline_data" in part:
+                    blob = part["inline_data"]
+                    suffix = ext.get(blob.get("mime_type", ""))
+                    if not suffix:
+                        raise RuntimeError(f"Claude can't read {blob.get('mime_type')}")
+                    name = f"input-{len(files) + 1}{suffix}"
+                    (Path(tmp) / name).write_bytes(base64.b64decode(blob["data"]))
+                    files.append(name)
+            prompt = "\n\n".join(texts)
+            if files:
+                prompt = ("Read these files in the current folder first, they are part of the request: "
+                          + ", ".join(files) + "\n\n" + prompt)
+            if not prompt.strip():
+                return None
+            env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}   # the membership, never a metered key
+            r = subprocess.run(
+                [exe, "-p", "--output-format", "json", "--system-prompt", system,
+                 "--tools", "Read" if files else "", "--strict-mcp-config", "--setting-sources", "",
+                 "--no-session-persistence", "--disable-slash-commands"],
+                input=prompt, capture_output=True, text=True, cwd=tmp, env=env,
+                timeout=max(_CLAUDE_TIMEOUT_S, timeout_ms / 1000.0))
+    finally:
+        _CLAUDE_SLOTS.release()
+    try:
+        out = json.loads(r.stdout)
+    except Exception:
+        raise RuntimeError(f"exit {r.returncode}: {(r.stderr or r.stdout)[-140:]}")
+    result = str(out.get("result") or "").strip()
+    if out.get("is_error") or not result:
+        if "limit" in result.lower():
+            _cool(CLAUDE, _CLAUDE_LIMIT_COOLDOWN_S)
+        raise RuntimeError(f"Claude: {result[:140] or 'empty reply'}")
+    return _Reply(result)
+
+
+def claude_text(prompt: str, timeout_s: float = _CLAUDE_TIMEOUT_S) -> str:
+    """Claude alone, no Gemini behind it: for callers with their own Gemini
+    ladder (the website designer). "" when Claude is cooling off or failed."""
+    if _cooling(CLAUDE):
+        return ""
+    try:
+        reply = _claude_call(prompt, None, int(timeout_s * 1000))
+        return reply.text if reply else ""
+    except Exception as e:
+        print(f"[Claude] {type(e).__name__}: {str(e)[:140]}")
+        return ""
+
+
 def call(contents, tier: str = FAST, config=None,
          timeout_ms: int = DEFAULT_TIMEOUT_MS, key: str = ""):
     """Run one generation, walking the ladder until one answers.
@@ -392,13 +534,20 @@ def call(contents, tier: str = FAST, config=None,
 
     resolved_key = key or api_key()
     if not resolved_key:
-        print("[Gemini] no Gemini API key is configured")
-        return None
+        ladder = tuple(m for m in ladder if m == CLAUDE)
+        if not ladder:
+            print("[Gemini] no Gemini API key is configured")
+            return None
 
     cl = None
-    tried = [m for m in ladder if not _cooling(m)] or list(ladder)
+    tried = [m for m in ladder if not _cooling(m)] or [m for m in ladder if m != CLAUDE] or list(ladder)
     for model in tried:
         try:
+            if model == CLAUDE:
+                reply = _claude_call(contents, config, timeout_ms)
+                if reply is not None:
+                    return reply
+                raise RuntimeError("the Claude turn came back empty")
             if model == LIVE:
                 reply = _live_call(contents, config, timeout_ms, resolved_key)
                 if reply is not None:

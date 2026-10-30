@@ -366,6 +366,12 @@ def gemini_generate(timeout_s: float = 150.0) -> Optional[Generate]:
 
     def generate(text: str) -> Optional[str]:
         global _down_until
+        started = time.time()
+        print("[design] asking Claude ...", flush=True)
+        out = gemini.claude_text(text, timeout_s=max(timeout_s, 300.0))   # the membership's best model writes the site first
+        if out:
+            print(f"[design] Claude answered in {time.time() - started:.0f}s ({len(out)} characters)", flush=True)
+            return out
         if time.time() < _down_until:
             return None                                          # the models are busy right now: go straight to the built-in design
         try:
