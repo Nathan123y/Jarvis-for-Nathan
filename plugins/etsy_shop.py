@@ -18,7 +18,7 @@ PLUGIN = {
         "(AI illustration and slogan), puts it on a T-shirt, a mug and a sticker through Printify, and lists "
         "them on Etsy and eBay; Printify prints and ships orders. Use for 'how is my Etsy shop doing', 'any Etsy "
         "orders', 'make a new product now' (make_now; 'make 10 more t-shirts' = make_now, value=10, "
-        "products=['tee']), 'pause the shop' (pause), 'resume the shop' (resume), "
+        "products=['tee']; 'make a pet design now' = make_now, line='pet'), 'pause the shop' (pause), 'resume the shop' (resume), "
         "'make 2 designs a day' (per_day, value=number), 'what did you list lately' (recent), "
         "'what have the shop's agents learned' / 'what's trending for the shop' / 'what's selling' (agents), "
         "'connect Jarvis to Etsy' for the extra listing photos (connect_etsy), and when the user pastes the "
@@ -31,8 +31,13 @@ PLUGIN = {
             "action": {"type": "STRING", "enum": ["status", "make_now", "pause", "resume", "per_day", "recent", "agents", "connect_etsy", "finish_etsy"]},
             "url": {"type": "STRING", "description": "For finish_etsy: the whole https://localhost:3003/callback?... address"},
             "value": {"type": "INTEGER", "description": "For per_day: designs a day (0-5); for make_now: how many new designs (1-20)"},
-            "products": {"type": "ARRAY", "items": {"type": "STRING", "enum": ["tee", "mug", "sticker"]},
-                         "description": "For make_now: only these products (e.g. ['tee'] for t-shirts only); empty = all three"},
+            "products": {"type": "ARRAY", "items": {"type": "STRING", "enum": ["tee", "hoodie", "mug", "youth_tee", "toddler_tee",
+                                                                             "baby_bodysuit", "pet_bandana", "pet_hoodie", "emb_hat",
+                                                                             "emb_beanie", "ornament", "stocking", "blanket", "wrap"]},
+                         "description": "For make_now: only these products (e.g. ['tee'] for t-shirts only); empty = the usual set"},
+            "line": {"type": "STRING", "enum": ["family", "pet", "couple", "sweater"],
+                     "description": "For make_now: a Christmas line (matching family shirts, pet gear, couples' first-Christmas "
+                                    "keepsakes, ugly sweaters)"},
         },
         "required": [],
     },
@@ -106,6 +111,8 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
             st["make_now"] = int(st.get("make_now") or 0) + n
             if only:
                 st["make_only"] = only
+            if args.get("line") in (*ws.LINES, "sweater"):
+                st["make_style"] = args["line"]
             ws.save_state(st)
             what = " and ".join(ws.PRODUCTS[k]["name"].lower() + "s" for k in only) or "products"
             return (f"On it: {n} new design{'s' if n != 1 else ''} as {what}, one about every five minutes. "
