@@ -119,10 +119,11 @@ no gore close-ups, nothing that teaches self-harm or dangerous stunts, no hate.
 What the 3D kit can show: places - suburban backyard, busy daytime city sidewalk (crowds, pigeons, cafe tables,
 first-person hand holding a coffee or phone), city street with towers, open ocean, flat plain (desert, beach, snow,
 Mars, Moon), deep space (planets, stars, sun, black holes), small bedroom, indoor basketball arena with fans,
-boxing ring with crowd. Things - low-poly people (any colours, jersey numbers, horns, glowing eyes, muscle size;
-walk, run, punch, jump, dribble, fight, fall, arms up), crowds, cars, houses, trees, a basketball, glowing objects,
-beams, meteors. Effects - explosions, fire, smoke, sparks, debris, camera shake, flashes. Not possible: faces with
-detail, realistic animals besides pigeons, liquids splashing, readable signs.
+boxing ring with crowd. Things - realistic 3D humans (men and women, skin tones, hair, beards, shirts/jerseys with
+numbers, shorts, boxing gloves, devil skin with horns and glowing eyes; motion-captured walk, sprint, jump, punch,
+jab, get hit, fall/die, roll, dance, sit, cast a spell, swim, drive, cheer, dunk, shoot), cheering crowds, cars,
+houses, trees, a basketball, glowing objects, beams, meteors. Effects - explosions, fire, smoke, sparks, debris,
+camera shake, flashes. Not possible: talking faces, realistic animals besides pigeons, liquids splashing, signs.
 
 Rules for the script:
 - 30-50 seconds total: 12-20 beats. Beat 0 is the hook: the title, at most 12 words, shown over a COLD OPEN of
@@ -135,9 +136,17 @@ Rules for the script:
   the beat; good for a countdown), or kind "text" with "text": "ROUND 1". A HUD number must match its caption.
 - "emph": 1-2 words of the caption shown in blue.
 - Sound, per beat: "ambience" = the id of a background sound from the list below that starts at this beat and keeps
-  playing until another beat changes it ("none" = silence, "keep" = carry on). "sfx" = one sound effect id from the
-  list (a one-shot) or a synth effect: boom, whoosh, riser, hit, tick, rumble; or "none". Use sound effects
-  sparingly: on impacts, reveals and the ending. "music": "tension" for a quiet dark drone under the whole video,
+  playing until another beat changes it ("none" = silence, "keep" = carry on); "level" = its loudness from this beat
+  (0.3 hushed .. 1 normal .. 2.5 roaring), e.g. swell the crowd on the big play. "sfx" = one sound effect id from the
+  list (a one-shot, landing on the beat) or a synth effect: boom, whoosh, riser, hit, tick, rumble, bounce (ball on
+  hardwood), dribble (three bounces), swish (net), buzzer (arena horn), squeak (sneaker), punch, whistle (referee),
+  bell (boxing bell); or "none".
+  "sfx2" = up to 3 more hits later in the same beat: [{{"id": "...", "at": 1.2}}] (seconds after the beat starts).
+  SOUND MUST MATCH THE PICTURE LITERALLY: every sound is what you would really hear at that moment in that place, at
+  that intensity. A dunk in a packed arena = a roaring crowd, never polite or golf clapping; a quiet library = near
+  silence; fire = crackling flames. Read each sound's description, energy, fits and avoid notes, and never use a
+  sound whose "avoid" matches the moment. If nothing in the list really fits, use "none" or a synth effect: a missing
+  sound is better than a wrong one. Sound effects only on real on-screen events (impacts, reveals, the ending). "music": "tension" for a quiet dark drone under the whole video,
   or "none" (the references have none; use it only for space or empty places).
 {sounds}
 - "scene": one sentence on what we see during that beat (camera and action).
@@ -148,7 +157,8 @@ Rules for the script:
 Reply with only this JSON:
 {{"format": "whatif|versus", "topic": "...", "title": "...", "highlight": ["..."],
   "set": "backyard|street|city|ocean|plain|space|room|court|ring", "music": "none|tension",
-  "beats": [{{"say": "...", "emph": ["..."], "hud": null, "ambience": "keep", "sfx": "none", "scene": "..."}}],
+  "beats": [{{"say": "...", "emph": ["..."], "hud": null, "ambience": "keep", "level": 1, "sfx": "none", "sfx2": [],
+             "scene": "..."}}],
   "end_fact": "...", "caption": "...", "hashtags": ["..."]}}"""
 
 
@@ -225,13 +235,33 @@ def clean_script(s: dict, library: Optional[dict] = None) -> dict:
         v = str(v or "none")
         return v if v in SFX or v in library else "none"
 
+    def more(v):              # extra hits inside the beat: [{"id": ..., "at": seconds after the beat starts}]
+        out = []
+        for x in (v if isinstance(v, list) else []):
+            sid, at = (x.get("id"), x.get("at", 0)) if isinstance(x, dict) else (x, 0)
+            try:
+                at = max(0.0, min(4.0, float(at or 0)))
+            except (TypeError, ValueError):
+                at = 0.0
+            if fx(sid) != "none":
+                out.append({"id": fx(sid), "at": at})
+        return out[:3]
+
+    def level(v):
+        try:
+            return max(.3, min(2.5, float(v)))
+        except (TypeError, ValueError):
+            return 1.0
+
     beats = [{"say": str(b.get("say") or "").strip(), "emph": [str(x) for x in (b.get("emph") or [])][:3],
               "hud": b.get("hud") if isinstance(b.get("hud"), dict) else None,
-              "ambience": amb(b.get("ambience")), "sfx": fx(b.get("sfx")), "scene": str(b.get("scene") or "")}
+              "ambience": amb(b.get("ambience")), "level": level(b.get("level", 1)), "sfx": fx(b.get("sfx")),
+              "sfx2": more(b.get("sfx2")), "scene": str(b.get("scene") or "")}
              for b in s["beats"] if isinstance(b, dict) and str(b.get("say") or "").strip()]
     beats = beats[:22]
     if beats[0]["say"].strip().lower() != str(s["title"]).strip().lower():
-        beats.insert(0, {"say": s["title"], "emph": [], "hud": None, "ambience": "keep", "sfx": "none", "scene": "opening"})
+        beats.insert(0, {"say": s["title"], "emph": [], "hud": None, "ambience": "keep", "level": 1.0, "sfx": "none", "sfx2": [],
+                         "scene": "opening"})
     for b in beats:
         h = b["hud"]
         if h:
@@ -435,8 +465,13 @@ def sound_library() -> list[dict]:
 
 def sounds_text() -> str:
     lib = sound_library()
-    amb = [f"  {x['id']}: {x['what']} ({x['dur']:.0f}s)" for x in lib if x["kind"] == "ambient"]
-    one = [f"  {x['id']}: {x['what']} ({x['dur']:.1f}s)" for x in lib if x["kind"] == "oneshot"]
+
+    def line(x):
+        extra = "".join(f"; {k}: {', '.join(x[k]) if isinstance(x[k], list) else x[k]}" for k in ("fits", "avoid") if x.get(k))
+        e = f", energy {x['energy']}/5" if x.get("energy") else ""
+        return f"  {x['id']}: {x['what']} ({x['dur']:.0f}s{e}{extra})"
+    amb = [line(x) for x in lib if x["kind"] == "ambient"]
+    one = [line(x) for x in lib if x["kind"] == "oneshot"]
     return ("  Background sounds (ambience ids):\n" + ("\n".join(amb) or "  (none yet)") +
             "\n  One-shot sound effects (sfx ids):\n" + ("\n".join(one) or "  (none yet)"))
 
@@ -460,7 +495,7 @@ def caption_lengths(beats: list) -> list[float]:
 
 
 # ── 3. music and sound effects ───────────────────────────────────────────────
-SFX = ("none", "boom", "whoosh", "riser", "hit", "tick", "rumble")
+SFX = ("none", "boom", "whoosh", "riser", "hit", "tick", "rumble", "bounce", "dribble", "swish", "buzzer", "squeak", "punch", "whistle", "bell")
 
 
 def sfx(kind: str, seed: int = 0):
@@ -493,6 +528,41 @@ def sfx(kind: str, seed: int = 0):
     if kind == "rumble":
         n = int(SR * 4); t = np.arange(n) / SR
         return (_lowpass(rng.standard_normal(n), .01) * 6 * np.sin(np.pi * t / 4) ** 2).astype(np.float32)
+    if kind in ("bounce", "dribble"):                    # a basketball on hardwood: a ringing low thump (x3 for dribble)
+        one_n = int(SR * .35); t = np.arange(one_n) / SR
+        one = (np.sin(2 * np.pi * (95 + 40 * np.exp(-t * 30)) * t) * np.exp(-t * 18)
+               + np.sin(2 * np.pi * 340 * t) * np.exp(-t * 40) * .25
+               + _lowpass(rng.standard_normal(one_n), .25) * np.exp(-t * 90) * .5)
+        if kind == "bounce":
+            return one.astype(np.float32)
+        out = np.zeros(int(SR * 1.5), np.float32)
+        for k, at in enumerate((0, .45, .9)):
+            a = int(at * SR); out[a:a + one_n] += one * (1 - .1 * k)
+        return out
+    if kind == "swish":                                  # ball through the net: a soft airy brush
+        n = int(SR * .45); t = np.arange(n) / SR
+        x = rng.standard_normal(n); hp = x - _lowpass(x, .2)
+        return (_lowpass(hp, .6) * np.sin(np.pi * t / .45) ** 1.5 * .9).astype(np.float32)
+    if kind == "buzzer":                                 # arena horn
+        n = int(SR * 1.3); t = np.arange(n) / SR
+        w = sum(np.sign(np.sin(2 * np.pi * f * t)) * a for f, a in ((233, 1), (466, .5), (349, .4)))
+        env = np.minimum(1, t * 60) * np.minimum(1, (1.3 - t) * 12)
+        return (_lowpass(w, .35) * env * .35).astype(np.float32)
+    if kind == "squeak":                                 # sneaker on the court
+        n = int(SR * .22); t = np.arange(n) / SR
+        f = 2100 + 900 * np.sin(np.pi * t / .22)
+        return (np.sin(2 * np.pi * np.cumsum(f) / SR) * np.sin(np.pi * t / .22) * .3).astype(np.float32)
+    if kind == "punch":                                  # glove on body: thud + slap
+        n = int(SR * .5); t = np.arange(n) / SR
+        return (np.sin(2 * np.pi * 70 * t) * np.exp(-t * 22) + _lowpass(rng.standard_normal(n), .5) * np.exp(-t * 45) * .8).astype(np.float32)
+    if kind == "whistle":                                # referee whistle
+        n = int(SR * .7); t = np.arange(n) / SR
+        f = 2900 + 120 * np.sign(np.sin(2 * np.pi * 32 * t))
+        env = np.minimum(1, t * 40) * np.minimum(1, (.7 - t) * 15)
+        return (np.sin(2 * np.pi * np.cumsum(f) / SR) * env * .25).astype(np.float32)
+    if kind == "bell":                                   # boxing ring bell
+        n = int(SR * 2.2); t = np.arange(n) / SR
+        return (sum(np.sin(2 * np.pi * f * t) * a for f, a in ((880, 1), (2210, .5), (3300, .3))) * np.exp(-t * 2.2) * .3).astype(np.float32)
     return np.zeros(1, np.float32)
 
 
@@ -556,12 +626,18 @@ def mix(voice: Optional[list], beats: list, script: dict, duration: float, out: 
 
     # ambience: each one plays from its beat until the next change, looped, with half-second crossfades
     spans, cur = [], ("none", 0.0)
+    gain = np.ones(n, np.float32)                       # per-beat ambience loudness ("level"), glided over 0.4 s
+    lv = 1.0
     for (start, _), b in zip(beats, script["beats"]):
         a_id = b.get("ambience", "keep")
         if a_id != "keep" and a_id != cur[0]:
             spans.append((cur[0], cur[1], start))
             cur = (a_id, start)
+        lv = float(b.get("level", lv) or lv)
+        gain[int(start * SR):] = lv
     spans.append((cur[0], cur[1], duration))
+    k = int(SR * .4)
+    gain = np.convolve(np.pad(gain, (k, k), mode="edge"), np.ones(k) / k, mode="same")[k:-k].astype(np.float32)
     xf = int(SR * .5)
     for sid, t0, t1 in spans:
         x = clip(sid) if sid not in ("none", "keep") else None
@@ -573,9 +649,13 @@ def mix(voice: Optional[list], beats: list, script: dict, duration: float, out: 
         ramp = min(xf, len(seg) // 2)
         seg[:ramp] *= np.linspace(0, 1, ramp); seg[-ramp:] *= np.linspace(1, 0, ramp)
         amb[a:b_] += seg * .07
+    amb *= gain[:len(amb)]
     # sound effects: a library one-shot lands its hit on the beat; synth ones as before
+    hits = []
     for (start, _), b in zip(beats, script["beats"]):
-        sid = b.get("sfx", "none")
+        hits.append((b.get("sfx", "none"), start))
+        hits += [(h["id"], start + h.get("at", 0)) for h in b.get("sfx2") or []]
+    for sid, start in hits:
         if sid == "none":
             continue
         if sid in lib:
@@ -589,6 +669,8 @@ def mix(voice: Optional[list], beats: list, script: dict, duration: float, out: 
             a = int(start * SR)
             if sid == "riser":
                 a = max(0, a - len(x))
+        if a >= n:
+            continue
         fx[a:a + len(x)] += x[:max(0, n - a)]
     if voice:
         for (start, _), v in zip(beats, voice):
@@ -649,12 +731,26 @@ Places (each one sets the sky and lighting too; call exactly one, first):
 Pieces (all return the object; pos is [x,y,z]):
   K.ground(type, size)  K.grass(center, radius, count)  K.tree(pos, scale)  K.house(pos, {w,d,h,color,rot,lit})
   K.fence(a, b)  K.chair(pos, color, rot)  K.car(pos, color, rot)  K.box(pos, [w,h,d], color)  K.ball(pos, r, color)
-  K.person(pos, {shirt, pants, skin, hair, shoes, s, rot, number, horns, eyes, muscle}) -> a low-poly person;
-      number = jersey number, horns = true, eyes = glow colour (e.g. 0xff3300), muscle 1..1.5, s = size (1 = 1.8 m).
-      .parts {head, body, armL, armR, legL, legR}; .walk(t, speed) .run(t) each frame;
-      .pose('punch'|'jump'|'dribble'|'fight'|'arms_up'|'fall'|'idle', x 0..1); turn with .lookAt(x, y, z)
-  K.crowd([x0,z0], [x1,z1], count, {walk, speed, face:[x,z], s}) -> array of people (walkers stroll along z and wrap;
-      walk:false + face = spectators; crowd.cheer(true))
+  K.person(pos, opts) -> a REALISTIC skinned, textured 3D human (1.8 m at s=1, faces +z; turn with .rotation.y or
+      .lookAt(x, 0, z)). opts: sex 'm'|'f'; skin 'light'|'pale'|'tan'|'brown'|'dark' (or 'red'/'devil'/'green'/'blue'/
+      'grey' for creatures); hair 'buzzed'|'parted'|'long'|'buns'|'bald', hairColor, beard: true; shirt colour (null =
+      shirtless), sleeves 'none' (tank/jersey)|'short'|'long'; pants colour, legs 'shorts'|'long'; shoes colour;
+      gloves colour (boxing gloves); number (printed on the shirt front+back, e.g. 23 or '666'), numberColor '#fff';
+      horns: true; eyes: glow colour (0xff3300); s: size (1.1 = a 2 m athlete, 1.3 = a giant).
+      Animate it EVERY frame (it holds the last pose otherwise), with time in seconds:
+      .play(clip, time, weight=1) - clips: idle talk walk strut jog sprint jump_start jump_air jump_land punch jab
+        hit_chest hit_head death roll dance sit sit_talk sit_down stand_up crouch sneak cast cast_idle swing guard
+        push swim tread drive pickup interact kneel torch. Loops repeat; one-shots run 0..their length
+        (punch 1 s, jab .87, death 2.4, jump_start 1.33, jump_land 1.27, hit_chest .33, roll 1.47, cast .5).
+        Blend two by calling .play(a, t) then .play(b, t, 0.5).
+      .walk(t, speed) .run(t, speed) shortcuts (move .position yourself: walk ~1.4 m/s, run ~6 m/s at speed 1)
+      .pose(name, x 0..1): idle punch jab fight fall hit jump (start->air->land over x) arms_up cheer dunk shoot
+        dribble point sit dance cast
+      .aimArm('l'|'r', [x,y,z] in its own space: +x its left, +y up, +z forward, amount) after .play to point an arm
+      .bone('hand_r'|'Head'|'spine_03'|'foot_l'...) to attach things (bone.add(mesh)); .handPos('r') -> world Vector3
+  K.crowd([x0,z0], [x1,z1], count, {walk, speed, face:[x,z], s, jerseys}) -> array of realistic people (walkers stroll
+      along z and wrap; walk:false + face = spectators). K.cheer(true|false|0..1, t0) makes ALL spectators jump and
+      wave from t0 (call it when the big moment lands, K.cheer(false) to calm them).
   K.birds([x,y,z], count, radius) -> pigeons; .scatter(t0) makes them fly off
   K.hand({item: 'coffee'|'phone'|'none'}) -> first-person forearm in the lower right; call hand.bob(t) each frame
   K.glow(pos, {color, size, light, range}) -> glowing point with halo + light; .setPower(x) scales it (0 hides)
@@ -771,7 +867,8 @@ class Stage:
         f = (self.job / rel[4:]) if rel.startswith("job/") else (ASSETS / rel)
         if not f.is_file() or ".." in rel:
             return r.fulfill(status=404, body="")
-        ctype = {".js": "text/javascript", ".html": "text/html", ".json": "application/json"}.get(f.suffix, "application/octet-stream")
+        ctype = {".js": "text/javascript", ".html": "text/html", ".json": "application/json", ".png": "image/png", ".jpg": "image/jpeg",
+                 ".gltf": "model/gltf+json", ".glb": "model/gltf-binary"}.get(f.suffix, "application/octet-stream")
         r.fulfill(path=str(f), headers={"Content-Type": ctype, "Cache-Control": "no-store"})
 
     def boot(self, data: dict, scene_file: str = "scene.js") -> None:
@@ -925,6 +1022,13 @@ def make(topic: str = "", log: Callable = print, ask: Callable = ask_claude, his
 
     log("viral: mixing the sound")
     audio = mix(voice, times, script, duration, job / "audio.wav", seed)
+    for _ in range(2):                    # listen to it; swap any sound that doesn't fit what's on screen
+        fixed = sound_check(audio, times, script, log)
+        if not fixed:
+            break
+        script = fixed
+        (job / "script.json").write_text(json.dumps(script, indent=1))
+        audio = mix(voice, times, script, duration, job / "audio.wav", seed)
     OUT.mkdir(parents=True, exist_ok=True)
     slug = re.sub(r"[^a-z0-9]+", "-", script["title"].lower()).strip("-")[:50]
     out = OUT / f"{stamp}-{slug}.mp4"
@@ -938,6 +1042,78 @@ def make(topic: str = "", log: Callable = print, ask: Callable = ask_claude, his
     st["videos"].append(rec)
     save_state(st)
     return rec
+
+
+SOUND_CHECK = """You are the sound editor of a short viral 3D video (no narrator; captions + sound only). Listen to the
+attached soundtrack and compare it, beat by beat, with what is on screen:
+{beats}
+
+The sound library (only these ids may be used; "none" = silence, synth effects: boom, whoosh, riser, hit, tick, rumble, bounce, dribble, swish, buzzer, squeak,
+punch, whistle, bell):
+{sounds}
+
+Every sound must be what you would really hear at that moment, at the right intensity (a dunk in a packed arena =
+roaring crowd, never polite or golf clapping). Flag ONLY beats that sound clearly wrong or clearly missing a key sound.
+Reply ONLY JSON: {{"ok": true|false, "fixes": [{{"beat": 3, "problem": "golf claps under a dunk",
+"ambience": "<id>|keep|none|unchanged", "level": 0.3-2.5 or null, "sfx": "<id>|none|unchanged",
+"sfx2": [{{"id": "<id>", "at": 0.8}}] or null}}]}}"""
+
+
+def sound_check(audio: Path, times: list, script: dict, log: Callable = print) -> Optional[dict]:
+    """Gemini listens to the mix next to the beat list. Returns the script with the bad sounds swapped, or None."""
+    try:
+        from core import gemini
+        from google.genai import types
+        mp3 = audio.with_suffix(".check.mp3")
+        subprocess.run([ffmpeg(), "-loglevel", "quiet", "-y", "-i", str(audio), "-ac", "1", "-b:a", "64k", str(mp3)], check=True)
+        lib = {x["id"]: x for x in sound_library()}
+
+        def name(sid):
+            return f"{sid} ({lib[sid]['what']})" if sid in lib else sid
+        rows = []
+        for i, (b, (t0, t1)) in enumerate(zip(script["beats"], times)):
+            extra = ", ".join(f"{name(h['id'])} at +{h['at']:.1f}s" for h in b.get("sfx2") or [])
+            rows.append(f"beat {i} [{t0:.1f}-{t1:.1f}s] caption \"{b['say']}\" | on screen: {b.get('scene', '')} | "
+                        f"ambience {name(b.get('ambience', 'keep'))} level {b.get('level', 1)} | sfx {name(b.get('sfx', 'none'))}"
+                        + (f" | more: {extra}" if extra else ""))
+        prompt = SOUND_CHECK.format(beats="\n".join(rows), sounds=sounds_text())
+        c = gemini.client(timeout_ms=240000)
+        r = None
+        for model in ("gemini-3.5-flash", "gemini-3.5-flash-lite"):
+            try:
+                r = c.models.generate_content(model=model, contents=[types.Part.from_bytes(data=mp3.read_bytes(), mime_type="audio/mpeg"), prompt],
+                                              config=types.GenerateContentConfig(response_mime_type="application/json"))
+                break
+            except Exception as exc:
+                log(f"viral: sound check on {model} failed ({str(exc)[:80]})")
+        if r is None:
+            return None
+        verdict = _json_from(r.text)
+    except Exception as exc:
+        log(f"viral: skipped the sound check: {exc}")
+        return None
+    fixes = [f for f in verdict.get("fixes") or [] if isinstance(f, dict)]
+    if verdict.get("ok") or not fixes:
+        log("viral: sound check passed")
+        return None
+    new = json.loads(json.dumps(script))
+    for f in fixes:
+        try:
+            b = new["beats"][int(f.get("beat"))]
+        except (TypeError, ValueError, IndexError):
+            continue
+        log(f"viral: sound fix, beat {f.get('beat')}: {str(f.get('problem', ''))[:90]}")
+        for k in ("ambience", "sfx"):
+            if f.get(k) not in (None, "", "unchanged"):
+                b[k] = f[k]
+        if f.get("level") is not None:
+            b["level"] = f["level"]
+        if isinstance(f.get("sfx2"), list):
+            b["sfx2"] = f["sfx2"]
+    try:
+        return clean_script(new, lib)
+    except Exception:
+        return None
 
 
 def caption_for(script: dict) -> str:
