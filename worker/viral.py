@@ -11,6 +11,7 @@ Each video:
   6. It posts to TikTok through a Chrome profile that the user logged into once (`python3 -m worker.viral login`).
 
     python3 -m worker.viral make ["topic"]     make one video now (and post it, if posting is on)
+    python3 -m worker.viral queue ["topic"]    make the next slot's video now, text it to you, post it at the slot
     python3 -m worker.viral login              log in to TikTok once, in a Chrome window
     python3 -m worker.viral post FILE "caption" post a finished video
     python3 -m worker.viral status             the last videos
@@ -985,6 +986,13 @@ class ViralService:
             self._busy.release()
 
     def produce(self, cfg: dict, topic: str = "") -> str:
+        st = load_state()
+        queued = [v for v in st.get("queue") or [] if Path(v["path"]).exists()]
+        if queued:                                         # a video made ahead (and sent to the user to look over)
+            rec = queued[0]
+            st["queue"] = queued[1:]
+            save_state(st)
+            return self.deliver(rec, cfg)
         try:
             rec = make(topic, log=self.log)
         except Exception as exc:
@@ -1026,6 +1034,16 @@ def _mark(path: str, **fields) -> None:
 
 def main(argv: list[str]) -> int:
     cmd = argv[0] if argv else "status"
+    if cmd == "queue":                                     # make the next slot's video now and text it for review
+        rec = make(" ".join(a for a in argv[1:] if not a.startswith("--")))
+        st = load_state()
+        st.setdefault("queue", []).append(rec)
+        save_state(st)
+        from core import phone_alerts
+        phone_alerts.send_file(rec["path"], f"🎬 Tonight's TikTok, for you to look over: \"{rec['title']}\". "
+                               f"It posts at the next slot unless you say otherwise.\n\n{rec['caption']}")
+        print("queued and texted:", rec["path"])
+        return 0
     if cmd == "make":
         svc = ViralService()
         resume = next((a.split("=", 1)[1] for a in argv if a.startswith("--resume=")), None)
