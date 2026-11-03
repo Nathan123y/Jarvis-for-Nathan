@@ -1203,17 +1203,25 @@ def tiktok_post(video: Path, caption: str, ai_label: bool = True, log: Callable 
             if dry_run:
                 pg.screenshot(path=str(shot), full_page=True)
                 return f"dry run: ready to post (screenshot {shot})"
-            post.click()
-            # a "post now?" confirmation (content check still running) may appear
-            for label in ("Post now", "Post anyway", "Continue"):
-                b = pg.locator(f"button:has-text('{label}')")
+            pg.wait_for_timeout(15000)                      # let TikTok's own checks settle; early clicks get ignored
+            done = re.compile(r"tiktokstudio/content|/manage")
+            for attempt in range(4):
+                post.scroll_into_view_if_needed(timeout=10000)
+                pg.wait_for_timeout(1000)
+                post.click()
+                # a "post now?" confirmation (content check still running) may appear
+                for label in ("Post now", "Post anyway", "Continue"):
+                    try:
+                        pg.locator(f"button:has-text('{label}')").first.click(timeout=3000)
+                        break
+                    except Exception:
+                        pass
                 try:
-                    b.first.click(timeout=4000)
-                    break
+                    pg.wait_for_url(done, timeout=45000)
+                    return "posted"
                 except Exception:
-                    pass
-            pg.wait_for_url(re.compile(r"tiktokstudio/content|/manage"), timeout=120000)
-            return "posted"
+                    log(f"viral: Post click #{attempt + 1} didn't go through, trying again")
+            raise RuntimeError("TikTok never accepted the Post click")
         except Exception:
             try:
                 pg.screenshot(path=str(shot))
