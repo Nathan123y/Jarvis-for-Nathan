@@ -220,11 +220,18 @@ def claude_run(prompt: str, images: Optional[list] = None, timeout_s: float = 90
     return result
 
 
+class ClaudeBusy(RuntimeError):
+    """Claude is at its usage limit; the video waits for it instead of being made worse."""
+
+
 def ask_claude(prompt: str, timeout_s: float = 900, images: Optional[list] = None) -> str:
-    """Claude on the membership; Gemini (3.5 flash first, not Claude again) if Claude is out."""
+    """Claude on the membership. The Gemini fallback made poor videos (dark, empty scenes), so by default a video
+    waits for Claude instead (setting gemini_fallback = True brings the fallback back)."""
     out = claude_run(prompt, images, timeout_s)
     if out:
         return out
+    if not settings().get("gemini_fallback"):
+        raise ClaudeBusy("Claude is at its usage limit right now")
     from core import gemini
     contents = prompt
     if images:
@@ -305,6 +312,8 @@ def write_script(history: list, topic: str = "", ask: Callable = ask_claude) -> 
         try:
             return clean_script(_json_from(ask(SCRIPT_PROMPT.format(topic_line=topic_line, history=hist,
                                                                     sounds=sounds_text()), timeout_s=300)))
+        except ClaudeBusy:
+            raise
         except Exception as exc:                 # one more try on a malformed reply
             last = exc
     raise RuntimeError(f"couldn't get a script: {last}")
@@ -1031,7 +1040,7 @@ def make(topic: str = "", log: Callable = print, ask: Callable = ask_claude, his
                 except Exception as exc:
                     log(f"viral: the revision broke ({exc}); keeping the first version")
                     (job / "scene.js").write_text(code)
-        except Exception as exc:
+        except Exception as exc:                    # incl. Claude busy: the scene is Claude's already, so go on
             log(f"viral: skipped the visual review: {exc}")
 
     log("viral: mixing the sound")
@@ -1429,7 +1438,7 @@ class ViralService:
         except Exception as exc:
             self.log(f"viral: stats pass failed: {exc!r}")
         cfg = settings()
-        if not cfg["enabled"] or not self._busy.acquire(blocking=False):
+        if not cfg["enabled"] or time.time() < load_state().get("claude_busy_until", 0) or not self._busy.acquire(blocking=False):
             return ""
         try:
             now = now or datetime.now()
@@ -1458,6 +1467,16 @@ class ViralService:
             save_state(st)
         try:
             rec = make(topic, log=self.log)
+        except ClaudeBusy as exc:
+            self.log(f"viral: {exc}; trying this slot again in 20 minutes")
+            st = load_state()
+            st["claude_busy_until"] = time.time() + 20 * 60
+            for day, done in st["slots"].items():           # un-mark the slot so a later pass retries it
+                st["slots"][day] = done[:-1] if done else done
+            if topic:
+                st.setdefault("sequels", []).insert(0, topic) if topic.startswith("PART 2") else None
+            save_state(st)
+            return "waiting"
         except Exception as exc:
             self.log(f"viral: couldn't make a video: {exc}")
             self.notify("viral", f"🎬 Couldn't make today's TikTok video: {str(exc)[:160]}")
