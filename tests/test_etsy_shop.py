@@ -1,5 +1,6 @@
 """The Etsy print-on-demand shop: ideas, artwork, pricing, listing through Printify, the daily schedule."""
 import io
+import json
 import tempfile
 import unittest
 from datetime import datetime
@@ -271,6 +272,51 @@ class ListingTests(_Base):
         self.assertEqual(ws.Shop.look_for("pet", [{"style": "pet", "look": "retro"}]), "plain")
         self.assertEqual(ws.Shop.look_for("pet", [{"style": "pet", "look": "plain"}]), "retro")
         self.assertEqual(ws.Shop.look_for("couple", []), "plain")
+
+    def test_loose_specks_beside_the_drawing_are_cleared(self):
+        img = Image.new("RGB", (400, 300), "white")
+        d = ImageDraw.Draw(img)
+        d.ellipse((50, 50, 250, 250), fill=(200, 30, 30))                         # the drawing
+        d.ellipse((120, 120, 130, 130), fill=(255, 255, 255))                     # white inside it stays
+        d.rectangle((350, 140, 353, 146), fill=(40, 40, 40))                      # a stray mark off to the side
+        out = ws.cut_background(img)
+        self.assertLess(out.width, 260)                                           # cropped to the drawing alone
+
+    def test_video_shirts_keep_real_people_out(self):
+        self.assertEqual(ws.real_names("Could prime LeBron James beat Satan in a 1v1?", ["LeBron James"])[:3],
+                         ["LeBron James", "LeBron", "James"])
+        self.assertEqual(ws.real_names("What if you fell into Jupiter?", []), [])
+        bad = dict(IDEA, slogan="LEBRON WOULD COOK", real_people=["LeBron James"])
+        good = dict(IDEA, slogan="1V1 ME SATAN", title="Funny Devil Basketball 1v1 Shirt", real_people=["LeBron James"])
+        c = FakeClients(shops=[])
+        c.ideas = [bad, good]
+        s = self.shop(c)
+        rec = s.make_design(video="Could prime LeBron James beat Satan in a 1v1?")
+        self.assertEqual(rec["slogan"], "1V1 ME SATAN")                              # the LeBron one was refused
+        self.assertEqual(rec["style"], "video")
+        self.assertFalse(rec["etsy"])
+        self.assertEqual(rec["only"], ws.VIDEO_PRODUCTS)
+        self.assertIn("no real person", c.notes)
+
+    def test_each_posted_video_topic_gets_one_shirt(self):
+        viral = self.dir / "viral.json"
+        viral.write_text(json.dumps({"videos": [
+            {"topic": "falling into Jupiter", "made": 1, "posted": True},
+            {"topic": "Falling into Jupiter", "made": 2, "posted": True},          # the same topic again
+            {"topic": "a black hole Sun", "made": 3, "posted": False}]}))           # not posted yet
+        self.assertEqual(ws.video_topics(viral), ["falling into Jupiter"])
+        c = FakeClients(shops=[])
+        s = self.shop(c, designs_per_day=0, holiday_per_day=0)
+        svc = ws.ShopService(log=lambda m: None, notify=lambda k, t: None)
+        svc.viral_state = viral
+        with patch.object(ws, "settings", return_value=dict(s.cfg(), enabled=True)), \
+                patch.object(svc, "storefront"), patch.object(svc, "etsy_photos"), \
+                patch.object(svc, "video_slot"), patch.object(svc, "evening_review"):
+            svc.run_once(s, now=datetime(2026, 11, 20, 12))
+            svc.run_once(s, now=datetime(2026, 11, 20, 12, 5))
+        st = ws.load_state(s.state_path)
+        self.assertEqual([d.get("video") for d in st["designs"]], ["falling into Jupiter"])
+        self.assertEqual(st["video_shirts"], ["falling into Jupiter"])
 
     def test_retro_design_arches_short_slogans_and_splits_long_ones(self):
         from worker import retro
