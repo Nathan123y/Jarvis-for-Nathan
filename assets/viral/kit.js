@@ -10,6 +10,7 @@ import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { ImprovedNoise } from 'three/addons/math/ImprovedNoise.js';
 import { loadHumans, humanKit } from './humans.js';
+import { loadDinos, dinoKit } from './dinos.js';
 
 const W = 1080, H = 1920;
 
@@ -71,7 +72,7 @@ function softTex() {
 
 // ── the kit ──────────────────────────────────────────────────────────────────
 export async function boot(data, sceneUrl) {
-  await loadHumans();
+  await Promise.all([loadHumans(), loadDinos()]);
   Math.random = mulberry(data.seed || 7);
   const noise = new ImprovedNoise();
   const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, logarithmicDepthBuffer: true });
@@ -286,6 +287,7 @@ export async function boot(data, sceneUrl) {
     g.rotation.y = rot; return K.add(g, pos);
   };
   humanKit(K, updaters);   // K.person, K.crowd: real people (humans.js)
+  dinoKit(K);              // K.dino (dinos.js)
   /** pigeons pecking around [x,z]; flock.scatter(t0) sends them flying */
   K.birds = (center = [0, 0, 0], count = 10, radius = 3) => {
     const c = v3(center), list = [];

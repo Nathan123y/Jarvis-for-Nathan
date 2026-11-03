@@ -137,7 +137,8 @@ boxing ring with crowd. Things - realistic 3D humans (men and women, skin tones,
 numbers, shorts, boxing gloves, devil skin with horns and glowing eyes; motion-captured walk, sprint, jump, punch,
 jab, get hit, fall/die, roll, dance, sit, cast a spell, swim, drive, cheer, dunk, shoot), cheering crowds, cars,
 houses, trees, a basketball, glowing objects, beams, meteors. Effects - explosions, fire, smoke, sparks, debris,
-camera shake, flashes. Not possible: talking faces, realistic animals besides pigeons, liquids splashing, signs.
+camera shake, flashes. Dinosaurs (T-rex, raptors, triceratops, stegosaurus, brontosaurus, parasaurolophus; walk,
+run, attack, jump, die). Not possible: talking faces, other animals besides pigeons, liquids splashing, signs.
 
 Rules for the script:
 - 30-50 seconds total: 12-20 beats. Beat 0 is the hook: the title, at most 12 words, shown over a COLD OPEN of
@@ -774,6 +775,10 @@ Pieces (all return the object; pos is [x,y,z]):
   K.crowd([x0,z0], [x1,z1], count, {walk, speed, face:[x,z], s, jerseys}) -> array of realistic people (walkers stroll
       along z and wrap; walk:false + face = spectators). K.cheer(true|false|0..1, t0) makes ALL spectators jump and
       wave from t0 (call it when the big moment lands, K.cheer(false) to calm them).
+  K.dino(kind, pos, {s, rot, color}) -> an animated dinosaur (faces +z): trex (4.2 m tall), raptor (1.7 m),
+      triceratops (3 m), stegosaurus (4 m), apatosaurus (9 m, long neck), parasaurolophus (4.2 m). Call
+      .play('Idle'|'Walk'|'Run'|'Attack'|'Jump'|'Death', t) every frame (t in seconds; loops wrap); move .position
+      yourself (walk ~2 m/s, run ~8 m/s). Herds: make many and offset their t.
   K.birds([x,y,z], count, radius) -> pigeons; .scatter(t0) makes them fly off
   K.hand({item: 'coffee'|'phone'|'none'}) -> first-person forearm in the lower right; call hand.bob(t) each frame
   K.glow(pos, {color, size, light, range}) -> glowing point with halo + light; .setPower(x) scales it (0 hides)
@@ -891,7 +896,7 @@ class Stage:
         if not f.is_file() or ".." in rel:
             return r.fulfill(status=404, body="")
         ctype = {".js": "text/javascript", ".html": "text/html", ".json": "application/json", ".png": "image/png", ".jpg": "image/jpeg",
-                 ".gltf": "model/gltf+json", ".glb": "model/gltf-binary"}.get(f.suffix, "application/octet-stream")
+                 ".gltf": "model/gltf+json", ".glb": "model/gltf-binary", ".fbx": "application/octet-stream"}.get(f.suffix, "application/octet-stream")
         r.fulfill(path=str(f), headers={"Content-Type": ctype, "Cache-Control": "no-store"})
 
     def boot(self, data: dict, scene_file: str = "scene.js") -> None:
@@ -1465,6 +1470,9 @@ class ViralService:
         if not topic and st.get("sequels"):             # a sequel to a video that took off goes first
             topic = st["sequels"].pop(0)
             save_state(st)
+        elif not topic and st.get("topic_queue"):       # then topics the user asked for
+            topic = st["topic_queue"].pop(0)
+            save_state(st)
         try:
             rec = make(topic, log=self.log)
         except ClaudeBusy as exc:
@@ -1473,8 +1481,8 @@ class ViralService:
             st["claude_busy_until"] = time.time() + 20 * 60
             for day, done in st["slots"].items():           # un-mark the slot so a later pass retries it
                 st["slots"][day] = done[:-1] if done else done
-            if topic:
-                st.setdefault("sequels", []).insert(0, topic) if topic.startswith("PART 2") else None
+            if topic:                                       # put the topic back for the retry
+                st.setdefault("sequels" if topic.startswith("PART 2") else "topic_queue", []).insert(0, topic)
             save_state(st)
             return "waiting"
         except Exception as exc:
@@ -1521,6 +1529,12 @@ def _mark(path: str, **fields) -> None:
 
 def main(argv: list[str]) -> int:
     cmd = argv[0] if argv else "status"
+    if cmd == "topic":                               # python3 -m worker.viral topic "Could ..." -> made at the next slot
+        st = load_state()
+        st.setdefault("topic_queue", []).append(" ".join(argv[1:]))
+        save_state(st)
+        print("next topics:", st["topic_queue"])
+        return 0
     if cmd == "queue":                                     # make the next slot's video now and text it for review
         rec = make(" ".join(a for a in argv[1:] if not a.startswith("--")))
         st = load_state()
