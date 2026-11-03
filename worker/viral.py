@@ -842,7 +842,7 @@ def tiktok_login(wait_s: int = 900) -> bool:
     return False
 
 
-def tiktok_post(video: Path, caption: str, ai_label: bool = True, log: Callable = print) -> str:
+def tiktok_post(video: Path, caption: str, ai_label: bool = True, log: Callable = print, dry_run: bool = False) -> str:
     """Uploads through TikTok Studio in the logged-in profile. Returns a note; raises on failure (with a screenshot)."""
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
@@ -861,11 +861,15 @@ def tiktok_post(video: Path, caption: str, ai_label: bool = True, log: Callable 
             editor.click()
             pg.keyboard.press("Meta+A")
             pg.keyboard.press("Backspace")
+            pg.wait_for_timeout(500)
             for word in caption.split(" "):
                 pg.keyboard.type(word, delay=8)
                 pg.keyboard.type(" ")
                 if word.startswith("#"):
                     pg.wait_for_timeout(600)               # the hashtag menu closes after the space
+            typed = editor.inner_text()
+            if video.stem in typed or caption.split(" ")[0] not in typed:
+                raise RuntimeError(f"the caption didn't go in (the box says: {typed[:80]!r})")
             if ai_label:
                 _ai_label(pg, log)
             # wait for the upload to finish: the Post button becomes enabled
@@ -876,6 +880,9 @@ def tiktok_post(video: Path, caption: str, ai_label: bool = True, log: Callable 
                                          or post.get_attribute("data-disabled") == "true"):
                 pg.wait_for_timeout(2000)
             pg.wait_for_timeout(1500)
+            if dry_run:
+                pg.screenshot(path=str(shot), full_page=True)
+                return f"dry run: ready to post (screenshot {shot})"
             post.click()
             # a "post now?" confirmation (content check still running) may appear
             for label in ("Post now", "Post anyway", "Continue"):
@@ -897,25 +904,30 @@ def tiktok_post(video: Path, caption: str, ai_label: bool = True, log: Callable 
             ctx.close()
 
 
-def _ai_label(pg, log: Callable) -> None:
+def _ai_label(pg, log: Callable) -> bool:
     """Turns on 'AI-generated content' in the upload settings (TikTok requires it for AI-made video)."""
     try:
-        more = pg.locator("text=/^(Show more|More options|Advanced settings)$/i").first
-        if more.count():
-            more.click(timeout=4000)
-        row = pg.locator("text=/AI-generated content/i").first
-        row.scroll_into_view_if_needed(timeout=5000)
-        switch = row.locator("xpath=ancestor::*[.//*[@role='switch' or @type='checkbox']][1]").locator("[role='switch'], input[type='checkbox']").first
-        if switch.get_attribute("aria-checked") != "true" and not switch.is_checked():
-            switch.click(timeout=4000)
-            for label in ("Turn on", "Confirm"):
+        sw = pg.locator("[data-e2e='aigc_container'] .Switch__content").first
+        if not sw.is_visible():                                # it sits in the collapsed "Show more" section
+            pg.locator("text=/^Show more$/i").first.click(timeout=5000)
+            sw.wait_for(state="visible", timeout=8000)
+        sw.scroll_into_view_if_needed(timeout=5000)
+        if sw.get_attribute("aria-checked") != "true":
+            sw.click(timeout=5000)
+            pg.wait_for_timeout(800)
+            for label in ("Turn on", "Confirm", "OK"):            # a "label this content?" dialog
                 try:
-                    pg.locator(f"button:has-text('{label}')").first.click(timeout=2500)
+                    pg.locator(f"button:has-text('{label}')").last.click(timeout=2000)
                     break
                 except Exception:
                     pass
+        on = sw.get_attribute("aria-checked") == "true"
+        if not on:
+            log("viral: the AI-generated switch didn't turn on")
+        return on
     except Exception as exc:
         log(f"viral: couldn't set the AI-generated label: {str(exc)[:120]}")
+        return False
 
 
 # ── the worker's thread: a video at each of the day's times ─────────────────
