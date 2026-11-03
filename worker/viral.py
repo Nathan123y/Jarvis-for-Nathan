@@ -138,7 +138,9 @@ Rules for the script:
 - Sound, per beat: "ambience" = the id of a background sound from the list below that starts at this beat and keeps
   playing until another beat changes it ("none" = silence, "keep" = carry on); "level" = its loudness from this beat
   (0.3 hushed .. 1 normal .. 2.5 roaring), e.g. swell the crowd on the big play. "sfx" = one sound effect id from the
-  list (a one-shot, landing on the beat) or a synth effect: boom, whoosh, riser, hit, tick, rumble; or "none".
+  list (a one-shot, landing on the beat) or a synth effect: boom, whoosh, riser, hit, tick, rumble, bounce (ball on
+  hardwood), dribble (three bounces), swish (net), buzzer (arena horn), squeak (sneaker), punch, whistle (referee),
+  bell (boxing bell); or "none".
   "sfx2" = up to 3 more hits later in the same beat: [{{"id": "...", "at": 1.2}}] (seconds after the beat starts).
   SOUND MUST MATCH THE PICTURE LITERALLY: every sound is what you would really hear at that moment in that place, at
   that intensity. A dunk in a packed arena = a roaring crowd, never polite or golf clapping; a quiet library = near
@@ -465,7 +467,7 @@ def sounds_text() -> str:
     lib = sound_library()
 
     def line(x):
-        extra = "".join(f"; {k}: {x[k]}" for k in ("fits", "avoid") if x.get(k))
+        extra = "".join(f"; {k}: {', '.join(x[k]) if isinstance(x[k], list) else x[k]}" for k in ("fits", "avoid") if x.get(k))
         e = f", energy {x['energy']}/5" if x.get("energy") else ""
         return f"  {x['id']}: {x['what']} ({x['dur']:.0f}s{e}{extra})"
     amb = [line(x) for x in lib if x["kind"] == "ambient"]
@@ -493,7 +495,7 @@ def caption_lengths(beats: list) -> list[float]:
 
 
 # ── 3. music and sound effects ───────────────────────────────────────────────
-SFX = ("none", "boom", "whoosh", "riser", "hit", "tick", "rumble")
+SFX = ("none", "boom", "whoosh", "riser", "hit", "tick", "rumble", "bounce", "dribble", "swish", "buzzer", "squeak", "punch", "whistle", "bell")
 
 
 def sfx(kind: str, seed: int = 0):
@@ -526,6 +528,41 @@ def sfx(kind: str, seed: int = 0):
     if kind == "rumble":
         n = int(SR * 4); t = np.arange(n) / SR
         return (_lowpass(rng.standard_normal(n), .01) * 6 * np.sin(np.pi * t / 4) ** 2).astype(np.float32)
+    if kind in ("bounce", "dribble"):                    # a basketball on hardwood: a ringing low thump (x3 for dribble)
+        one_n = int(SR * .35); t = np.arange(one_n) / SR
+        one = (np.sin(2 * np.pi * (95 + 40 * np.exp(-t * 30)) * t) * np.exp(-t * 18)
+               + np.sin(2 * np.pi * 340 * t) * np.exp(-t * 40) * .25
+               + _lowpass(rng.standard_normal(one_n), .25) * np.exp(-t * 90) * .5)
+        if kind == "bounce":
+            return one.astype(np.float32)
+        out = np.zeros(int(SR * 1.5), np.float32)
+        for k, at in enumerate((0, .45, .9)):
+            a = int(at * SR); out[a:a + one_n] += one * (1 - .1 * k)
+        return out
+    if kind == "swish":                                  # ball through the net: a soft airy brush
+        n = int(SR * .45); t = np.arange(n) / SR
+        x = rng.standard_normal(n); hp = x - _lowpass(x, .2)
+        return (_lowpass(hp, .6) * np.sin(np.pi * t / .45) ** 1.5 * .9).astype(np.float32)
+    if kind == "buzzer":                                 # arena horn
+        n = int(SR * 1.3); t = np.arange(n) / SR
+        w = sum(np.sign(np.sin(2 * np.pi * f * t)) * a for f, a in ((233, 1), (466, .5), (349, .4)))
+        env = np.minimum(1, t * 60) * np.minimum(1, (1.3 - t) * 12)
+        return (_lowpass(w, .35) * env * .35).astype(np.float32)
+    if kind == "squeak":                                 # sneaker on the court
+        n = int(SR * .22); t = np.arange(n) / SR
+        f = 2100 + 900 * np.sin(np.pi * t / .22)
+        return (np.sin(2 * np.pi * np.cumsum(f) / SR) * np.sin(np.pi * t / .22) * .3).astype(np.float32)
+    if kind == "punch":                                  # glove on body: thud + slap
+        n = int(SR * .5); t = np.arange(n) / SR
+        return (np.sin(2 * np.pi * 70 * t) * np.exp(-t * 22) + _lowpass(rng.standard_normal(n), .5) * np.exp(-t * 45) * .8).astype(np.float32)
+    if kind == "whistle":                                # referee whistle
+        n = int(SR * .7); t = np.arange(n) / SR
+        f = 2900 + 120 * np.sign(np.sin(2 * np.pi * 32 * t))
+        env = np.minimum(1, t * 40) * np.minimum(1, (.7 - t) * 15)
+        return (np.sin(2 * np.pi * np.cumsum(f) / SR) * env * .25).astype(np.float32)
+    if kind == "bell":                                   # boxing ring bell
+        n = int(SR * 2.2); t = np.arange(n) / SR
+        return (sum(np.sin(2 * np.pi * f * t) * a for f, a in ((880, 1), (2210, .5), (3300, .3))) * np.exp(-t * 2.2) * .3).astype(np.float32)
     return np.zeros(1, np.float32)
 
 
@@ -1011,7 +1048,8 @@ SOUND_CHECK = """You are the sound editor of a short viral 3D video (no narrator
 attached soundtrack and compare it, beat by beat, with what is on screen:
 {beats}
 
-The sound library (only these ids may be used; "none" = silence, synth effects: boom, whoosh, riser, hit, tick, rumble):
+The sound library (only these ids may be used; "none" = silence, synth effects: boom, whoosh, riser, hit, tick, rumble, bounce, dribble, swish, buzzer, squeak,
+punch, whistle, bell):
 {sounds}
 
 Every sound must be what you would really hear at that moment, at the right intensity (a dunk in a packed arena =
