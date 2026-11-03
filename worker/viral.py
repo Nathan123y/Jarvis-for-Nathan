@@ -114,6 +114,15 @@ Video formats (pick the one that fits):
   the HUD: a real person gets their best season, named ("PRIME LEBRON - 2012-13 MIAMI", "26.8 PPG - 8.0 REB - 7.3 AST",
   "56.5% FG - MVP - CHAMPION"; one stat line per beat, numbers must be correct); the other side gets its
   legendary/scientific numbers ("SATAN - AGE: ETERNAL", "HEIGHT: ABOUT 9 FT"). Then play the matchup out.
+WHAT PEOPLE WATCH: fantasy, absurd, funny and unrealistic beats realistic every time. Never a boring science lesson
+or a dry "what happens to your body" video. The idea alone must make someone stop scrolling and laugh or go "wait,
+what?". Mix famous people, mythical creatures, gods, monsters, aliens, animals with powers and everyday life, and
+play it completely straight like a real broadcast or documentary (that's the joke). Real-feeling numbers on the
+HUD, escalating chaos, a funny or shocking twist, an ending that makes people comment who'd win / argue / tag a
+friend. Examples of the energy: "Can Prime LeBron Beat Satan in a 1v1?", "Could 100 Men Beat Prime Mike Tyson?",
+"What if Zeus joined the NBA for one season?", "Can Shaq survive one round against a T-rex?", "What if your cat
+got 1,000x stronger every day?", "Could Gordon Ramsay survive a dinner shift in Hell?", "What if pigeons started
+paying rent?", "Could Usain Bolt outrun a meteor?", "What if gravity turned off for 10 seconds at a Lakers game?".
 {topic_line}
 Don't repeat these recent videos:
 {history}
