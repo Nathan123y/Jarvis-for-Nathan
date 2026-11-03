@@ -97,9 +97,15 @@ def cmd_run(args) -> int:
     internships = InternshipService(logging.getLogger("jarvis.internships").info,
                                     notify=lambda kind, text: alerts.alerts.scheduled(kind, text))
     internships.start()
+    # Viral videos: 3D "what if" shorts made here and posted to TikTok, at each of the day's times (worker/viral.py).
+    from worker.viral import ViralService
+    viral = ViralService(logging.getLogger("jarvis.viral").info,
+                         notify=lambda kind, text: alerts.alerts.scheduled(kind, text))
+    viral.start()
     try:
         w.run_forever()
     finally:
+        viral.stop()
         internships.stop()
         shop.stop()
         alerts.stop()

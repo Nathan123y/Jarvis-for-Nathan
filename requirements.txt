@@ -99,3 +99,4 @@ pynvml                       # system_monitor + the HUD's GPU meter (NVIDIA)
 # tools (pactl / brightnessctl / osascript / systemd), so no extra Python
 # packages are needed there — nothing Windows-specific is ever pulled in.
 imageio-ffmpeg>=0.5  # video rendering for the shop (bundles ffmpeg)
+edge-tts>=7.0        # the backup narrator voice for the viral videos (free)

@@ -96,3 +96,9 @@ config/worker/
 config/dryrun/
 config/google_forms_token.json
 config/google_forms_token.json.tmp
+
+# Viral videos: per-video work folders, the video log, and the Chrome profile
+# logged into TikTok (committing that profile hands over the account)
+memory/viral/
+memory/viral.json
+memory/tiktok_profile/
