@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+from unittest.mock import patch
 
 from worker import viral as wv
 
@@ -26,7 +27,7 @@ SCRIPT = {"topic": "neutron star", "title": "What if a spoonful of neutron star 
 
 class ScriptTests(unittest.TestCase):
     def test_clean_script_adds_the_hook_as_beat_zero_and_tidies(self):
-        s = wv.clean_script(SCRIPT)
+        s = wv.clean_script(SCRIPT, library={})
         self.assertEqual(s["beats"][0]["say"], SCRIPT["title"])
         self.assertEqual(len(s["beats"]), 6)                     # empty line dropped, hook added
         self.assertEqual(s["beats"][2]["sfx"], "none")           # unknown sfx -> none
@@ -34,6 +35,22 @@ class ScriptTests(unittest.TestCase):
         self.assertEqual(s["beats"][3]["hud"]["kind"], "text")   # a 21-digit counter becomes text
         self.assertEqual(s["beats"][5]["hud"]["kind"], "text")
         self.assertEqual(s["hashtags"], ["fyp", "science", "space"])
+        self.assertEqual(s["beats"][1]["ambience"], "keep")                 # unknown sound ids fall back
+
+    def test_clean_script_keeps_known_sound_ids(self):
+        lib = {"amb1": {"kind": "ambient"}, "hit1": {"kind": "oneshot"}}
+        raw = dict(SCRIPT, beats=[dict(b, ambience="amb1", sfx="hit1") for b in SCRIPT["beats"]])
+        s = wv.clean_script(raw, library=lib)
+        self.assertEqual((s["beats"][1]["ambience"], s["beats"][1]["sfx"]), ("amb1", "hit1"))
+        raw = dict(SCRIPT, beats=[dict(b, ambience="hit1") for b in SCRIPT["beats"]])     # a one-shot can't be a bed
+        self.assertEqual(wv.clean_script(raw, library=lib)["beats"][1]["ambience"], "keep")
+
+    def test_captions_stay_up_long_enough_to_read(self):
+        ls = wv.caption_lengths([{"say": "What if humans evolved 1,000 years every 3 seconds?"}, {"say": "Gone."},
+                                 {"say": " ".join(["word"] * 30)}])
+        self.assertEqual(ls[1], 1.5)
+        self.assertGreaterEqual(ls[0], 2.6)
+        self.assertEqual(ls[2], 3.6)
 
     def test_clean_script_refuses_a_stub(self):
         with self.assertRaises(ValueError):
@@ -47,7 +64,8 @@ class ScriptTests(unittest.TestCase):
 
     def test_write_script_retries_a_bad_reply(self):
         replies = iter(["not json", json.dumps(SCRIPT)])
-        s = wv.write_script([], "", ask=lambda prompt, timeout_s=0: next(replies))
+        with patch.object(wv, "sound_library", return_value=[]):
+            s = wv.write_script([], "", ask=lambda prompt, timeout_s=0: next(replies))
         self.assertEqual(s["title"], SCRIPT["title"])
 
 
@@ -73,9 +91,29 @@ class TimingTests(unittest.TestCase):
         self.assertEqual(wv.due_slots("bad, 16:15", [], now), ["16:15"])
 
 
+class StatsTests(unittest.TestCase):
+    def test_counts_parse(self):
+        self.assertEqual([wv.parse_count(x) for x in ("987", "1.2K", "3.4M", "12,345", "")], [987, 1200, 3400000, 12345, 0])
+
+    def test_a_milestone_is_texted_once(self):
+        stats = [{"id": "1", "views": "12.5K", "desc": "Could LeBron beat Satan?", "url": "u1"},
+                 {"id": "2", "views": "300", "desc": "Jupiter", "url": "u2"}]
+        msgs, seen = wv.viral_news(stats, {}, 0)
+        self.assertEqual(len(msgs), 1)
+        self.assertIn("10,000", msgs[0])
+        self.assertIn("LeBron", msgs[0])
+        msgs, seen = wv.viral_news(stats, seen, 10)
+        self.assertEqual(msgs, [])
+
+    def test_far_above_usual_is_flagged(self):
+        stats = [{"id": str(i), "views": "200"} for i in range(6)] + [{"id": "x", "views": "2.5K", "desc": "Moon"}]
+        msgs, _ = wv.viral_news(stats, {}, 0)
+        self.assertTrue(any("5x" in m for m in msgs))
+
+
 class AudioTests(unittest.TestCase):
     def test_mix_writes_a_normalised_wav_of_the_right_length(self):
-        s = wv.clean_script(SCRIPT)
+        s = wv.clean_script(SCRIPT, library={})
         voice = [np.sin(np.linspace(0, 300, wv.SR // 2)).astype(np.float32) for _ in s["beats"]]
         beats, total = wv.timeline([0.5] * len(s["beats"]))
         with tempfile.TemporaryDirectory() as d:
@@ -84,7 +122,7 @@ class AudioTests(unittest.TestCase):
                 self.assertEqual(w.getframerate(), wv.SR)
                 self.assertAlmostEqual(w.getnframes() / wv.SR, total, places=1)
                 x = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
-            self.assertLessEqual(np.abs(x).max(), 32767 * 0.91)
+            self.assertLessEqual(np.abs(x).max(), 32767 * 0.9)
             self.assertGreater(np.abs(x).max(), 32767 * 0.5)
 
     def test_one_recording_is_cut_into_its_lines_at_the_pauses(self):
@@ -97,6 +135,16 @@ class AudioTests(unittest.TestCase):
         self.assertAlmostEqual(len(pieces[0]) / rate, 1.25, delta=.05)
         self.assertIsNone(wv.split_by_pauses(x, rate, [1, 1, 30]))          # pieces that don't fit the words
         self.assertIsNone(wv.split_by_pauses(tone(3), rate, [2, 2]))       # no pause at all
+
+    def test_caption_only_mix_has_sound_without_a_voice(self):
+        s = wv.clean_script(SCRIPT, library={})
+        s["beats"][1]["sfx"] = "boom"
+        beats, total = wv.timeline(wv.caption_lengths(s["beats"]), hook_min=2.6, gap=0)
+        with tempfile.TemporaryDirectory() as d, patch.object(wv, "sound_library", return_value=[]):
+            out = wv.mix(None, beats, s, total, Path(d) / "a.wav", seed=1)
+            with wave.open(str(out)) as w:
+                x = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
+        self.assertGreater(np.abs(x).max(), 10000)
 
     def test_every_sound_effect_renders(self):
         for k in wv.SFX:
