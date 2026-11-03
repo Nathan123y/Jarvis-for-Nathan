@@ -1202,7 +1202,7 @@ def tiktok_post(video: Path, caption: str, ai_label: bool = True, log: Callable 
             if ai_label:
                 _ai_label(pg, log)
             # wait for the upload to finish: the Post button becomes enabled
-            post = pg.locator("button[data-e2e='post_video_button'], button:has-text('Post')").first
+            post = pg.locator("button[data-e2e='post_video_button']").first
             end = time.time() + 600
             while time.time() < end and (post.get_attribute("disabled") is not None
                                          or post.get_attribute("aria-disabled") == "true"
@@ -1217,14 +1217,10 @@ def tiktok_post(video: Path, caption: str, ai_label: bool = True, log: Callable 
             for attempt in range(4):
                 post.scroll_into_view_if_needed(timeout=10000)
                 pg.wait_for_timeout(1000)
-                post.click()
-                # a "post now?" confirmation (content check still running) may appear
-                for label in ("Post now", "Post anyway", "Continue"):
-                    try:
-                        pg.locator(f"button:has-text('{label}')").first.click(timeout=3000)
-                        break
-                    except Exception:
-                        pass
+                _close_modals(pg, log)
+                post.click(timeout=15000)
+                pg.wait_for_timeout(2500)
+                _close_modals(pg, log, posting=True)
                 try:
                     pg.wait_for_url(done, timeout=45000)
                     return "posted"
@@ -1239,6 +1235,39 @@ def tiktok_post(video: Path, caption: str, ai_label: bool = True, log: Callable 
             raise
         finally:
             ctx.close()
+
+
+def _close_modals(pg, log: Callable, posting: bool = False) -> None:
+    """TikTok Studio pop-ups: never leave the page ("Are you sure you want to exit?" -> Cancel); after the Post
+    click, accept a "post now?" confirmation; dismiss anything else."""
+    for _ in range(3):
+        modal = pg.locator("#tux-portal-container [role=dialog], .TUXModal, [class*='TUXModal-content']").first
+        try:
+            if not modal.is_visible():
+                return
+            text = modal.inner_text(timeout=2000)
+        except Exception:
+            return
+        log(f"viral: TikTok pop-up: {text[:120]!r}")
+        low = text.lower()
+        if "exit" in low or "discard" in low or "leave" in low:
+            choice = ("Cancel", "Stay", "Keep editing")
+        elif posting:
+            choice = ("Post now", "Post anyway", "Post", "Continue", "Confirm", "OK", "Got it")
+        else:
+            choice = ("Got it", "OK", "Close", "Cancel", "Not now")
+        for label in choice:
+            b = modal.locator(f"button:has-text('{label}')")
+            try:
+                if b.count():
+                    b.first.click(timeout=3000)
+                    pg.wait_for_timeout(1500)
+                    break
+            except Exception:
+                pass
+        else:
+            pg.keyboard.press("Escape")
+            pg.wait_for_timeout(1000)
 
 
 def _ai_label(pg, log: Callable) -> bool:
