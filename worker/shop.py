@@ -219,9 +219,23 @@ in a Christmas way (a stethoscope in a Santa hat, a toolbox with tinsel). Mild s
 has to be able to give it. Title and tags lead with the job, the way people search: "{audience} christmas shirt",
 "christmas gift for {audience}", "{audience} gift", "funny {audience} christmas"."""},
 }
+# Shirts from our viral "what if" videos (2026-11-03, user: "for each different topic could we make a shirt"):
+# one design per posted video topic, on top of the rest, free channels only (Etsy charges per listing).
+# Never the real people in a video (no names, faces or likenesses): only the idea, the non-human side, the matchup.
+VIRAL_STATE = ROOT / "memory" / "viral.json"
+VIDEO_PRODUCTS = ["tee", "hoodie", "crewneck", "mug", "poster", "tote"]
+VIDEO_NOTE = """This design comes from one of our viral "what if" videos on TikTok: "{topic}". Make the shirt
+someone who loved that video would buy: the video's question, matchup or wild idea turned into a funny, quotable
+slogan and one bold original illustration (e.g. a video "could a gorilla beat 100 men" becomes a smug cartoon gorilla
+and "100 MEN? WARM-UP."). Put the topic in the title and tags the way people search for it.
+
+HARD RULE: no real person in any way. If the topic names a real person (athlete, celebrity, streamer, politician),
+leave them out completely: no name, nickname, initials, jersey number, face, likeness or "you know who" hint. Use the
+other side of the matchup (a devil, an animal, a planet), the sport or setting, or the viewer ("1V1 ME, SATAN" style).
+Also add a key "real_people" to your JSON: a list of every real person named in the topic (empty if none)."""
 # Look per line: "retro" sets the slogan arched over a 70s sunset with a worn print texture (worker/retro.py);
 # lines without one alternate between it and the plain caption, so both keep getting tried
-RETRO_LINES = {"job", "family", "pet", "plain"}
+RETRO_LINES = {"job", "family", "pet", "plain", "video"}
 # a Christmas day's holiday designs, by slot: the first is the one Etsy gets, so it rotates through the lines;
 # the ugly sweater (the user's favourite) is always second. 2026-11-03 (zero sales from 52 general jokes): the
 # lines buyers search for by name (dog breed, job) come up twice as often; the general "plain" joke is dropped.
@@ -332,6 +346,38 @@ def pick_audience(pool: list, designs: list, line: str) -> str:
     return min(pool, key=lambda a: (recent.count(a), (pool.index(a) - len(designs)) % len(pool)))
 
 
+NOT_NAMES = {"the", "a", "an", "of", "and", "prime", "young", "old", "peak", "could", "would", "what", "if", "vs",
+             "versus", "in", "on", "jr", "sr", "mr", "mrs", "dr", "saint", "st", "king", "lord", "big", "little"}
+
+
+def real_names(topic: str, listed=None) -> list:
+    """The words of real people's names to keep off a video shirt: the ones the idea listed, plus any run of two or
+    more capitalised words in the topic ("LeBron James"); each name's own words too, so "James" alone is caught."""
+    names = [str(n) for n in (listed or []) if str(n).strip()]
+    names += [m.group(0) for m in re.finditer(r"\b[A-Z][\w'.-]*(?:\s+[A-Z][\w'.-]*)+", topic)]
+    out = []
+    for n in names:
+        for part in [n, *n.split()]:
+            part = part.strip(" .,'?!")
+            if len(part) >= 3 and part.lower() not in NOT_NAMES and part.lower() not in (o.lower() for o in out):
+                out.append(part)
+    return out
+
+
+def video_topics(path: Path = VIRAL_STATE) -> list:
+    """The topics of the viral videos that have been posted, oldest first, each once."""
+    try:
+        videos = json.loads(Path(path).read_text()).get("videos") or []
+    except (OSError, ValueError):
+        return []
+    out = []
+    for v in sorted(videos, key=lambda v: v.get("made") or 0):
+        topic = " ".join(str(v.get("topic") or v.get("title") or "").split())
+        if v.get("posted") and topic and topic.lower() not in (t.lower() for t in out):
+            out.append(topic)
+    return out
+
+
 def christmas_style(day, slot: int, per_day: int) -> str:
     """The line a Christmas day's holiday design `slot` is for: first a rotating line (Etsy's pick), then the ugly
     sweater, then the next lines along."""
@@ -438,8 +484,38 @@ def cut_background(img, tolerance: int = 38):
         for xx in range(w):
             if px[xx, yy] == marker:
                 px[xx, yy] = (255, 255, 255, 0)
+    img = drop_specks(img)
     bbox = img.getbbox()
     return img.crop(bbox) if bbox else img
+
+
+def drop_specks(img, share: float = 0.004):
+    """Small loose bits floating away from the drawing (the AI art sometimes leaves a faint signature or scribble of
+    text off to the side) are cleared: pieces under `share` of the ink that sit outside the main shape's box."""
+    try:
+        import numpy as np
+        from scipy import ndimage
+    except ImportError:
+        return img
+    alpha = np.array(img.getchannel("A")) > 0
+    labels, n = ndimage.label(alpha)
+    if n < 2:
+        return img
+    sizes = ndimage.sum(alpha, labels, range(1, n + 1))
+    main = int(np.argmax(sizes)) + 1
+    ys, xs = np.nonzero(labels == main)
+    y0, y1, x0, x1 = ys.min(), ys.max(), xs.min(), xs.max()
+    centers = ndimage.center_of_mass(alpha, labels, range(1, n + 1))
+    clear = np.zeros_like(alpha)
+    for i, (size, (cy, cx)) in enumerate(zip(sizes, centers), start=1):
+        if size < share * alpha.sum() and not (y0 <= cy <= y1 and x0 <= cx <= x1):
+            clear |= labels == i
+    if not clear.any():
+        return img
+    out = np.array(img)
+    out[clear] = (255, 255, 255, 0)
+    from PIL import Image
+    return Image.fromarray(out, "RGBA")
 
 
 def compose(art, slogan: str, width: int = DESIGN_W):
@@ -756,10 +832,11 @@ class Shop:
 
     # one design, start to finish
     def make_design(self, only: Optional[list] = None, spinoff: Optional[str] = None, season: Optional[str] = None,
-                    style: Optional[str] = None, series: bool = False) -> dict:
+                    style: Optional[str] = None, series: bool = False, video: Optional[str] = None) -> dict:
         """only: the product kinds this design goes on (e.g. ["tee"]); None means the usual set. spinoff: the id of a winning
         design to riff on instead of today's trends. series: one of the extra breeds/jobs a line design brings with it
-        (it doesn't bring more, and never goes on Etsy)."""
+        (it doesn't bring more, and never goes on Etsy). video: a viral video's topic to make a shirt of (no real
+        people, never on Etsy)."""
         from worker import shop_agents
         st = load_state(self.state_path)
         recent = [d.get("niche", "") + ": " + d.get("slogan", "") for d in st["designs"]]
@@ -772,8 +849,12 @@ class Shop:
         if style == "sweater":
             notes = SWEATER_NOTE + "\n\n" + notes
             only = only or SWEATER_PRODUCTS
+        if video:
+            style = "video"
+            notes = VIDEO_NOTE.format(topic=video) + "\n\n" + notes
+            only = only or VIDEO_PRODUCTS
         line = LINES.get(style or "")
-        audience = None if parent else pick_audience(line["audiences"] if line else AUDIENCES, st["designs"], style or "plain")
+        audience = None if parent or video else pick_audience(line["audiences"] if line else AUDIENCES, st["designs"], style or "plain")
         if line:
             year = datetime.fromtimestamp(self.clock()).year
             notes = line["note"].format(audience=audience, year=year) + "\n\n" + notes
@@ -783,7 +864,15 @@ class Shop:
         last_error = None
         for _ in range(3):                                      # a refused idea gets another try
             try:
-                idea = clean_idea(self.c.idea(recent, trending, notes))
+                raw_idea = self.c.idea(recent, trending, notes)
+                idea = clean_idea(raw_idea)
+                if video:
+                    named = real_names(video, raw_idea.get("real_people") if isinstance(raw_idea, dict) else None)
+                    text = " ".join(str(idea.get(k, "")) for k in ("image_prompt", "slogan", "title", "description")) + \
+                        " " + " ".join(idea["tags"])
+                    hit = next((n for n in named if re.search(r"(?<![a-z])" + re.escape(n) + r"(?![a-z])", text, re.I)), None)
+                    if hit:
+                        raise ValueError(f"the idea used a real person's name ({hit})")
                 break
             except ValueError as exc:
                 last_error = exc
@@ -826,6 +915,9 @@ class Shop:
             rec["audience"] = audience
         if style != "sweater":
             rec["look"] = look
+        if video:
+            rec["video"] = video
+            rec["etsy"] = False                               # on top of the rest: free channels only
         if series:
             rec["series"] = True
             rec["etsy"] = False                               # extra breeds/jobs stay on the free channels
@@ -1125,6 +1217,7 @@ class ShopService:
     """The worker's shop thread: today's designs at `time`, listing whatever is queued, and new orders."""
 
     PASS_SECONDS = 300
+    viral_state = VIRAL_STATE                  # the viral videos' state, for a shirt per posted topic
 
     def __init__(self, log: Callable[[str], None] = print, notify: Optional[Callable[[str, str], None]] = None):
         self.log, self.notify = log, notify or (lambda kind, text: None)
@@ -1158,12 +1251,14 @@ class ShopService:
         queued = int(st.get("make_now") or 0)              # "make N new products now", from the plugin; one per pass
         spin_q = list(st.get("make_spinoff") or [])        # spin-offs of a design that just sold, queued by the Analyst
         line_q = list(st.get("line_queue") or [])          # more breeds/jobs for a line design just made (2026-11-03)
+        done_v = {t.lower() for t in st.get("video_shirts") or []}
+        video_q = [t for t in video_topics(self.viral_state) if t.lower() not in done_v]   # posted videos without a shirt
         cooling = time.time() - st.get("last_fail_at", 0) < 3600
         # N designs a day are spread from the start time to midnight (4 a day at 06:00: 06:00, 10:30, 15:00, 19:30)
         n = cfg["designs_per_day"]
         gap = (24 * 60 - (h * 60 + m)) / n if n else 0
         daily = made_today < n and now.hour * 60 + now.minute >= h * 60 + m + made_today * gap
-        if not cooling and (spin_q or queued or daily or holiday or line_q):
+        if not cooling and (spin_q or queued or daily or holiday or line_q or video_q):
             from worker import shop_agents
             try:
                 if spin_q:
@@ -1181,6 +1276,10 @@ class ShopService:
                     st["line_queue"] = line_q[1:]          # dropped first, so a failing one can't loop forever
                     save_state(st, shop.state_path)
                     shop.make_design(season="christmas", style=line_q[0], series=True)
+                elif video_q and not (holiday or daily):
+                    st["video_shirts"] = (st.get("video_shirts") or []) + [video_q[0]]   # once, even if it fails
+                    save_state(st, shop.state_path)
+                    shop.make_design(video=video_q[0])
                 elif holiday and not daily:
                     # Christmas days take turns between the lines (family, pet, couple, plain), with an
                     # ugly-sweater design every day (the user's favourite, 2026-10-26)
