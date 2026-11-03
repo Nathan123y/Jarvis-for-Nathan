@@ -820,7 +820,7 @@ export async function boot(data, sceneUrl) {
     if (h && t < endStart) {
       let v;
       if (h.kind === 'count' || h.kind === 'timer') {
-        const x = ease[h.kind === 'timer' ? 'linear' : 'out']((t - hs) / Math.max(.3, (he - hs) * (h.kind === 'timer' ? 1 : .85)));
+        const x = ease[h.kind === 'timer' ? 'linear' : 'out']((t - hs) / Math.max(.3, h.kind === 'timer' ? (he - hs) : Math.min(1.2, (he - hs) * .6)));
         const from = Number(h.from || 0), to = Number(h.to || 0);
         v = fmt(from + (to - from) * x, h) + (h.unit || '');
       } else v = String(h.text || '');

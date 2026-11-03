@@ -109,6 +109,11 @@ Video formats (pick the one that fits):
 - VERSUS: a hypothetical matchup or survival test ("Could prime LeBron James beat Satan in a 1v1?", "Could 100 men
   beat a gorilla?", "How long would you last on Venus?"). Real public figures are fine in harmless, fun matchups
   (never insulting, sexual or defamatory); play it like a real broadcast with stats on the HUD and a twist ending.
+  The title IS the question, worded the way a viewer would type it: "Can Prime LeBron Beat Satan in a 1v1?" (never a
+  statement like "Prime LeBron vs Satan. Game to 11."). Right after the hook, introduce each side with REAL stats on
+  the HUD: a real person gets their best season, named ("PRIME LEBRON - 2012-13 MIAMI", "26.8 PPG - 8.0 REB - 7.3 AST",
+  "56.5% FG - MVP - CHAMPION"; one stat line per beat, numbers must be correct); the other side gets its
+  legendary/scientific numbers ("SATAN - AGE: ETERNAL", "HEIGHT: ABOUT 9 FT"). Then play the matchup out.
 {topic_line}
 Don't repeat these recent videos:
 {history}
