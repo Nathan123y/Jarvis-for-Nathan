@@ -35,9 +35,9 @@ PLUGIN = {
                                                                              "baby_bodysuit", "pet_bandana", "pet_hoodie", "emb_hat",
                                                                              "emb_beanie", "ornament", "stocking", "blanket", "wrap"]},
                          "description": "For make_now: only these products (e.g. ['tee'] for t-shirts only); empty = the usual set"},
-            "line": {"type": "STRING", "enum": ["family", "pet", "couple", "sweater"],
-                     "description": "For make_now: a Christmas line (matching family shirts, pet gear, couples' first-Christmas "
-                                    "keepsakes, ugly sweaters)"},
+            "line": {"type": "STRING", "enum": ["family", "pet", "couple", "job", "sweater"],
+                     "description": "For make_now: a Christmas line (matching family shirts, pet gear by breed, couples' "
+                                    "first-Christmas keepsakes, Christmas shirts for one job, ugly sweaters)"},
         },
         "required": [],
     },
