@@ -1440,7 +1440,12 @@ class ViralService:
             try:
                 tiktok_post(Path(rec["path"]), rec["caption"], cfg["ai_label"], self.log)
                 _mark(rec["path"], posted=True)
-                self.notify("viral", f"🎬 Posted to TikTok: \"{rec['title']}\"")
+                try:                                       # the user asked for a text every time one goes up
+                    from core import phone_alerts
+                    phone_alerts.send_text(f"🎬 Just posted to TikTok: \"{rec['title']}\"\n"
+                                           f"https://www.tiktok.com/@{cfg.get('handle') or 'whatifishowedu'}")
+                except Exception as exc:
+                    self.log(f"viral: couldn't text the post note: {exc}")
                 return "posted"
             except NotLoggedIn:
                 note = "TikTok isn't logged in yet, so here it is. Log in once: python3 -m worker.viral login"
