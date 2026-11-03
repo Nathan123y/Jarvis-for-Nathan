@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>stage</title>
+<style>html, body { margin: 0; width: 1080px; height: 1920px; overflow: hidden; background: #000; }</style>
+<script type="importmap">
+{ "imports": { "three": "./three/three.module.js", "three/addons/": "./three/addons/" } }
+</script>
+</head>
+<body>
+<script type="module">
+  import { boot } from './kit.js';
+  window.__boot = boot;
+  window.__kitLoaded = true;
+</script>
+</body>
+</html>
