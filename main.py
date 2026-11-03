@@ -1208,6 +1208,11 @@ class JarvisLive:
         if mem_str:
             parts.append(mem_str)
         parts.append(sys_prompt)
+        try:
+            from core.assyrian import ASSYRIAN_GUIDE
+            parts.append(ASSYRIAN_GUIDE)
+        except Exception as e:
+            print(f"[JARVIS] Assyrian guide not loaded: {e!r}")
 
         cfg = dict(
             response_modalities=["AUDIO"],
