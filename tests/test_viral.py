@@ -45,6 +45,14 @@ class ScriptTests(unittest.TestCase):
         raw = dict(SCRIPT, beats=[dict(b, ambience="hit1") for b in SCRIPT["beats"]])     # a one-shot can't be a bed
         self.assertEqual(wv.clean_script(raw, library=lib)["beats"][1]["ambience"], "keep")
 
+    def test_extra_hits_and_levels_are_cleaned(self):
+        lib = {"roar": {"kind": "ambient"}, "swish": {"kind": "oneshot"}}
+        raw = dict(SCRIPT, beats=[dict(b, level="9", sfx2=[{"id": "swish", "at": 1.2}, "nope", {"id": "boom", "at": "x"}])
+                                  for b in SCRIPT["beats"]])
+        b = wv.clean_script(raw, library=lib)["beats"][1]
+        self.assertEqual(b["level"], 2.5)
+        self.assertEqual(b["sfx2"], [{"id": "swish", "at": 1.2}, {"id": "boom", "at": 0.0}])
+
     def test_captions_stay_up_long_enough_to_read(self):
         ls = wv.caption_lengths([{"say": "What if humans evolved 1,000 years every 3 seconds?"}, {"say": "Gone."},
                                  {"say": " ".join(["word"] * 30)}])
@@ -139,6 +147,8 @@ class AudioTests(unittest.TestCase):
     def test_caption_only_mix_has_sound_without_a_voice(self):
         s = wv.clean_script(SCRIPT, library={})
         s["beats"][1]["sfx"] = "boom"
+        s["beats"][2]["sfx2"] = [{"id": "hit", "at": .5}]
+        s["beats"][3]["level"] = 2.0
         beats, total = wv.timeline(wv.caption_lengths(s["beats"]), hook_min=2.6, gap=0)
         with tempfile.TemporaryDirectory() as d, patch.object(wv, "sound_library", return_value=[]):
             out = wv.mix(None, beats, s, total, Path(d) / "a.wav", seed=1)
