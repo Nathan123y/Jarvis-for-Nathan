@@ -236,8 +236,53 @@ class ListingTests(_Base):
             styles = [ws.christmas_style(day, i, 3) for i in range(3)]
             self.assertEqual(styles[1], "sweater")
             self.assertNotEqual(styles[0], styles[2])
-        firsts = {ws.christmas_style(datetime(2026, 11, 1 + d).date(), 0, 3) for d in range(4)}
-        self.assertEqual(firsts, {"family", "pet", "couple", "plain"})
+        firsts = [ws.christmas_style(datetime(2026, 11, 1 + d).date(), 0, 3) for d in range(6)]
+        self.assertEqual(set(firsts), {"family", "pet", "couple", "job"})
+        self.assertEqual(firsts.count("pet"), 2)                                       # searched-for lines twice as often
+        self.assertEqual(firsts.count("job"), 2)
+
+    def test_a_pet_design_brings_more_breeds_that_stay_off_etsy(self):
+        c = FakeClients(shops=[])
+        s = self.shop(c)
+        first = s.make_design(style="pet", season="christmas")
+        st = ws.load_state(s.state_path)
+        self.assertEqual(st["line_queue"], ["pet", "pet"])
+        extra = s.make_design(style="pet", season="christmas", series=True)
+        self.assertTrue(extra["series"])
+        self.assertNotEqual(extra["audience"], first["audience"])                      # a different breed
+        st = ws.load_state(s.state_path)
+        self.assertEqual(st["line_queue"], ["pet", "pet"])                             # extras don't bring more
+        self.assertFalse(s.on_etsy(extra, st))
+
+    def test_job_line_is_retro_and_aimed_at_one_job(self):
+        c = FakeClients(shops=[])
+        s = self.shop(c)
+        rec = s.make_design(style="job", season="christmas")
+        self.assertEqual(rec["look"], "retro")
+        self.assertIn(rec["audience"], ws.JOBS)
+        self.assertIn(rec["audience"], c.notes)
+        self.assertEqual(rec["only"], ws.LINES["job"]["products"])
+        with Image.open(rec["file"]) as im:
+            self.assertEqual(im.mode, "RGBA")
+            self.assertGreater(im.width, 2500)
+
+    def test_lines_without_their_own_look_take_turns_between_retro_and_plain(self):
+        self.assertEqual(ws.Shop.look_for("pet", []), "retro")
+        self.assertEqual(ws.Shop.look_for("pet", [{"style": "pet", "look": "retro"}]), "plain")
+        self.assertEqual(ws.Shop.look_for("pet", [{"style": "pet", "look": "plain"}]), "retro")
+        self.assertEqual(ws.Shop.look_for("couple", []), "plain")
+
+    def test_retro_design_arches_short_slogans_and_splits_long_ones(self):
+        from worker import retro
+        self.assertEqual(retro.split("MERRY CORGMAS"), ("MERRY CORGMAS", ""))
+        top, bottom = retro.split("SANTA CLAWS IS COMING")
+        self.assertTrue(top and bottom)
+        self.assertEqual(f"{top} {bottom}", "SANTA CLAWS IS COMING")
+        art = Image.new("RGBA", (400, 400), (0, 0, 0, 0))
+        art.paste((200, 30, 30, 255), (100, 100, 300, 300))
+        out = retro.design(art, "SANTA CLAWS IS COMING", seed=1)
+        self.assertEqual(out.width, retro.WIDTH)
+        self.assertEqual(out.getpixel((0, 0))[3], 0)                                  # transparent around it
 
     def test_every_design_goes_to_ebay_too_with_short_titles(self):
         c = FakeClients(shops=[{"id": 9, "sales_channel": "etsy"}, {"id": 5, "sales_channel": "ebay"},

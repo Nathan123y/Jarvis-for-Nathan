@@ -146,6 +146,14 @@ SEASONS = {
 SEASON_NOTE = """This design is for the shop's {name} line: make it about {note}. Same voice: funny, edgy,
 meme-literate and giftable, not a generic greeting card. Put the holiday in the title and tags (e.g. "funny
 christmas shirt", "christmas gift for coworker", "ugly christmas sweater")."""
+# One job each (2026-11-03): the job Christmas line, and the jobs among the plain designs' audiences
+JOBS = ["nurses", "ER nurses", "ICU nurses", "teachers", "kindergarten teachers", "accountants", "software engineers",
+        "construction workers", "electricians", "plumbers", "truck drivers", "hairstylists", "dental hygienists",
+        "pharmacists", "paramedics", "firefighters", "police dispatchers", "lawyers", "librarians", "retail workers",
+        "servers and bartenders", "warehouse workers", "mechanics", "vet techs", "social workers", "therapists",
+        "real estate agents", "HR managers", "school bus drivers", "mail carriers", "flight attendants",
+        "physical therapists", "radiology techs", "respiratory therapists", "speech therapists", "CNAs",
+        "lunch ladies", "school counselors", "bookkeepers", "baristas"]
 # Narrow audiences (2026-10-30): "funny christmas shirt" is up against millions of listings, "christmas gift for
 # an ER nurse" against a few hundred, and its buyer already knows what they want. Every design is aimed at one,
 # the one used least lately.
@@ -176,11 +184,21 @@ shirts", "family christmas pajama shirt", "christmas group shirts" and the audie
             "audiences": ["golden retrievers", "french bulldogs", "labradors", "german shepherds", "dachshunds",
                           "corgis", "pit bulls", "huskies", "chihuahuas", "australian shepherds", "beagles",
                           "doodles (goldendoodles, labradoodles)", "border collies", "shih tzus", "boxers",
-                          "black cats", "orange cats", "tuxedo cats", "rescue dogs", "senior dogs"],
+                          "black cats", "orange cats", "tuxedo cats", "rescue dogs", "senior dogs",
+                          # added 2026-11-03: every breed is its own search, so the batch goes wide
+                          "great danes", "rottweilers", "pugs", "yorkies", "cavaliers (king charles spaniels)",
+                          "bernese mountain dogs", "boston terriers", "poodles", "miniature schnauzers",
+                          "cocker spaniels", "shiba inus", "greyhounds", "bulldogs", "pomeranians",
+                          "basset hounds", "weimaraners", "maltese", "havanese", "siamese cats", "maine coons",
+                          "calico cats", "grey tabby cats", "ragdoll cats", "sphynx cats"],
+            # each pet design brings this many more breeds the same day (free channels only, never Etsy)
+            "series": 2,
             "note": """This is a PET line design, for {audience} and the people who own them: it's sold as a dog
 bandana (worn by the pet) and as an ornament, mug, shirt and stocking for the owner. Draw that breed
 or kind of animal (cute, funny, a little unhinged), with a short slogan that works both on the pet and on the owner's
-mug. No swearing. Title and tags name the breed (e.g. "corgi christmas", "corgi mom gift", "dog christmas bandana")."""},
+mug. No swearing. A pun on the breed's name is best when one works ("MERRY CORGMAS", "DACHSHUND THROUGH THE SNOW"
+energy, but your own). Title and tags name the breed (e.g. "corgi christmas", "corgi mom gift", "dog christmas
+bandana")."""},
     "couple": {"products": ["ornament", "mug", "blanket", "stocking", "tee", "puzzle", "doormat", "card"],
                "audiences": ["couples' first Christmas together", "first Christmas married", "first Christmas engaged",
                              "first Christmas as parents", "first Christmas in our new home",
@@ -189,10 +207,26 @@ mug. No swearing. Title and tags name the breed (e.g. "corgi christmas", "corgi 
 with a wink (cute, funny, never crude): a cosy illustration and a slogan with the year {year}, e.g. "OUR FIRST
 CHRISTMAS {year}" but your own twist. Title and tags say "our first christmas ornament {year}" (or the milestone),
 "couples christmas gift", "keepsake ornament"."""},
+    # 2026-11-03: Christmas shirts for one job, bought as coworker gifts and for work ugly-sweater days
+    "job": {"products": ["tee", "crewneck", "hoodie", "mug", "ornament", "emb_beanie", "tumbler"],
+            "audiences": JOBS,
+            "look": "retro",
+            "series": 1,
+            "note": """This is a JOB CHRISTMAS line design for {audience}: the shirt they wear to the work holiday
+party or that a coworker buys them. Mix Christmas with their job's jargon, tools and daily pain (e.g. a nurse:
+"MERRY CHRISTMAS, YOUR VITALS ARE FESTIVE" energy, but your own). Draw one funny character or object from that job
+in a Christmas way (a stethoscope in a Santa hat, a toolbox with tinsel). Mild swearing at most: a boss or coworker
+has to be able to give it. Title and tags lead with the job, the way people search: "{audience} christmas shirt",
+"christmas gift for {audience}", "{audience} gift", "funny {audience} christmas"."""},
 }
+# Look per line: "retro" sets the slogan arched over a 70s sunset with a worn print texture (worker/retro.py);
+# lines without one alternate between it and the plain caption, so both keep getting tried
+RETRO_LINES = {"job", "family", "pet", "plain"}
 # a Christmas day's holiday designs, by slot: the first is the one Etsy gets, so it rotates through the lines;
-# the ugly sweater (the user's favourite) is always second
-CHRISTMAS_ROTATION = ["family", "pet", "couple", "plain"]
+# the ugly sweater (the user's favourite) is always second. 2026-11-03 (zero sales from 52 general jokes): the
+# lines buyers search for by name (dog breed, job) come up twice as often; the general "plain" joke is dropped.
+# Neighbours always differ, so a day's first and third designs are never the same line.
+CHRISTMAS_ROTATION = ["pet", "job", "couple", "pet", "job", "family"]
 # Sales channels connected in Printify that designs are listed on. eBay titles stop at 80 characters. The
 # Printify Pop-Up Store charges nothing to list, so it gets every design and comes first on the site's buy links.
 CHANNELS = {"popup": {"name": "our shop", "title_max": 140}, "etsy": {"name": "Etsy", "title_max": 140},
@@ -659,7 +693,8 @@ class Shop:
             cfg = self.cfg()
             day = datetime.fromtimestamp(rec["made"]).date()
             picked = sum(1 for d in st["designs"] if d.get("etsy") and datetime.fromtimestamp(d["made"]).date() == day)
-            wanted = bool(rec.get("season") or rec.get("spinoff_of")) or not cfg.get("etsy_holiday_only")
+            wanted = (bool(rec.get("season") or rec.get("spinoff_of")) or not cfg.get("etsy_holiday_only")) \
+                and not rec.get("series")
             rec["etsy"] = wanted and picked < cfg.get("etsy_per_day", 1)
         return rec["etsy"]
 
@@ -721,9 +756,10 @@ class Shop:
 
     # one design, start to finish
     def make_design(self, only: Optional[list] = None, spinoff: Optional[str] = None, season: Optional[str] = None,
-                    style: Optional[str] = None) -> dict:
+                    style: Optional[str] = None, series: bool = False) -> dict:
         """only: the product kinds this design goes on (e.g. ["tee"]); None means the usual set. spinoff: the id of a winning
-        design to riff on instead of today's trends."""
+        design to riff on instead of today's trends. series: one of the extra breeds/jobs a line design brings with it
+        (it doesn't bring more, and never goes on Etsy)."""
         from worker import shop_agents
         st = load_state(self.state_path)
         recent = [d.get("niche", "") + ": " + d.get("slogan", "") for d in st["designs"]]
@@ -768,7 +804,13 @@ class Shop:
         else:
             raw = self.c.draw(idea["image_prompt"])
             art = cut_background(Image.open(io.BytesIO(raw)))
-            design = compose(art, idea["slogan"])
+            look = self.look_for(style, st["designs"])
+            if look == "retro" and idea["slogan"]:
+                from worker import retro
+                design = retro.design(art, idea["slogan"], seed=len(st["designs"]))
+            else:
+                look = "plain"
+                design = compose(art, idea["slogan"])
             (self.art_dir / f"{stamp}-raw.jpg").write_bytes(raw)
         design.save(path, "PNG", optimize=True)
         rec = {"id": stamp, **idea, "file": str(path), "size": list(design.size), "made": self.clock(), "products": {}}
@@ -782,6 +824,13 @@ class Shop:
             rec["style"] = style
         if audience:
             rec["audience"] = audience
+        if style != "sweater":
+            rec["look"] = look
+        if series:
+            rec["series"] = True
+            rec["etsy"] = False                               # extra breeds/jobs stay on the free channels
+        elif line and line.get("series") and not parent:
+            st["line_queue"] = (st.get("line_queue") or []) + [style] * int(line["series"])
         st["designs"].append(rec)
         save_state(st, self.state_path)
         self.log(f"shop: designed '{idea['title']}' ({idea['slogan']})")
@@ -790,6 +839,17 @@ class Shop:
                         (f", a spin-off of \"{parent.get('slogan')}\"" if parent else ""), self.clock)
         shop_agents.save(nb, self.nb_path)
         return rec
+
+    @staticmethod
+    def look_for(style: Optional[str], designs: list) -> str:
+        """"retro" or "plain": a line's own look if it has one, else the retro lines take turns with the plain caption."""
+        line = LINES.get(style or "") or {}
+        if line.get("look"):
+            return line["look"]
+        if (style or "plain") not in RETRO_LINES:
+            return "plain"
+        same = [d for d in designs if (d.get("style") or "plain") == (style or "plain") and d.get("look")]
+        return "plain" if same and same[-1]["look"] == "retro" else "retro"
 
     def upload(self, rec: dict) -> str:
         if rec.get("upload_id"):
@@ -1091,18 +1151,19 @@ class ShopService:
                          and not d.get("season"))
         season = season_for(now.date())
         holiday_today = sum(1 for d in st["designs"] if datetime.fromtimestamp(d["made"]).date().isoformat() == today
-                            and d.get("season"))
+                            and d.get("season") and not d.get("series"))
         # the holiday line's design(s), from half an hour after the daily one
         holiday = bool(season) and holiday_today < cfg["holiday_per_day"] and \
             now.hour * 60 + now.minute >= h * 60 + m + 30 + holiday_today * 240
         queued = int(st.get("make_now") or 0)              # "make N new products now", from the plugin; one per pass
         spin_q = list(st.get("make_spinoff") or [])        # spin-offs of a design that just sold, queued by the Analyst
+        line_q = list(st.get("line_queue") or [])          # more breeds/jobs for a line design just made (2026-11-03)
         cooling = time.time() - st.get("last_fail_at", 0) < 3600
         # N designs a day are spread from the start time to midnight (4 a day at 06:00: 06:00, 10:30, 15:00, 19:30)
         n = cfg["designs_per_day"]
         gap = (24 * 60 - (h * 60 + m)) / n if n else 0
         daily = made_today < n and now.hour * 60 + now.minute >= h * 60 + m + made_today * gap
-        if not cooling and (spin_q or queued or daily or holiday):
+        if not cooling and (spin_q or queued or daily or holiday or line_q):
             from worker import shop_agents
             try:
                 if spin_q:
@@ -1115,7 +1176,11 @@ class ShopService:
                 elif queued:
                     style = st.get("make_style")
                     shop.make_design(only=st.get("make_only"), style=style,
-                                     season=season_for(now.date()) if style else None)
+                                     season="christmas" if style else None)    # every line is a Christmas line
+                elif line_q and not (holiday or daily):
+                    st["line_queue"] = line_q[1:]          # dropped first, so a failing one can't loop forever
+                    save_state(st, shop.state_path)
+                    shop.make_design(season="christmas", style=line_q[0], series=True)
                 elif holiday and not daily:
                     # Christmas days take turns between the lines (family, pet, couple, plain), with an
                     # ugly-sweater design every day (the user's favourite, 2026-10-26)
