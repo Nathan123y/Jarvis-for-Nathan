@@ -47,9 +47,11 @@ SR = 48000
 DEFAULTS = {"enabled": True,
             "times": "11:00,16:00,20:30",           # one video at each (TikTok's busy hours)
             "post": True,                           # post to TikTok; False = text the video to the user instead
-            "voice": "Charon",                      # Gemini TTS voice
+            "voice_mode": "none",                   # none (captions + sound, like the reference videos) | gemini | edge
+            "voice": "Charon",                      # Gemini TTS voice, when voice_mode is gemini
             "tts_model": "gemini-3.8-flash-tts",
-            "ai_label": True}                       # TikTok requires the AI-generated label on AI-made videos
+            "ai_label": True,
+            "handle": "whatifishowedu"}                # the TikTok account, for reading view counts                       # TikTok requires the AI-generated label on AI-made videos
 CHROME_ARGS = ["--use-angle=metal", "--enable-gpu", "--ignore-gpu-blocklist"]
 
 
@@ -87,51 +89,66 @@ def ffmpeg() -> str:
 
 
 # ── 1. the script ────────────────────────────────────────────────────────────
-SCRIPT_PROMPT = """You write viral short-form videos for a faceless TikTok account. Each one is a narrated 3D
-simulation of a wild scenario, shown mostly first-person, with a big counter on screen. The style that works:
-"What if a spoonful of neutron star landed in your backyard?" - a countdown, then "It weighs about a billion
-tons." with a mass counter racing up, "The ground can't hold it up.", "Everything nearby starts sliding in.",
-then a twist: "Viral videos say it falls to the core. But that's not what would happen. Rewind. Here's the
-real version." and an ending that loops back into the opening question.
+SCRIPT_PROMPT = """You write viral short-form videos for a faceless TikTok account. Each is a 3D simulation shown
+mostly first-person, with NO narrator: the story is told by short on-screen captions, a big counter (HUD), and real
+sound (ambience + sound effects). Two reference videos that went viral:
 
-Pick ANY topic that would stop someone scrolling: physics and space what-ifs, the human body pushed to
-extremes, gross or morbid facts, survival scenarios, disasters, deep ocean, dark history, animals, insane
-scale comparisons, "what happens to your body if...". Edgy, dark, creepy and shocking are all good.
-It must stay inside TikTok's rules so the account isn't banned: no sexual content, no gore close-ups, no real
-living people, nothing that teaches self-harm or dangerous stunts, no hate.
+1) "What if a spoonful of neutron star landed in your backyard?" - a countdown, then captions "A teaspoon of neutron
+star just landed." "It weighs about a billion tons." (mass counter racing up) "The ground can't hold it up." "It rips
+the hose out of your hand." "Everything nearby starts sliding in." Twist: "Viral videos say it falls to the core."
+"But that's not what would happen." "Rewind. Here's the real version." Ends on an end card that loops to the hook.
+2) "What if humans evolved 1,000 years every 3 seconds?" (33 s). COLD OPEN: it starts on the wildest moment
+(+10,000 years, a crowd of strange people), then snaps back to 0 years on a normal city sidewalk, coffee in hand.
+Captions are tiny and punchy: "1,000 years every 3 seconds." "37 generations. Just like that." "Everyone changes.
+Except you." "Wisdom teeth? Gone." "New artery in every arm." "The pigeons didn't change." "They start staring."
+"You're a living fossil." "Every single one of them..." "...descends from you." Only city ambience, footsteps, and a
+scream at the end. No music, no voice.
 
-It has to be something the 3D kit can show. Ready-made places: a suburban backyard, a city street, open
-ocean, a flat plain (desert, beach, snow, Mars, the Moon), deep space (planets, stars, black holes), a small
-bedroom. Effects: explosions, fire, smoke, sparks, flying debris, glowing objects, beams, falling meteors,
-simple low-poly people and cars, camera shake, white flashes. Not possible: realistic faces, liquids
-splashing, text signs, detailed animals or machines.
-
+Video formats (pick the one that fits):
+- WHAT IF: an impossible scenario played out with real science ("What if the Moon was 10x closer?").
+- VERSUS: a hypothetical matchup or survival test ("Could prime LeBron James beat Satan in a 1v1?", "Could 100 men
+  beat a gorilla?", "How long would you last on Venus?"). Real public figures are fine in harmless, fun matchups
+  (never insulting, sexual or defamatory); play it like a real broadcast with stats on the HUD and a twist ending.
 {topic_line}
 Don't repeat these recent videos:
 {history}
 
+TikTok rules so the account isn't banned: edgy, dark, creepy, gross and shocking are all fine; no sexual content,
+no gore close-ups, nothing that teaches self-harm or dangerous stunts, no hate.
+
+What the 3D kit can show: places - suburban backyard, busy daytime city sidewalk (crowds, pigeons, cafe tables,
+first-person hand holding a coffee or phone), city street with towers, open ocean, flat plain (desert, beach, snow,
+Mars, Moon), deep space (planets, stars, sun, black holes), small bedroom, indoor basketball arena with fans,
+boxing ring with crowd. Things - low-poly people (any colours, jersey numbers, horns, glowing eyes, muscle size;
+walk, run, punch, jump, dribble, fight, fall, arms up), crowds, cars, houses, trees, a basketball, glowing objects,
+beams, meteors. Effects - explosions, fire, smoke, sparks, debris, camera shake, flashes. Not possible: faces with
+detail, realistic animals besides pigeons, liquids splashing, readable signs.
+
 Rules for the script:
-- The title is the hook question, at most 12 words, spoken as beat 0. "highlight" lists 1-2 phrases of it
-  shown in blue.
-- 11-16 beats in total; every "say" line is at most 14 words, plain, punchy and concrete. Real numbers.
-  Facts must be correct; mark rough estimates with "about" or "roughly".
-- Escalate every beat. Around 60% through, a twist ("Most videos get this wrong." / "But here's the part
-  nobody mentions."). The last line pays it off and leads naturally back into the hook, so the loop replays.
-- About half the beats set a "hud": {{"label": "ITS MASS", "kind": "count", "from": 0, "to": 1000000000,
-  "unit": " t", "decimals": 0, "sub": "ABOUT A BILLION TONS"}}, or kind "timer" (counts from "from" seconds
-  down to 0 during the beat, good for a countdown in beat 0), or kind "text" with "text": "HERE". Keep
-  values readable (use the unit to say "km", " t", "°C", "x Earth"; no more than 15 digits).
-  A HUD number must match what that beat says out loud (if the line says "about 2.5 times", the HUD shows 2.5).
-- "emph": 1-2 words or phrases of that line to show in blue.
-- "sfx": one of none, boom, whoosh, riser, hit, tick, rumble.
+- 30-50 seconds total: 12-20 beats. Beat 0 is the hook: the title, at most 12 words, shown over a COLD OPEN of
+  the most dramatic moment when that works; beat 1 then snaps back to the start ("Rewind." / "0 years." / "Day 1.").
+- Every "say" is the on-screen caption: 2-9 words, punchy, concrete, real numbers. Facts must be correct; rough
+  estimates say "about". Escalate every beat. Around 60% through, a twist ("Most videos get this wrong." / "But
+  that's not what happens."). The last caption lands the payoff and loops back into the hook.
+- About half the beats set a "hud": {{"label": "HUMAN EVOLUTION", "kind": "count", "from": 0, "to": 1000,
+  "unit": " years", "decimals": 0, "sub": "GENERATION 37"}}, or kind "timer" (counts from "from" seconds to 0 during
+  the beat; good for a countdown), or kind "text" with "text": "ROUND 1". A HUD number must match its caption.
+- "emph": 1-2 words of the caption shown in blue.
+- Sound, per beat: "ambience" = the id of a background sound from the list below that starts at this beat and keeps
+  playing until another beat changes it ("none" = silence, "keep" = carry on). "sfx" = one sound effect id from the
+  list (a one-shot) or a synth effect: boom, whoosh, riser, hit, tick, rumble; or "none". Use sound effects
+  sparingly: on impacts, reveals and the ending. "music": "tension" for a quiet dark drone under the whole video,
+  or "none" (the references have none; use it only for space or empty places).
+{sounds}
 - "scene": one sentence on what we see during that beat (camera and action).
-- "end_fact": one line of small print for the end card (a real fact that backs up the video).
+- "end_fact": one line of small print for the end card (a real fact backing it up).
 - "caption": the TikTok caption, at most 150 characters, ending in a question that baits comments.
-- "hashtags": 4-6, lowercase, without the # (mix big ones like fyp/science with topic ones).
+- "hashtags": 4-6, lowercase, without the # (mix big ones like fyp with topic ones).
 
 Reply with only this JSON:
-{{"topic": "...", "title": "...", "highlight": ["..."], "set": "backyard|city|ocean|plain|space|room",
-  "beats": [{{"say": "...", "emph": ["..."], "hud": null, "sfx": "none", "scene": "..."}}],
+{{"format": "whatif|versus", "topic": "...", "title": "...", "highlight": ["..."],
+  "set": "backyard|street|city|ocean|plain|space|room|court|ring", "music": "none|tension",
+  "beats": [{{"say": "...", "emph": ["..."], "hud": null, "ambience": "keep", "sfx": "none", "scene": "..."}}],
   "end_fact": "...", "caption": "...", "hashtags": ["..."]}}"""
 
 
@@ -192,16 +209,29 @@ def ask_claude(prompt: str, timeout_s: float = 900, images: Optional[list] = Non
     return gemini.text(contents, tier="gemini-3.5-flash", timeout_ms=int(timeout_s * 1000)) or ""
 
 
-def clean_script(s: dict) -> dict:
+SETS = ("backyard", "street", "city", "ocean", "plain", "space", "room", "court", "ring")
+
+
+def clean_script(s: dict, library: Optional[dict] = None) -> dict:
+    library = library if library is not None else {x["id"]: x for x in sound_library()}
     if not isinstance(s, dict) or not s.get("title") or not isinstance(s.get("beats"), list) or len(s["beats"]) < 5:
         raise ValueError("the script came back incomplete")
+
+    def amb(v):
+        v = str(v or "keep")
+        return v if v in ("keep", "none") or library.get(v, {}).get("kind") == "ambient" else "keep"
+
+    def fx(v):
+        v = str(v or "none")
+        return v if v in SFX or v in library else "none"
+
     beats = [{"say": str(b.get("say") or "").strip(), "emph": [str(x) for x in (b.get("emph") or [])][:3],
               "hud": b.get("hud") if isinstance(b.get("hud"), dict) else None,
-              "sfx": b.get("sfx") if b.get("sfx") in SFX else "none", "scene": str(b.get("scene") or "")}
+              "ambience": amb(b.get("ambience")), "sfx": fx(b.get("sfx")), "scene": str(b.get("scene") or "")}
              for b in s["beats"] if isinstance(b, dict) and str(b.get("say") or "").strip()]
-    beats = beats[:18]
+    beats = beats[:22]
     if beats[0]["say"].strip().lower() != str(s["title"]).strip().lower():
-        beats.insert(0, {"say": s["title"], "emph": [], "hud": None, "sfx": "riser", "scene": "opening"})
+        beats.insert(0, {"say": s["title"], "emph": [], "hud": None, "ambience": "keep", "sfx": "none", "scene": "opening"})
     for b in beats:
         h = b["hud"]
         if h:
@@ -214,9 +244,11 @@ def clean_script(s: dict) -> dict:
             if h["kind"] != "text" and max(abs(h["from"]), abs(h["to"])) >= 1e15:
                 h["kind"], h["text"] = "text", h.get("sub") or ""
     tags = [re.sub(r"[^a-z0-9_]", "", str(t).lower().lstrip("#")) for t in s.get("hashtags") or []]
-    return {"topic": str(s.get("topic") or s["title"]), "title": str(s["title"]).strip(),
+    return {"format": "versus" if s.get("format") == "versus" else "whatif",
+            "topic": str(s.get("topic") or s["title"]), "title": str(s["title"]).strip(),
             "highlight": [str(x) for x in (s.get("highlight") or [])][:2],
-            "set": s.get("set") if s.get("set") in ("backyard", "city", "ocean", "plain", "space", "room") else "backyard",
+            "set": s.get("set") if s.get("set") in SETS else "backyard",
+            "music": "tension" if s.get("music") == "tension" else "none",
             "beats": beats, "end_fact": str(s.get("end_fact") or "")[:160],
             "caption": str(s.get("caption") or s["title"])[:150], "hashtags": [t for t in tags if t][:6]}
 
@@ -227,7 +259,8 @@ def write_script(history: list, topic: str = "", ask: Callable = ask_claude) -> 
     last = None
     for _ in range(2):
         try:
-            return clean_script(_json_from(ask(SCRIPT_PROMPT.format(topic_line=topic_line, history=hist), timeout_s=240)))
+            return clean_script(_json_from(ask(SCRIPT_PROMPT.format(topic_line=topic_line, history=hist,
+                                                                    sounds=sounds_text()), timeout_s=300)))
         except Exception as exc:                 # one more try on a malformed reply
             last = exc
     raise RuntimeError(f"couldn't get a script: {last}")
@@ -321,7 +354,8 @@ def voice_lines(lines: list[str], job: Path, cfg: dict, log: Callable = print) -
     day), cut into lines at the pauses; else Microsoft's Edge voice line by line; else the Mac's `say`."""
     paths = [job / f"voice_{i:02d}.wav" for i in range(len(lines))]
     words = [max(1, len(l.split())) for l in lines]
-    for model in [cfg["tts_model"]] + [m for m in TTS_MODELS if m != cfg["tts_model"]]:
+    models = [] if cfg["tts_model"] == "none" else [cfg["tts_model"]] + [m for m in TTS_MODELS if m != cfg["tts_model"]]
+    for model in models:
         try:
             whole = job / "voice_all.wav"
             whole.write_bytes(gemini_tts("\n\n".join(lines), model, cfg["voice"]))
@@ -386,6 +420,43 @@ def timeline(lengths: list, hook_min: float = 3.2, gap: float = 0.38, end_card: 
         out.append((round(t, 3), round(t + d, 3)))
         t += d
     return out, round(t + 0.4 + end_card, 3)
+
+
+# ── the sound library (public-domain clips from Wikimedia Commons, labelled by Gemini) ─────────────────
+SFX_DIR = ROOT / "memory" / "viral_sfx"
+
+
+def sound_library() -> list[dict]:
+    try:
+        return json.loads((SFX_DIR / "index.json").read_text())
+    except (OSError, ValueError):
+        return []
+
+
+def sounds_text() -> str:
+    lib = sound_library()
+    amb = [f"  {x['id']}: {x['what']} ({x['dur']:.0f}s)" for x in lib if x["kind"] == "ambient"]
+    one = [f"  {x['id']}: {x['what']} ({x['dur']:.1f}s)" for x in lib if x["kind"] == "oneshot"]
+    return ("  Background sounds (ambience ids):\n" + ("\n".join(amb) or "  (none yet)") +
+            "\n  One-shot sound effects (sfx ids):\n" + ("\n".join(one) or "  (none yet)"))
+
+
+def load_sound(sid: str):
+    """a library clip as mono float32 at SR"""
+    import numpy as np
+    f = SFX_DIR / f"{sid}.mp3"
+    raw = subprocess.run([ffmpeg(), "-loglevel", "quiet", "-i", str(f), "-f", "s16le", "-ac", "1", "-ar", str(SR), "-"],
+                         capture_output=True, check=True).stdout
+    return np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768
+
+
+def caption_lengths(beats: list) -> list[float]:
+    """Seconds each caption stays up without a narrator: enough to read it, never dragging."""
+    out = []
+    for i, b in enumerate(beats):
+        words = len(str(b["say"]).split())
+        out.append(min(3.6, max(2.6 if i == 0 else 1.5, 0.9 + words * 0.3)))
+    return out
 
 
 # ── 3. music and sound effects ───────────────────────────────────────────────
@@ -464,29 +535,76 @@ def music(seconds: float, seed: int = 0):
     return (out + air).astype(np.float32)
 
 
-def mix(voice: list, beats: list, script: dict, duration: float, out: Path, seed: int = 0) -> Path:
+def mix(voice: Optional[list], beats: list, script: dict, duration: float, out: Path, seed: int = 0) -> Path:
+    """voice lines (or None: captions only) + ambience beds + sound effects + optional drone, to one wav."""
     import numpy as np
     n = int(duration * SR) + SR
     vtrack = np.zeros(n, np.float32)
     fx = np.zeros(n, np.float32)
-    for (start, _), v, b in zip(beats, voice, script["beats"]):
-        v = v * (.12 / (float(np.sqrt(np.mean(v ** 2))) + 1e-6))     # every line at the same loudness
-        v = np.tanh(v * 1.6) / 1.6                                    # and gently compressed
-        a = int((start + .08) * SR)
-        vtrack[a:a + len(v)] += v[:max(0, n - a)]
-        s = sfx(b["sfx"], seed)
-        if b["sfx"] == "riser":                           # a riser ends just before the line starts
-            a = max(0, a - len(s) - int(.2 * SR))
-        fx[a:a + len(s)] += s[:max(0, n - a)]
-    bed = music(n / SR, seed)[:n]
+    amb = np.zeros(n, np.float32)
+    lib = {x["id"]: x for x in sound_library()}
+    cache: dict = {}
+
+    def clip(sid):
+        if sid not in cache:
+            try:
+                x = load_sound(sid)
+                cache[sid] = x / (float(np.sqrt(np.mean(x ** 2))) + 1e-6)         # loudness-matched
+            except Exception:
+                cache[sid] = None
+        return cache[sid]
+
+    # ambience: each one plays from its beat until the next change, looped, with half-second crossfades
+    spans, cur = [], ("none", 0.0)
+    for (start, _), b in zip(beats, script["beats"]):
+        a_id = b.get("ambience", "keep")
+        if a_id != "keep" and a_id != cur[0]:
+            spans.append((cur[0], cur[1], start))
+            cur = (a_id, start)
+    spans.append((cur[0], cur[1], duration))
+    xf = int(SR * .5)
+    for sid, t0, t1 in spans:
+        x = clip(sid) if sid not in ("none", "keep") else None
+        if x is None or t1 <= t0:
+            continue
+        a, b_ = int(t0 * SR), min(n, int(t1 * SR) + xf)
+        reps = int(np.ceil((b_ - a) / len(x))) + 1
+        seg = np.tile(x, reps)[:b_ - a].copy()
+        ramp = min(xf, len(seg) // 2)
+        seg[:ramp] *= np.linspace(0, 1, ramp); seg[-ramp:] *= np.linspace(1, 0, ramp)
+        amb[a:b_] += seg * .07
+    # sound effects: a library one-shot lands its hit on the beat; synth ones as before
+    for (start, _), b in zip(beats, script["beats"]):
+        sid = b.get("sfx", "none")
+        if sid == "none":
+            continue
+        if sid in lib:
+            x = clip(sid)
+            if x is None:
+                continue
+            x = x[:int(SR * 6)] * .16
+            a = max(0, int((start - lib[sid].get("hit_at", 0)) * SR))
+        else:
+            x = sfx(sid, seed) * .9
+            a = int(start * SR)
+            if sid == "riser":
+                a = max(0, a - len(x))
+        fx[a:a + len(x)] += x[:max(0, n - a)]
+    if voice:
+        for (start, _), v in zip(beats, voice):
+            v = v * (.12 / (float(np.sqrt(np.mean(v ** 2))) + 1e-6))
+            v = np.tanh(v * 1.6) / 1.6
+            a = int((start + .08) * SR)
+            vtrack[a:a + len(v)] += v[:max(0, n - a)]
     env = np.convolve(np.abs(vtrack), np.ones(int(SR * .25)) / (SR * .25), mode="same")
     duck = 1 - .55 * np.clip(env / (env.max() + 1e-6) * 4, 0, 1)
-    vpk = np.abs(vtrack).max() or 1
-    mixd = vtrack / vpk * .9 + bed * .3 * duck + fx * .2 * (.35 + .65 * duck)   # effects duck under the voice too
-    fade = int(SR * 2.0)                                  # the music fades out over the end card
+    bed = music(n / SR, seed)[:n] * (.3 if script.get("music") == "tension" or voice else 0)
+    air = _lowpass(_lowpass(np.random.default_rng(seed).standard_normal(n).astype(np.float32), .01), .05) * .02
+    mixd = (vtrack / (np.abs(vtrack).max() or 1)) * .9 + (bed + amb) * duck + fx * (.35 + .65 * duck) + air
+    fade = int(SR * 2.0)                                  # everything fades out over the end card
     mixd[-fade:] *= np.linspace(1, 0, fade)
     mixd = mixd[:int(duration * SR)]
-    mixd = mixd / (np.abs(mixd).max() + 1e-6) * .9
+    mixd = np.tanh(mixd / (np.abs(mixd).max() + 1e-6) * 1.4) / np.tanh(1.4) * .89    # soft-limit, then -1 dB
     pcm = (mixd * 32767).astype(np.int16)
     with wave.open(str(out), "wb") as w:
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(SR); w.writeframes(pcm.tobytes())
@@ -522,11 +640,23 @@ Places (each one sets the sky and lighting too; call exactly one, first):
   K.sets.ocean({env, waves})  K.sets.plain({env, ground: 'sand'|'snow'|'mars'|'moon'|'rock'})
   K.sets.space()          black sky + stars (add planets/suns yourself)
   K.sets.room({env})      bedroom x,z in -4..4, y 0..3: bed at (-2.2,-2.6), desk at (2.6,-3.3), window on the back wall
+  K.sets.street({people}) busy daytime sidewalk along -z: walk the camera down x=6 at eye height 1.75 (y=.16 pavement);
+                          road x<3, shopfronts x=10; returns {people (walking crowd), birds (pigeons near 5.5,-7)}
+  K.sets.court({fans})    basketball arena: court x -7.5..7.5, z -14..14, hoops at z=±13 (rim y 3.05); returns {ball, fans}
+                          fans.cheer(true/false)
+  K.sets.ring()           boxing ring in a dark arena: ring floor y=1.25, x,z -3.5..3.5; returns {fans, spot}
   env names: day golden dusk overcast night space underwater hell. K.envInfo = {sun, hemi, sky?, sunDir}
 Pieces (all return the object; pos is [x,y,z]):
   K.ground(type, size)  K.grass(center, radius, count)  K.tree(pos, scale)  K.house(pos, {w,d,h,color,rot,lit})
   K.fence(a, b)  K.chair(pos, color, rot)  K.car(pos, color, rot)  K.box(pos, [w,h,d], color)  K.ball(pos, r, color)
-  K.person(pos, {shirt, pants, skin, s, rot}) -> group with .parts {head, body, armL, armR, legL, legR} and .walk(t)
+  K.person(pos, {shirt, pants, skin, hair, shoes, s, rot, number, horns, eyes, muscle}) -> a low-poly person;
+      number = jersey number, horns = true, eyes = glow colour (e.g. 0xff3300), muscle 1..1.5, s = size (1 = 1.8 m).
+      .parts {head, body, armL, armR, legL, legR}; .walk(t, speed) .run(t) each frame;
+      .pose('punch'|'jump'|'dribble'|'fight'|'arms_up'|'fall'|'idle', x 0..1); turn with .lookAt(x, y, z)
+  K.crowd([x0,z0], [x1,z1], count, {walk, speed, face:[x,z], s}) -> array of people (walkers stroll along z and wrap;
+      walk:false + face = spectators; crowd.cheer(true))
+  K.birds([x,y,z], count, radius) -> pigeons; .scatter(t0) makes them fly off
+  K.hand({item: 'coffee'|'phone'|'none'}) -> first-person forearm in the lower right; call hand.bob(t) each frame
   K.glow(pos, {color, size, light, range}) -> glowing point with halo + light; .setPower(x) scales it (0 hides)
   K.beam(from, to, {color, width})   K.streak({color, size, tail}) -> meteor; call .fly(from, to, progress) each frame
   K.planet(pos, {r, kind: 'earth'|'mars'|'moon'|'gas', spin})  K.sun(pos, {r, color})  K.blackHole(pos, {r})
@@ -541,6 +671,10 @@ Camera: K.camPath([{t, pos:[x,y,z], look:[x,y,z], fov?, ease?}, ...]) glides bet
   Default fov 62. Shake and a gentle handheld sway are added on top automatically.
 
 Make it look like a polished viral simulation video:
+- There is no narrator: the captions carry the story, so every beat needs its own clear visual moment.
+- If beat 0 is a cold open (the most dramatic moment), show that state first, then reset everything at K.at(1)
+  with a quick K.flash or whip of the camera, and play the story forward from the beginning.
+- First-person shots (eye height 1.6-1.75, K.hand for a held item, people walking past) feel the most real.
 - Something visibly changes every 2-3 seconds; each beat's "scene" note must actually be shown at that beat's time.
 - Move the camera with purpose: slow push-ins, reveals, a dramatic pull-back to show scale near the end.
 - Impacts land exactly on the beat that has sfx boom/hit: K.explosion or K.flash + K.shake at K.at(i).
@@ -610,7 +744,7 @@ def beats_text(script: dict, times: list) -> str:
     rows = []
     for i, (b, (s, e)) in enumerate(zip(script["beats"], times)):
         hud = f" | HUD: {json.dumps(b['hud'])}" if b.get("hud") else ""
-        rows.append(f"beat {i} [{s:.2f}-{e:.2f}s] sfx={b['sfx']} | says: \"{b['say']}\" | show: {b['scene']}{hud}")
+        rows.append(f"beat {i} [{s:.2f}-{e:.2f}s] sfx={b['sfx']} | caption: \"{b['say']}\" | show: {b['scene']}{hud}")
     return "\n".join(rows)
 
 
@@ -731,14 +865,18 @@ def make(topic: str = "", log: Callable = print, ask: Callable = ask_claude, his
         log("viral: writing the script")
         script = write_script(history, topic, ask)
         (job / "script.json").write_text(json.dumps(script, indent=1))
-    log(f"viral: \"{script['title']}\" ({len(script['beats'])} beats); voicing it")
+    log(f"viral: \"{script['title']}\" ({len(script['beats'])} beats)")
 
-    paths = [job / f"voice_{i:02d}.wav" for i in range(len(script["beats"]))]
-    if not all(p.exists() for p in paths):
-        paths = voice_lines([b["say"] for b in script["beats"]], job, cfg, log)
-    voice = [read_wav(p) for p in paths]
-    lengths = [len(v) / SR for v in voice]
-    times, duration = timeline(lengths)
+    voice = None
+    if cfg["voice_mode"] in ("gemini", "edge"):
+        paths = [job / f"voice_{i:02d}.wav" for i in range(len(script["beats"]))]
+        if not all(p.exists() for p in paths):
+            paths = voice_lines([b["say"] for b in script["beats"]], job, dict(cfg, tts_model=cfg["tts_model"]
+                                if cfg["voice_mode"] == "gemini" else "none"), log)
+        voice = [read_wav(p) for p in paths]
+        times, duration = timeline([len(v) / SR for v in voice])
+    else:
+        times, duration = timeline(caption_lengths(script["beats"]), hook_min=2.6, gap=0)
     seed = int(time.time()) % 100000
     data = {"seed": seed, "fps": FPS, "duration": duration, "title": script["title"], "highlight": script["highlight"],
             "end_fact": script["end_fact"], "end_card": 2.6,
@@ -931,6 +1069,63 @@ def _ai_label(pg, log: Callable) -> bool:
         return False
 
 
+# ── how the videos are doing ─────────────────────────────────────────────────
+MILESTONES = (10_000, 100_000, 1_000_000, 10_000_000)
+
+
+def parse_count(text: str) -> int:
+    """TikTok's '1.2K' / '3.4M' / '987' -> an int"""
+    m = re.match(r"\s*([\d.,]+)\s*([KMB]?)", str(text or "").upper())
+    if not m:
+        return 0
+    n = float(m.group(1).replace(",", ""))
+    return int(n * {"": 1, "K": 1e3, "M": 1e6, "B": 1e9}[m.group(2)])
+
+
+def read_profile_stats(handle: str = "") -> list[dict]:
+    """Views of each video on the account's profile page: [{id, url, views, desc}] newest first."""
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        ctx = _tiktok_context(p, visible=False)
+        pg = ctx.pages[0] if ctx.pages else ctx.new_page()
+        try:
+            pg.goto(f"https://www.tiktok.com/@{handle}" if handle else "https://www.tiktok.com/profile",
+                    wait_until="domcontentloaded", timeout=60000)
+            pg.wait_for_timeout(6000)
+            for _ in range(4):                                   # load a few screens of videos
+                pg.mouse.wheel(0, 2500)
+                pg.wait_for_timeout(1500)
+            return pg.evaluate("""() => [...document.querySelectorAll('a[href*="/video/"]')].map(a => {
+                const v = a.querySelector('[data-e2e="video-views"]'), img = a.querySelector('img');
+                return { url: a.href.split('?')[0], id: (a.href.match(/video\\/(\\d+)/) || [])[1] || '',
+                         views: v ? v.textContent.trim() : '', desc: img ? (img.alt || '') : '' };
+              }).filter(x => x.id)""")
+        finally:
+            ctx.close()
+
+
+def viral_news(stats: list[dict], seen: dict, now: float) -> tuple[list[str], dict]:
+    """Texts for videos that crossed a milestone or are far above the account's usual, and the updated record.
+    `seen` = {video id: {"first": ts, "views": n, "told": [milestones already texted], "desc": ...}}"""
+    msgs = []
+    for x in stats:
+        r = seen.setdefault(x["id"], {"first": now, "told": [], "desc": x.get("desc", "")[:120], "url": x.get("url", "")})
+        r["views"] = parse_count(x["views"]) if isinstance(x["views"], str) else int(x["views"] or 0)
+    views = sorted(r["views"] for r in seen.values())
+    usual = views[len(views) // 2] if views else 0
+    for vid, r in seen.items():
+        hits = [m for m in MILESTONES if r["views"] >= m and m not in r["told"]]
+        if hits:
+            r["told"] += hits
+            msgs.append(f"🔥 TikTok: \"{r['desc'][:80]}\" just passed {hits[-1]:,} views ({r['views']:,} now). "
+                        f"This topic is working. {r['url']}")
+        elif len(views) >= 5 and usual >= 100 and r["views"] >= 5 * usual and "5x" not in r["told"]:
+            r["told"].append("5x")
+            msgs.append(f"📈 TikTok: \"{r['desc'][:80]}\" has {r['views']:,} views, 5x your usual ({usual:,}). "
+                        f"{r['url']}")
+    return msgs, seen
+
+
 # ── the worker's thread: a video at each of the day's times ─────────────────
 def due_slots(times: str, done: list, now: datetime, late_ok_h: float = 3) -> list[str]:
     """Today's slots that are due and not yet done; a slot more than `late_ok_h` hours old is skipped."""
@@ -967,7 +1162,32 @@ class ViralService:
             except Exception as exc:
                 self.log(f"viral: pass failed: {exc!r}")
 
+    STATS_EVERY = 2 * 3600
+
+    def check_stats(self, now: Optional[float] = None) -> list[str]:
+        now = now or time.time()
+        st = load_state()
+        if now - st.get("stats_at", 0) < self.STATS_EVERY or not st["videos"] or not any(v.get("posted") for v in st["videos"]):
+            return []
+        st["stats_at"] = now
+        save_state(st)
+        try:
+            stats = read_profile_stats(settings().get("handle", ""))
+        except Exception as exc:
+            self.log(f"viral: couldn't read the view counts: {exc}")
+            return []
+        st = load_state()
+        msgs, st["tiktok"] = viral_news(stats, st.get("tiktok") or {}, now)
+        save_state(st)
+        for m in msgs:
+            self.notify("viral", m)
+        return msgs
+
     def run_once(self, now: Optional[datetime] = None) -> str:
+        try:
+            self.check_stats()
+        except Exception as exc:
+            self.log(f"viral: stats pass failed: {exc!r}")
         cfg = settings()
         if not cfg["enabled"] or not self._busy.acquire(blocking=False):
             return ""
