@@ -1315,6 +1315,14 @@ def viral_news(stats: list[dict], seen: dict, now: float) -> tuple[list[str], di
     return msgs, seen
 
 
+def sequel_topic(desc: str) -> str:
+    """The brief for a Part 2 of a video that did well (its TikTok caption tells what it was)."""
+    return (f"PART 2 of our video that went viral (its caption: \"{desc[:150]}\"). Same characters, same style, same "
+            "kind of hook, but the next chapter: e.g. Game 2 of the series, the rematch, the next level, what happens "
+            "the day after. The title starts with \"Part 2:\" and still asks the question. Open with a quick recap "
+            "of how Part 1 ended, then a new twist and a new ending that teases Part 3.")
+
+
 # ── the worker's thread: a video at each of the day's times ─────────────────
 def due_slots(times: str, done: list, now: datetime, late_ok_h: float = 3) -> list[str]:
     """Today's slots that are due and not yet done; a slot more than `late_ok_h` hours old is skipped."""
@@ -1367,6 +1375,11 @@ class ViralService:
             return []
         st = load_state()
         msgs, st["tiktok"] = viral_news(stats, st.get("tiktok") or {}, now)
+        for vid, r in st["tiktok"].items():           # a video that took off gets a Part 2 at the next slot
+            if r.get("told") and not r.get("sequel"):
+                r["sequel"] = now
+                st.setdefault("sequels", []).append(sequel_topic(r.get("desc", "")))
+                msgs = [m + " Making a Part 2 for the next slot." if r.get("desc", "")[:80] in m else m for m in msgs]
         save_state(st)
         for m in msgs:
             self.notify("viral", m)
@@ -1402,6 +1415,9 @@ class ViralService:
             st["queue"] = queued[1:]
             save_state(st)
             return self.deliver(rec, cfg)
+        if not topic and st.get("sequels"):             # a sequel to a video that took off goes first
+            topic = st["sequels"].pop(0)
+            save_state(st)
         try:
             rec = make(topic, log=self.log)
         except Exception as exc:
