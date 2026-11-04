@@ -141,8 +141,10 @@ camera shake, flashes. Dinosaurs (T-rex, raptors, triceratops, stegosaurus, bron
 run, attack, jump, die). Not possible: talking faces, other animals besides pigeons, liquids splashing, signs.
 
 Rules for the script:
-- 30-50 seconds total: 12-20 beats. Beat 0 is the hook: the title, at most 12 words, shown over a COLD OPEN of
-  the most dramatic moment when that works; beat 1 then snaps back to the start ("Rewind." / "0 years." / "Day 1.").
+- 20-35 seconds total: 9-14 beats (short videos get watched to the end, which is what TikTok rewards). Beat 0 is
+  the hook: the title, at most 10 words, ALWAYS over a COLD OPEN of the most dramatic, strangest moment of the
+  video, with motion and a loud sound from the very first frame (no empty establishing shot, no slow fade-in);
+  beat 1 then snaps back to the start ("Rewind." / "0 years." / "Day 1."). Cut anything that doesn't escalate.
 - Every "say" is the on-screen caption: 2-9 words, punchy, concrete, real numbers. Facts must be correct; rough
   estimates say "about". Escalate every beat. Around 60% through, a twist ("Most videos get this wrong." / "But
   that's not what happens."). The last caption lands the payoff and loops back into the hook.
