@@ -236,11 +236,13 @@ Also add a key "real_people" to your JSON: a list of every real person named in 
 # Look per line: "retro" sets the slogan arched over a 70s sunset with a worn print texture (worker/retro.py);
 # lines without one alternate between it and the plain caption, so both keep getting tried
 RETRO_LINES = {"job", "family", "pet", "plain", "video"}
-# a Christmas day's holiday designs, by slot: the first is the one Etsy gets, so it rotates through the lines;
-# the ugly sweater (the user's favourite) is always second. 2026-11-03 (zero sales from 52 general jokes): the
-# lines buyers search for by name (dog breed, job) come up twice as often; the general "plain" joke is dropped.
-# Neighbours always differ, so a day's first and third designs are never the same line.
-CHRISTMAS_ROTATION = ["pet", "job", "couple", "pet", "job", "family"]
+# a Christmas day's holiday designs, by slot: the first is the one Etsy gets, so it's always a line buyers search
+# for by name (dog breed or job), taking turns; the ugly sweater (the user's favourite) is always second; the third
+# takes turns between the gift lines. 2026-11-03 (13 Etsy visits in 30 days, zero sales from 52 general jokes):
+# Etsy only gets the niche lines, where a new shop isn't up against thousands of sellers.
+NICHE_ROTATION = ["pet", "job"]
+GIFT_ROTATION = ["couple", "family"]
+CHRISTMAS_ROTATION = NICHE_ROTATION + GIFT_ROTATION
 # Sales channels connected in Printify that designs are listed on. eBay titles stop at 80 characters. The
 # Printify Pop-Up Store charges nothing to list, so it gets every design and comes first on the site's buy links.
 CHANNELS = {"popup": {"name": "our shop", "title_max": 140}, "etsy": {"name": "Etsy", "title_max": 140},
@@ -261,6 +263,8 @@ DEFAULTS = {"enabled": True, "designs_per_day": 1, "time": "06:00",  # live befo
             # Etsy charges $0.20 a listing (2026-10-27, user: keep it to ~$0.80 a day): one holiday design a day,
             # on the products that sell for the holidays. 0 a day = nothing new on Etsy.
             "etsy_per_day": 1, "etsy_holiday_only": True,
+            # and only designs from these lines (2026-11-03, user agreed: niche only on Etsy); [] = any line
+            "etsy_lines": ["pet", "job"],
             # in this order of preference, and at most etsy_per_design of them (3 = $0.60 a day)
             "etsy_products": ["ugly_sweater", "sweater_tee", "sweater_hoodie", "pet_bandana", "ornament", "tee",
                               "youth_tee", "toddler_tee", "hoodie", "mug"],
@@ -383,8 +387,10 @@ def christmas_style(day, slot: int, per_day: int) -> str:
     sweater, then the next lines along."""
     if slot == 1 or per_day == 1 and day.toordinal() % 3 == 0:
         return "sweater"
-    turn = day.toordinal() + (slot - 1 if slot > 1 else 0)
-    return CHRISTMAS_ROTATION[turn % len(CHRISTMAS_ROTATION)]
+    turn = day.toordinal()
+    if slot == 0:
+        return NICHE_ROTATION[turn % len(NICHE_ROTATION)]
+    return GIFT_ROTATION[(turn // 2 + slot) % len(GIFT_ROTATION)]
 
 
 def settings() -> dict:
@@ -763,7 +769,7 @@ class Shop:
         return out
 
     def on_etsy(self, rec: dict, st: dict) -> bool:
-        """Whether a design goes on Etsy: the first holiday design (or winner spin-off) of each day, up to
+        """Whether a design goes on Etsy: the first niche-line holiday design (or winner spin-off) of each day, up to
         etsy_per_day. Decided once per design and kept."""
         if "etsy" not in rec:
             cfg = self.cfg()
@@ -771,6 +777,9 @@ class Shop:
             picked = sum(1 for d in st["designs"] if d.get("etsy") and datetime.fromtimestamp(d["made"]).date() == day)
             wanted = (bool(rec.get("season") or rec.get("spinoff_of")) or not cfg.get("etsy_holiday_only")) \
                 and not rec.get("series")
+            lines = cfg.get("etsy_lines") or []
+            if lines and not rec.get("spinoff_of") and rec.get("style") not in lines:
+                wanted = False                   # a winner's spin-off still goes on; otherwise niche lines only
             rec["etsy"] = wanted and picked < cfg.get("etsy_per_day", 1)
         return rec["etsy"]
 
