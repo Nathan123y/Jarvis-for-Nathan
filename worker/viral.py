@@ -65,7 +65,8 @@ DEFAULTS = {"enabled": True,
             "ai_label": True,
             "claude_model": "opus",                 # the strongest Claude on the membership writes the script + 3D scene
             "claude_effort": "high",                # was medium; more thinking = better scenes (uses more of the plan's limits)
-            "instagram": True,                      # also post each video as a Reel on the videos' own Instagram page
+            "instagram": True,
+            "ig_handle": "whatifishowedu",          # the ONLY Instagram account Jarvis may post to (never the user's main)                      # also post each video as a Reel on the videos' own Instagram page
                                                     # (a new page, NOT the user's personal one; user's choice 2026-11-05)
             "handle": "whatifishowedu"}                # the TikTok account, for reading view counts                       # TikTok requires the AI-generated label on AI-made videos
 CHROME_ARGS = ["--use-angle=metal", "--enable-gpu", "--ignore-gpu-blocklist"]
@@ -1588,6 +1589,10 @@ def caption_for(script: dict) -> str:
 
 
 # ── 6. TikTok ────────────────────────────────────────────────────────────────
+class WrongAccount(RuntimeError):
+    """Instagram is logged into some account other than the videos' page: never post there."""
+
+
 class NotLoggedIn(RuntimeError):
     pass
 
@@ -1694,8 +1699,8 @@ def tiktok_post(video: Path, caption: str, ai_label: bool = True, log: Callable 
 def _ig_context(p, visible: bool):
     IG_PROFILE.mkdir(parents=True, exist_ok=True)
     args = ["--disable-blink-features=AutomationControlled"]
-    if not visible:
-        args.append("--window-position=-2400,0")
+    args.append("--window-position=-2400,0" if not visible else "--window-position=120,80")
+    args.append("--window-size=1280,900")
     return p.chromium.launch_persistent_context(str(IG_PROFILE), channel="chrome", headless=False, args=args,
                                                 viewport={"width": 1280, "height": 900}, ignore_default_args=["--enable-automation"])
 
@@ -1711,6 +1716,8 @@ def ig_login(wait_s: int = 900) -> bool:
         ctx = _ig_context(p, visible=True)
         pg = ctx.pages[0] if ctx.pages else ctx.new_page()
         pg.goto("https://www.instagram.com/accounts/login/")
+        pg.bring_to_front()
+        print("login window open", flush=True)
         end = time.time() + wait_s
         while time.time() < end:
             if ig_logged_in(ctx):
@@ -1783,9 +1790,14 @@ def ig_post(video: Path, caption: str, ai_label: bool = True, log: Callable = pr
                         sw.click(timeout=5000)
                 except Exception:
                     log("viral: couldn't find Instagram's AI label switch")
+            want = str(settings().get("ig_handle") or "").strip().lower().lstrip("@")
+            lines = [l.strip().lower() for l in pg.locator("[role=dialog]").last.inner_text(timeout=10000).splitlines()]
+            if not want or want not in lines:               # never share from any other account (the user's main)
+                pg.screenshot(path=str(shot))
+                raise WrongAccount(f"the post isn't from @{want or '?'}, so it wasn't shared (screenshot {shot})")
             if dry_run:
                 pg.screenshot(path=str(shot))
-                return f"dry run: ready to share (screenshot {shot})"
+                return f"dry run: ready to share as @{want} (screenshot {shot})"
             if not _ig_click(pg, ["Share"], timeout=15000):
                 raise RuntimeError("Instagram's Share button wasn't there")
             done = pg.locator("text=/reel has been shared|post has been shared|Reel shared/i").first
