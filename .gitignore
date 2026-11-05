@@ -104,3 +104,4 @@ memory/viral.json
 memory/tiktok_profile/
 # the sound library (public-domain clips from Wikimedia Commons; rebuilt by worker/viral.py)
 memory/viral_sfx/
+memory/kokoro/
