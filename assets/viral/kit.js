@@ -709,12 +709,305 @@ export async function boot(data, sceneUrl) {
     },
   };
 
+  // ── football: ball, goals, tunnel, signs, sound rings, the stadium ─────────
+  /** a low-poly match ball (white with black patches), radius r. ball.path([{t, pos, h?}]) moves it along keyframes
+   *  (h = arc height for a lob/chip on the way to that key); it spins by the distance it travels. */
+  K.soccerBall = (pos = [0, .11, 0], r = .11) => {
+    const geo = new THREE.IcosahedronGeometry(1, 2).toNonIndexed();
+    const ico = new THREE.IcosahedronGeometry(1, 0).attributes.position, tips = [];
+    for (let i = 0; i < ico.count; i++) { const v = new THREE.Vector3().fromBufferAttribute(ico, i).normalize(); if (!tips.some(u => u.distanceTo(v) < 1e-3)) tips.push(v); }
+    const pa = geo.attributes.position, col = [];
+    for (let i = 0; i < pa.count; i += 3) {
+      const c = new THREE.Vector3(); for (let k = 0; k < 3; k++) c.add(new THREE.Vector3().fromBufferAttribute(pa, i + k)); c.normalize();
+      const dark = tips.some(u => u.angleTo(c) < .3);
+      for (let k = 0; k < 3; k++) col.push(...(dark ? [.05, .05, .06] : [.96, .96, .96]));
+    }
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3)); geo.scale(r, r, r);
+    const m = K.add(new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: .55 })), pos);
+    let keys = null; const last = m.position.clone();
+    m.path = (list) => { keys = list.map(k => ({ t: k.t, pos: v3(k.pos), h: k.h || 0, ease: k.ease })).sort((a, b) => a.t - b.t); return m; };
+    updaters.push(t => {
+      if (!keys || !keys.length) return;
+      let i = 0; while (i < keys.length - 1 && keys[i + 1].t <= t) i++;
+      const a = keys[i], b = keys[Math.min(i + 1, keys.length - 1)];
+      const x = a === b ? 0 : (ease[b.ease || 'linear'] || ease.linear)((t - a.t) / Math.max(1e-6, b.t - a.t));
+      m.position.lerpVectors(a.pos, b.pos, x); m.position.y = Math.max(r, m.position.y) + b.h * 4 * x * (1 - x) * (a === b ? 0 : 1);
+      const d = m.position.clone().sub(last); d.y = 0; const dist = d.length();
+      if (dist > 1e-5) m.rotateOnWorldAxis(new THREE.Vector3(d.z, 0, -d.x).normalize(), dist / r);
+      last.copy(m.position);
+    });
+    return m;
+  };
+  /** a full-size goal (7.32 x 2.44 m, net 2 m deep) whose mouth faces `dir` (+1 = toward +z, -1 = toward -z), centred at x */
+  K.goal = (pos = [0, 0, 0], dir = 1) => {
+    const g = new THREE.Group(), post = K.mat(0xffffff, { roughness: .4 }), R = .06;
+    for (const x of [-3.66, 3.66]) { const p = new THREE.Mesh(new THREE.CylinderGeometry(R, R, 2.44, 10), post); p.position.set(x, 1.22, 0); g.add(p); }
+    const bar = new THREE.Mesh(new THREE.CylinderGeometry(R, R, 7.44, 10), post); bar.rotation.z = Math.PI / 2; bar.position.set(0, 2.44, 0); g.add(bar);
+    const netTex = canvasTex(256, 256, (c, w, h) => { c.clearRect(0, 0, w, h); c.strokeStyle = 'rgba(255,255,255,.9)'; c.lineWidth = 3;
+      for (let k = 0; k <= w; k += 32) { c.beginPath(); c.moveTo(k, 0); c.lineTo(k, h); c.stroke(); c.beginPath(); c.moveTo(0, k); c.lineTo(w, k); c.stroke(); } });
+    const netMat = new THREE.MeshStandardMaterial({ map: netTex, transparent: true, alphaTest: .25, side: THREE.DoubleSide, roughness: 1 });
+    const plane = (w, h, rep, setup) => { const t = netTex.clone(); t.repeat.set(rep[0], rep[1]); t.needsUpdate = true; const mm = netMat.clone(); mm.map = t;
+      const p = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mm); setup(p); g.add(p); return p; };
+    plane(7.32, 2.44, [14, 5], p => p.position.set(0, 1.22, -2));
+    plane(7.32, 2, [14, 4], p => { p.rotation.x = Math.PI / 2; p.position.set(0, 2.44, -1); });
+    for (const x of [-3.66, 3.66]) plane(2, 2.44, [4, 5], p => { p.rotation.y = Math.PI / 2; p.position.set(x, 1.22, -1); });
+    g.rotation.y = dir > 0 ? 0 : Math.PI;
+    return K.add(g, pos);
+  };
+  /** the players' tunnel: a striped arch `len` m long, its mouth at pos facing `rot` (radians about y; 0 = toward +z) */
+  K.tunnel = (pos = [0, 0, 0], rot = 0, o = {}) => {
+    const g = new THREE.Group(), len = o.len || 6, r = o.r || 2.2;
+    const tex = canvasTex(256, 64, (c, w, h) => { for (let x = 0; x < w; x += 32) { c.fillStyle = (x / 32) % 2 ? (o.color || '#b3001b') : '#f4f4f4'; c.fillRect(x, 0, 32, h); } });
+    tex.repeat.set(1, 1);
+    const arch = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, 32, 1, true, -Math.PI / 2, Math.PI), new THREE.MeshStandardMaterial({ map: tex, side: THREE.DoubleSide, roughness: .6 }));
+    arch.rotation.x = Math.PI / 2; arch.position.set(0, 0, -len / 2); g.add(arch);
+    const back = new THREE.Mesh(new THREE.CircleGeometry(r * .98, 32, 0, Math.PI), new THREE.MeshBasicMaterial({ color: 0xfff6dd })); back.position.set(0, 0, -len); g.add(back);
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(r * 2, len), K.mat(0x2a2a2e)); floor.rotation.x = -Math.PI / 2; floor.position.set(0, .02, -len / 2); g.add(floor);
+    const l = new THREE.PointLight(0xfff0d0, 20, 12, 2); l.position.set(0, r * .8, -len * .6); g.add(l);
+    g.rotation.y = rot; g.mouth = v3(pos);
+    return K.add(g, pos);
+  };
+  /** a flat text sign: banner, board, tifo or big screen. o: w, h (metres), bg, fg, size (text height share .1-.9),
+   *  rot (yaw), tilt (pitch), glow (lit screen), border colour, font weight. sign.setText('...') redraws it. */
+  K.sign = (text, pos = [0, 2, 0], o = {}) => {
+    const w = o.w || 6, h = o.h || 1.6, cw = Math.min(4096, Math.round(w * 140)), ch = Math.max(16, Math.round(cw * h / w));
+    const cv = document.createElement('canvas'); cv.width = cw; cv.height = ch; const c = cv.getContext('2d');
+    const draw = (txt) => {
+      c.fillStyle = o.bg || '#c8102e'; c.fillRect(0, 0, cw, ch);
+      if (o.border) { const lw = Math.min(cw, ch) * .07; c.strokeStyle = o.border; c.lineWidth = lw; c.strokeRect(lw / 2, lw / 2, cw - lw, ch - lw); }
+      const lines = String(txt).split('\n'); let size = ch * (o.size || .62) / lines.length;
+      c.font = `${o.weight || 900} ${size}px ${SANS}`; const mw = Math.max(...lines.map(l => c.measureText(l).width));
+      if (mw > cw * .9) { size *= cw * .9 / mw; c.font = `${o.weight || 900} ${size}px ${SANS}`; }
+      c.fillStyle = o.fg || '#ffffff'; c.textAlign = 'center'; c.textBaseline = 'middle';
+      lines.forEach((l, i) => c.fillText(l, cw / 2, ch * (i + .5) / lines.length + size * .05));
+    };
+    draw(text);
+    const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8;
+    const mat = o.glow ? new THREE.MeshBasicMaterial({ map: tex, toneMapped: false, side: THREE.DoubleSide })
+                       : new THREE.MeshStandardMaterial({ map: tex, roughness: .8, emissive: 0xffffff, emissiveMap: tex, emissiveIntensity: .25, side: THREE.DoubleSide });
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+    m.rotation.order = 'YXZ'; m.rotation.set(o.tilt || 0, o.rot || 0, 0);
+    m.setText = (txt) => { draw(txt); tex.needsUpdate = true; return m; };
+    return K.add(m, pos, false);
+  };
+  /** sound / sonar rings pulsing out of pos (or o.follow, an object): o.t0, o.t1, every (s between rings), life,
+   *  size (final radius, m), color, opacity, flat (true = lying on the ground, false = facing the camera), y offset */
+  K.rings = (pos, o = {}) => {
+    const { t0 = 0, t1 = t0 + 2, every = .45, life = 1.3, size = 3, color = 0xffffff, opacity = .8, flat = true, y = .04 } = o;
+    const geo = new THREE.RingGeometry(.9, 1, 72), pool = [], group = new THREE.Group();
+    for (let i = 0; i < Math.ceil(life / every) + 2; i++) {
+      const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color, transparent: true, depthWrite: false, side: THREE.DoubleSide, toneMapped: false }));
+      m.visible = false; m.renderOrder = 5; group.add(m); pool.push(m);
+    }
+    scene.add(group); group.rings = pool;
+    const _add = group.add.bind(group);
+    group.add = (...o) => { if (o.length && o[0] && o[0].isObject3D) _add(...o); return group; };
+    const base = pos ? v3(pos) : new THREE.Vector3(), tmp = new THREE.Vector3();
+    updaters.push(t => {
+      for (const m of pool) m.visible = false;
+      if (t < t0 || t > t1 + life) return;
+      const at = o.follow ? o.follow.getWorldPosition(tmp).add(v3(o.offset || [0, 0, 0])) : base;
+      let k = 0;
+      for (let s = t0 + Math.floor(Math.max(0, Math.min(t, t1) - t0) / every) * every; s > t - life && s >= t0 && k < pool.length; s -= every) {
+        const a = (t - s) / life, m = pool[k++]; if (a < 0) continue;
+        m.visible = true; m.position.copy(at);
+        if (flat) { m.rotation.set(-Math.PI / 2, 0, 0); m.position.y = at.y + y; } else m.quaternion.copy(camera.quaternion);
+        m.scale.setScalar(.15 + size * ease.out(a)); m.material.opacity = opacity * (1 - a) * Math.min(1, a * 8);
+      }
+    });
+    return group;
+  };
+
+  /**
+   * a packed football stadium in daylight. Pitch 68 x 105 m: x -34..34, z -52.5..52.5, centre spot 0,0,0, goals at
+   * z = ±52.5. Two tiers of stands on all four sides (thousands of blocky fans in team colours that bob and jump on
+   * K.cheer), a roof, LED boards around the pitch, banners on the tier fronts, the tunnel at x = -38 (mouth facing +x),
+   * dugouts beside it. o: home (fan colour), alt (second colour), env, name (the ground's name on the stand roofs),
+   * boards: ['TEXT', ...] (pitch-side adverts), banners: ['TEXT', ...] (between the tiers), mosaic: 'TEXT' (spelled out
+   * by the fans in the side stands), fans: false (empty seats).
+   * Returns { env, ball, goals: [near (z=+52.5), far (z=-52.5)], tunnel, crowdAt(x, z) -> a seat position, bench }.
+   */
+  K.stadiumSet = (o = {}) => {
+    const env = K.env(o.env || 'day', { elev: 58, az: 30, exp: .64, fog: [0xd6e4f2, 300, 1600], hemi: [0xe4eeff, 0x6f8a52, 1.8] });
+    const sun = env.sun.shadow.camera; sun.left = -130; sun.right = 130; sun.top = 130; sun.bottom = -130; sun.far = 600; sun.updateProjectionMatrix();
+    env.sun.position.copy(env.sunDir.clone().multiplyScalar(250));
+    const HOME = new THREE.Color(o.home ?? 0xd0021b), ALT = new THREE.Color(o.alt ?? 0xffffff);
+    const hex = c => '#' + new THREE.Color(c).getHexString();
+    K.ground('concrete', 2000);
+    // the pitch: mowed stripes and every line in the right place
+    const PW = 84, PL = 125, px = 24;
+    const pitchTex = canvasTex(PW * px, PL * px, (c, w, h) => {
+      const m2p = v => v * px, X = x => w / 2 + m2p(x), Z = z => h / 2 + m2p(z);
+      c.fillStyle = '#3f9a35'; c.fillRect(0, 0, w, h);
+      for (let k = -10; k < 10; k++) { c.fillStyle = k % 2 ? '#47a83b' : '#3d9433'; c.fillRect(X(-34), Z(k * 5.25), m2p(68), m2p(5.25)); }
+      c.strokeStyle = 'rgba(255,255,255,.95)'; c.lineWidth = 4;
+      const rect = (x0, z0, x1, z1) => c.strokeRect(X(x0), Z(z0), m2p(x1 - x0), m2p(z1 - z0));
+      rect(-34, -52.5, 34, 52.5); c.beginPath(); c.moveTo(X(-34), Z(0)); c.lineTo(X(34), Z(0)); c.stroke();
+      c.beginPath(); c.arc(X(0), Z(0), m2p(9.15), 0, 7); c.stroke();
+      for (const s of [-1, 1]) {
+        const g = 52.5 * s;
+        rect(-20.16, Math.min(g, g - s * 16.5), 20.16, Math.max(g, g - s * 16.5));
+        rect(-9.16, Math.min(g, g - s * 5.5), 9.16, Math.max(g, g - s * 5.5));
+        c.fillStyle = '#fff'; c.beginPath(); c.arc(X(0), Z(g - s * 11), 5, 0, 7); c.fill();
+        c.save(); c.beginPath(); c.rect(0, s > 0 ? 0 : Z(g - s * 16.5), w, s > 0 ? Z(g - s * 16.5) : h); c.clip();
+        c.beginPath(); c.arc(X(0), Z(g - s * 11), m2p(9.15), 0, 7); c.stroke(); c.restore();
+        for (const x of [-34, 34]) { c.beginPath(); c.arc(X(x), Z(g), m2p(1), 0, 7); c.stroke(); }
+      }
+      c.fillStyle = '#fff'; c.beginPath(); c.arc(X(0), Z(0), 5, 0, 7); c.fill();
+    });
+    pitchTex.wrapS = pitchTex.wrapT = THREE.ClampToEdgeWrapping; pitchTex.repeat.set(1, 1);
+    const pitch = new THREE.Mesh(new THREE.PlaneGeometry(PW, PL), new THREE.MeshStandardMaterial({ map: pitchTex, roughness: .95 }));
+    pitch.rotation.x = -Math.PI / 2; pitch.position.y = .01; pitch.receiveShadow = true; scene.add(pitch);
+    const goals = [K.goal([0, 0, 52.5], -1), K.goal([0, 0, -52.5], 1)];
+    for (const x of [-34, 34]) for (const z of [-52.5, 52.5]) {
+      K.add(new THREE.Mesh(new THREE.CylinderGeometry(.02, .02, 1.5, 6), K.mat(0xffffff)), [x, .75, z]);
+      K.add(new THREE.Mesh(new THREE.PlaneGeometry(.4, .3), K.mat(HOME, { side: THREE.DoubleSide })), [x + .2, 1.35, z]);
+    }
+    // LED boards around the pitch
+    const boards = o.boards && o.boards.length ? o.boards : ['MATCHDAY', 'HOME OF FOOTBALL', 'SUPPORTERS CLUB'];
+    const boardRun = (len, pos, rot) => {
+      const n = Math.max(1, Math.round(len / 12));
+      for (let k = 0; k < n; k++) {
+        const along = -len / 2 + (k + .5) * len / n;
+        const p = v3(pos).add(new THREE.Vector3(Math.cos(rot), 0, -Math.sin(rot)).multiplyScalar(along));
+        K.sign(boards[k % boards.length], [p.x, .5, p.z], { w: len / n - .1, h: .95, rot, bg: k % 2 ? '#111216' : hex(HOME), fg: '#ffffff', size: .62, glow: true });
+      }
+    };
+    boardRun(110, [-37.5, 0, 0], Math.PI / 2); boardRun(110, [37.5, 0, 0], -Math.PI / 2);
+    boardRun(72, [0, 0, -56.5], 0); boardRun(72, [0, 0, 56.5], Math.PI);
+    // stands: two tiers on each side; rows step .8 m back and .45 m (lower) / .6 m (upper) up
+    const D0 = 41, E0 = 60, DEP = .8, LOW = 24, UP = 20, GAP = 3.2, SEAT = .62;
+    const rowsY = [], rowsOff = [];
+    for (let r = 0; r < LOW + UP; r++) {
+      const up = r >= LOW, k = up ? r - LOW : r;
+      rowsOff.push((up ? LOW * DEP + 1.4 : 0) + k * DEP);
+      rowsY.push(up ? 1.2 + LOW * .45 + GAP + k * .62 : 1.2 + k * .45);
+    }
+    const concrete = K.mat(0x8f9399), seatsMat = K.mat(HOME.clone().multiplyScalar(.75));
+    const sides = [ { axis: 'x', s: -1 }, { axis: 'x', s: 1 }, { axis: 'z', s: -1 }, { axis: 'z', s: 1 } ];
+    // terraces as one stepped slab per tier per side
+    for (const sd of sides) for (const [r0, r1] of [[0, LOW - 1], [LOW, LOW + UP - 1]]) {
+      for (let r = r0; r <= r1; r += 2) {
+        const off = rowsOff[r], y = rowsY[r];
+        const halfLen = (sd.axis === 'x' ? E0 - 7.5 : D0 - 7) + off + 1;
+        const g = new THREE.BoxGeometry(sd.axis === 'x' ? DEP * 2 : halfLen * 2, y, sd.axis === 'x' ? halfLen * 2 : DEP * 2);
+        const m = new THREE.Mesh(g, concrete);
+        const base = (sd.axis === 'x' ? D0 : E0) + off + DEP * .5;
+        m.position.set(sd.axis === 'x' ? sd.s * base : 0, y / 2 - .25, sd.axis === 'x' ? 0 : sd.s * base);
+        m.receiveShadow = true; scene.add(m);
+      }
+    }
+    // tier-front banners, back walls and the roof
+    const banners = o.banners && o.banners.length ? o.banners : [o.name || 'THE HOME END', 'SINCE 1878'];
+    let bi = 0;
+    for (const sd of sides) {
+      const off = rowsOff[LOW] - .6, len = (sd.axis === 'x' ? E0 - 7.5 : D0 - 7) * 2 + off * 2;
+      const base = (sd.axis === 'x' ? D0 : E0) + off, n = Math.max(1, Math.round(len / 26));
+      for (let k = 0; k < n; k++) {
+        const along = -len / 2 + (k + .5) * len / n, rot = sd.axis === 'x' ? -sd.s * Math.PI / 2 : (sd.s > 0 ? Math.PI : 0);
+        const p = sd.axis === 'x' ? [sd.s * base, rowsY[LOW - 1] + 1.6, along] : [along, rowsY[LOW - 1] + 1.6, sd.s * base];
+        K.sign(banners[bi++ % banners.length], p, { w: len / n - .2, h: 2.2, rot, bg: (k + bi) % 2 ? '#15171c' : hex(HOME), fg: '#ffffff', size: .55, glow: true });
+      }
+      const top = rowsY[LOW + UP - 1] + 4, back = (sd.axis === 'x' ? D0 : E0) + rowsOff[LOW + UP - 1] + 2;
+      const half = (sd.axis === 'x' ? E0 - 7.5 : D0 - 7) + rowsOff[LOW + UP - 1] + 3;
+      const wall = new THREE.Mesh(new THREE.BoxGeometry(sd.axis === 'x' ? 1 : half * 2, top + 2, sd.axis === 'x' ? half * 2 : 1), K.mat(0x7c8088));
+      wall.position.set(sd.axis === 'x' ? sd.s * back : 0, (top + 2) / 2 - .5, sd.axis === 'x' ? 0 : sd.s * back); scene.add(wall);
+      const depth = rowsOff[LOW + UP - 1] + 14;
+      const roof = new THREE.Mesh(new THREE.BoxGeometry(sd.axis === 'x' ? depth : half * 2, .5, sd.axis === 'x' ? half * 2 : depth), K.mat(0xb8bec6, { roughness: .6, emissive: 0x6a6f76 }));
+      roof.position.set(sd.axis === 'x' ? sd.s * (back - depth / 2 + 1) : 0, top + 2.4, sd.axis === 'x' ? 0 : sd.s * (back - depth / 2 + 1));
+      roof.rotation[sd.axis === 'x' ? 'z' : 'x'] = (sd.axis === 'x' ? -sd.s : sd.s) * .07; roof.castShadow = true; scene.add(roof);
+      const lip = new THREE.Mesh(new THREE.BoxGeometry(sd.axis === 'x' ? 1.2 : half * 2, 1.4, sd.axis === 'x' ? half * 2 : 1.2), K.mat(0xf2f4f6, { roughness: .4 }));
+      lip.position.set(sd.axis === 'x' ? sd.s * (back - depth + 1.4) : 0, top + 1.6, sd.axis === 'x' ? 0 : sd.s * (back - depth + 1.4)); scene.add(lip);
+      for (let k = -half + 6; k < half; k += 12) {
+        const truss = new THREE.Mesh(new THREE.BoxGeometry(sd.axis === 'x' ? depth : .3, .3, sd.axis === 'x' ? .3 : depth), K.mat(0xffffff));
+        truss.position.copy(roof.position); truss.position.y -= .4; truss.position[sd.axis === 'x' ? 'z' : 'x'] = k; truss.rotation.copy(roof.rotation); scene.add(truss);
+      }
+      if (o.name && sd.axis === 'x') K.sign(o.name.toUpperCase(), [sd.s * (back - depth + 1.4 - sd.s * .62), top + 1.6, 0], { w: 46, h: 1.3, rot: -sd.s * Math.PI / 2, bg: '#f2f4f6', fg: hex(HOME), size: .8 });
+    }
+    // the fans: instanced blocky people (body + head) in every seat, bobbing; jumping when K.cheer is on
+    const seats = [];
+    const mosaic = o.mosaic ? (() => {
+      const cv = document.createElement('canvas'); cv.width = 1024; cv.height = 96; const c = cv.getContext('2d', { willReadFrequently: true });
+      c.fillStyle = '#000'; c.fillRect(0, 0, 1024, 96); c.fillStyle = '#fff'; c.textAlign = 'center'; c.textBaseline = 'middle';
+      let size = 80; c.font = `900 ${size}px ${SANS}`; const mw = c.measureText(o.mosaic).width; if (mw > 980) { size *= 980 / mw; c.font = `900 ${size}px ${SANS}`; }
+      c.fillText(String(o.mosaic).toUpperCase(), 512, 50);
+      const d = c.getImageData(0, 0, 1024, 96).data; return (u, v) => d[(Math.floor(clamp01(v) * 95) * 1024 + Math.floor(clamp01(u) * 1023)) * 4] > 128;
+    })() : null;
+    for (const sd of sides) for (let r = 0; r < LOW + UP; r++) {
+      const off = rowsOff[r], y = rowsY[r] - .25;
+      const half = (sd.axis === 'x' ? E0 - 7.5 : D0 - 7) + off, base = (sd.axis === 'x' ? D0 : E0) + off + DEP * .55;
+      const n = Math.floor(half * 2 / SEAT);
+      for (let k = 0; k < n; k++) {
+        const along = -half + (k + .5) * SEAT + (Math.random() - .5) * .08;
+        const x = sd.axis === 'x' ? sd.s * base : along, z = sd.axis === 'x' ? along : sd.s * base;
+        let col;
+        if (mosaic && sd.axis === 'x' && r < LOW) {
+          const u = sd.s < 0 ? (half - along) / (half * 2) : (along + half) / (half * 2);
+          col = mosaic(u, 1 - r / (LOW - 1)) ? ALT : HOME;
+        } else { const q = Math.random(); col = q < .78 ? HOME : q < .93 ? ALT : new THREE.Color(0x24262c); }
+        seats.push({ x, y, z, rot: sd.axis === 'x' ? -sd.s * Math.PI / 2 : (sd.s > 0 ? Math.PI : 0), col, empty: o.fans === false || Math.random() < .015 });
+      }
+    }
+    const U = { uTime: { value: 0 }, uCheer: { value: 0 } };
+    const crowdMat = () => { const m = new THREE.MeshLambertMaterial({ color: 0xffffff });
+      m.onBeforeCompile = sh => { Object.assign(sh.uniforms, U);
+        sh.vertexShader = 'uniform float uTime; uniform float uCheer;\n' + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+          vec4 ip = instanceMatrix[3];
+          float ph = fract(sin(dot(ip.xz, vec2(12.9898, 78.233))) * 43758.5453);
+          transformed.y += uCheer * max(0.0, sin(uTime * (8.0 + ph * 5.0) + ph * 6.283)) * 0.28 + sin(uTime * 1.4 + ph * 6.283) * 0.015;`); };
+      return m; };
+    const live = seats.filter(s => !s.empty);
+    const bodyG = new THREE.BoxGeometry(.44, .62, .3); bodyG.translate(0, .31, 0);
+    const headG = new THREE.BoxGeometry(.22, .24, .22); headG.translate(0, .76, 0);
+    const armG = new THREE.BoxGeometry(.56, .1, .1); armG.translate(0, .62, 0);
+    const bodies = new THREE.InstancedMesh(bodyG, crowdMat(), live.length), heads = new THREE.InstancedMesh(headG, crowdMat(), live.length);
+    const SKINS = [0xf1c9a5, 0xe0ac7e, 0xc68642, 0x8d5524, 0x5c3a1e, 0xf5d0b0];
+    const mtx = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(1, 1, 1), up = new THREE.Vector3(0, 1, 0);
+    live.forEach((s, i) => {
+      q.setFromAxisAngle(up, s.rot); sc.set(1, .92 + Math.random() * .16, 1);
+      mtx.compose(new THREE.Vector3(s.x, s.y, s.z), q, sc); bodies.setMatrixAt(i, mtx); heads.setMatrixAt(i, mtx);
+      bodies.setColorAt(i, s.col.clone().offsetHSL(0, 0, (Math.random() - .5) * .08)); heads.setColorAt(i, new THREE.Color(SKINS[i % SKINS.length]));
+    });
+    for (const m of [bodies, heads]) { m.instanceMatrix.needsUpdate = true; m.instanceColor.needsUpdate = true; m.frustumCulled = false; scene.add(m); }
+    updaters.push(t => { U.uTime.value = t; U.uCheer.value = K.cheerLevel ? K.cheerLevel(t) : 0; });
+    // tunnel and dugouts on the -x side, halfway
+    const tunnel = K.tunnel([-38.2, 0, 0], Math.PI / 2, { color: hex(HOME) });
+    const bench = [];
+    for (const z of [-9, 9]) {
+      K.box([-38.5, 1.1, z], [2.4, .12, 7], 0xdfe3e8, { transparent: true, opacity: .55 });
+      K.box([-39.6, .6, z], [.2, 1.2, 7], 0x2b2f36);
+      for (let k = -3; k <= 3; k++) { const s = K.box([-39.2, .45, z + k * .9], [.5, .1, .5], 0x1d3a8a); bench.push(s.position.clone()); }
+    }
+    const ball = K.soccerBall([0, .11, 0]);
+    const crowdAt = (x, z) => { let best = null, d = 1e9; for (const s of seats) { const e = (s.x - x) ** 2 + (s.z - z) ** 2; if (e < d) { d = e; best = s; } } return best ? new THREE.Vector3(best.x, best.y, best.z) : null; };
+    return { env, ball, goals, tunnel, bench, crowdAt, dims: { halfW: 34, halfL: 52.5 }, fans: { cheer: K.cheer } };
+  };
+  K.sets.stadium = (o = {}) => K.stadiumSet(o);
+
   // ── camera ─────────────────────────────────────────────────────────────────
   /** keyframes [{t, pos:[x,y,z], look:[x,y,z], fov?, ease?}]: the camera glides between them every frame */
   K.camPath = (keys) => { camKeys = keys.map(k => Object.assign({}, k, { pos: v3(k.pos), look: v3(k.look) })).sort((a, b) => a.t - b.t); };
   K.lookAt = (pos, look, fov) => { camera.position.copy(v3(pos)); camera.lookAt(v3(look)); if (fov) { camera.fov = fov; camera.updateProjectionMatrix(); } };
   K.shake = (t0, dur = 1, amp = .3) => shakes.push({ t0, dur, amp });
   K.handheld = (amount = .6) => { handheld = amount; };
+  /** hard-cut shots, TV style: [{t, pos, look, fov?, to?: {pos?, look?, fov?}, ease?, follow?: object, lookOffset?, chase?}]
+   *  Each shot holds from its t until the next one starts (a clean cut), drifting from pos/look toward `to`.
+   *  follow: an object the camera keeps looking at (+lookOffset); chase: [dx,dy,dz] keeps the camera at follow + chase. */
+  let shots = null;
+  K.shots = (list) => { shots = list.map(s => Object.assign({}, s, { pos: s.pos ? v3(s.pos) : null, look: s.look ? v3(s.look) : null,
+    to: s.to ? { pos: s.to.pos ? v3(s.to.pos) : null, look: s.to.look ? v3(s.to.look) : null, fov: s.to.fov } : null })).sort((a, b) => a.t - b.t); };
+  const _sp = new THREE.Vector3(), _sl = new THREE.Vector3(), _sf = new THREE.Vector3();
+  function runShots(t) {
+    if (!shots || !shots.length) return;
+    let i = 0; while (i < shots.length - 1 && shots[i + 1].t <= t) i++;
+    const s = shots[i], end = i < shots.length - 1 ? shots[i + 1].t : data.duration;
+    const x = (ease[s.ease || 'inOut'] || ease.inOut)((t - s.t) / Math.max(.01, end - s.t));
+    const f = s.follow ? s.follow.getWorldPosition(_sf) : null;
+    if (s.chase && f) _sp.copy(f).add(v3(s.chase)); else _sp.copy(s.pos || camera.position); if (!s.chase && s.to && s.to.pos) _sp.lerp(s.to.pos, x);
+    if (f) _sl.copy(f).add(v3(s.lookOffset || [0, 1, 0])); else { _sl.copy(s.look || [0, 0, 0]); if (s.to && s.to.look) _sl.lerp(s.to.look, x); }
+    camera.position.copy(_sp); camera.lookAt(_sl);
+    const fa = s.fov || 62, fb = (s.to && s.to.fov) || fa; camera.fov = fa + (fb - fa) * x; camera.updateProjectionMatrix();
+  }
   function runCamPath(t) {
     if (!camKeys || !camKeys.length) return;
     let i = 0; while (i < camKeys.length - 1 && camKeys[i + 1].t <= t) i++;
@@ -802,12 +1095,109 @@ export async function boot(data, sceneUrl) {
   };
   const vigGrad = (() => { const g = ctx.createRadialGradient(W / 2, H * .45, H * .3, W / 2, H * .45, H * .62);
     g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,.5)'); return g; })();
+  // ── the narrated style: word-by-word yellow captions, broadcast cards, a scorebug ──
+  const NARR = data.style === 'narrated';
+  if (NARR) { vignette = false; handheld = .2; bloom.strength = .12; }
+  function rr(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); }
+  function caption(text, y) {
+    ctx.save(); ctx.font = `800 50px ${SANS}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+    const lines = []; let cur = '';
+    for (const w of String(text).toLowerCase().split(/\s+/)) { const tryL = cur ? cur + ' ' + w : w; if (cur && ctx.measureText(tryL).width > 820) { lines.push(cur); cur = w; } else cur = tryL; }
+    if (cur) lines.push(cur);
+    lines.forEach((l, i) => { const yy = y + i * 60;
+      ctx.shadowColor = 'rgba(0,0,0,.55)'; ctx.shadowBlur = 10; ctx.lineWidth = 9; ctx.strokeStyle = '#111'; ctx.strokeText(l, 520, yy);
+      ctx.shadowBlur = 0; ctx.fillStyle = '#ffe11a'; ctx.fillText(l, 520, yy); });
+    ctx.restore();
+  }
+  const CHIP = { W: ['#2fb84f', '#fff'], L: ['#d62d2d', '#fff'], D: ['#8a8f98', '#fff'], '?': ['#ffd21a', '#1a1a1a'] };
+  function card(c, t, t0, t1) {
+    const a = Math.min(clamp01((t - t0) / .18), clamp01((t1 - t) / .18));
+    if (a <= 0) return;
+    const accent = c.color || '#d0021b', x = 70, w = 860; let y = 300 - (1 - ease.out((t - t0) / .3)) * 30;
+    ctx.save(); ctx.globalAlpha = a; ctx.textBaseline = 'middle';
+    if (c.kind === 'pill') {
+      ctx.font = `900 46px ${SANS}`; const tw = ctx.measureText(String(c.text || '').toUpperCase()).width + 70;
+      ctx.fillStyle = '#16205a'; rr(520 - tw / 2, y, tw, 78, 14); ctx.fill(); ctx.lineWidth = 4; ctx.strokeStyle = '#ffffff'; ctx.stroke();
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.fillText(String(c.text || '').toUpperCase(), 520, y + 41); ctx.restore(); return;
+    }
+    if (c.kind === 'count' || c.kind === 'timer' || c.kind === 'text') {
+      let v;
+      if (c.kind === 'text') v = String(c.text || '');
+      else { const xx = ease[c.kind === 'timer' ? 'linear' : 'out']((t - t0) / Math.max(.3, c.kind === 'timer' ? (t1 - t0) : Math.min(1.2, (t1 - t0) * .6)));
+        v = fmt(Number(c.from || 0) + (Number(c.to || 0) - Number(c.from || 0)) * xx, c) + (c.unit || ''); }
+      ctx.textAlign = 'center'; ctx.lineJoin = 'round';
+      if (c.label) { ctx.font = `900 34px ${SANS}`; ctx.lineWidth = 7; ctx.strokeStyle = '#111'; ctx.strokeText(c.label.toUpperCase(), 520, y + 10); ctx.fillStyle = '#fff'; ctx.fillText(c.label.toUpperCase(), 520, y + 10); y += 40; }
+      const size = Math.min(110, Math.floor(900 / (Math.max(1, v.length) * .6)));
+      ctx.font = `900 ${size}px ${SANS}`; ctx.lineWidth = 12; ctx.strokeStyle = '#111'; ctx.strokeText(v, 520, y + size * .6);
+      ctx.fillStyle = '#ffd21a'; ctx.fillText(v, 520, y + size * .6);
+      if (c.sub) { ctx.font = `800 30px ${SANS}`; ctx.lineWidth = 6; ctx.strokeText(c.sub.toUpperCase(), 520, y + size * 1.35); ctx.fillStyle = '#fff'; ctx.fillText(c.sub.toUpperCase(), 520, y + size * 1.35); }
+      ctx.restore(); return;
+    }
+    // panel: [tag] / header bar / rows (text, bar, score, hi) / chips
+    if (c.tag) {
+      ctx.font = `italic 900 40px ${SANS}`; const tw = ctx.measureText(c.tag.toUpperCase()).width;
+      ctx.fillStyle = '#0d1236'; ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + tw + 46, y); ctx.lineTo(x + tw + 30, y + 54); ctx.lineTo(x, y + 54); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'left'; ctx.fillText(c.tag.toUpperCase(), x + 14, y + 29); y += 54;
+    }
+    ctx.fillStyle = '#141b45'; rr(x, y, w, 80, [10, 10, 0, 0]); ctx.fill();
+    ctx.fillStyle = accent; ctx.fillRect(x, y + 74, w, 6);
+    ctx.fillStyle = '#fff'; ctx.textAlign = 'left'; ctx.font = `900 46px ${SANS}`; ctx.fillText(String(c.title || '').toUpperCase(), x + 26, y + 40); y += 80;
+    const rows = c.rows || [], chips = c.chips || [];
+    let h = 26 + rows.reduce((s, r) => s + (r.bar != null ? 104 : 84), 0) + (chips.length ? 92 : 0);
+    ctx.shadowColor = 'rgba(0,0,0,.3)'; ctx.shadowBlur = 18; ctx.fillStyle = '#f7f8fa'; rr(x, y, w, h, [0, 0, 12, 12]); ctx.fill(); ctx.shadowBlur = 0;
+    let yy = y + 16;
+    rows.forEach((r, i) => {
+      const ra = clamp01((t - t0 - .25 - i * .45) / .2), rh = r.bar != null ? 104 : 84;
+      if (ra > 0) {
+        ctx.globalAlpha = a * ra;
+        const hiOn = r.hi && t - t0 - .25 - i * .45 > .35;
+        if (hiOn) { ctx.fillStyle = '#ffe11a'; rr(x + 14, yy, w - 28, rh - 12, 8); ctx.fill(); }
+        ctx.fillStyle = '#121418'; ctx.font = `800 44px ${SANS}`; ctx.textAlign = 'left'; ctx.fillText(String(r.text || '').toUpperCase(), x + 30, yy + 38);
+        if (r.score != null) { ctx.fillStyle = '#141b45'; rr(x + w - 96, yy + 6, 66, 64, 8); ctx.fill(); ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = `900 46px ${SANS}`; ctx.fillText(String(r.score), x + w - 63, yy + 39); }
+        if (r.bar != null) { ctx.fillStyle = '#dfe2e8'; rr(x + 30, yy + 74, w - 60, 14, 7); ctx.fill();
+          ctx.fillStyle = r.barColor || accent; rr(x + 30, yy + 74, Math.max(14, (w - 60) * clamp01(Number(r.bar)) * ease.out(ra * clamp01((t - t0 - .25 - i * .45) / .7))), 14, 7); ctx.fill(); }
+      }
+      yy += rh;
+    });
+    chips.forEach((ch, k) => {
+      const ca = clamp01((t - t0 - .3 - rows.length * .45 - k * .16) / .12); if (ca <= 0) return;
+      const [bg, fg] = CHIP[String(ch).toUpperCase()] || CHIP.D, s = 64 * (ca < 1 ? .7 + .3 * ease.back(ca) : 1), cx = x + 30 + k * 80 + 32, cy = yy + 38;
+      ctx.globalAlpha = a * ca; ctx.fillStyle = bg; rr(cx - s / 2, cy - s / 2, s, s, 8); ctx.fill();
+      ctx.fillStyle = fg; ctx.textAlign = 'center'; ctx.font = `900 ${Math.round(s * .66)}px ${SANS}`; ctx.fillText(String(ch).toUpperCase(), cx, cy + 2);
+    });
+    ctx.restore();
+  }
+  function scorebug(sc, a) {
+    if (!sc || a <= 0) return;
+    ctx.save(); ctx.globalAlpha = a; ctx.textBaseline = 'middle';
+    const x = 60, y = 190, txt = `${String(sc.home || '').toUpperCase()} ${sc.h ?? 0} - ${sc.a ?? 0} ${String(sc.away || '').toUpperCase()}`;
+    ctx.font = `900 40px ${SANS}`; const w = ctx.measureText(txt).width + 44;
+    if (sc.clock) { ctx.fillStyle = '#d0021b'; rr(x, y, Math.max(150, w * .45), 40, [8, 8, 0, 0]); ctx.fill(); ctx.fillStyle = '#fff'; ctx.font = `800 28px ${SANS}`; ctx.textAlign = 'center'; ctx.fillText(sc.clock, x + Math.max(150, w * .45) / 2, y + 21); }
+    ctx.fillStyle = '#0c0d12'; rr(x, y + 40, w, 64, [0, 8, 8, 8]); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = `900 40px ${SANS}`; ctx.textAlign = 'left'; ctx.fillText(txt, x + 22, y + 73);
+    ctx.restore();
+  }
+  function narratedText(t) {
+    if (K.hideText) return;
+    // the scorebug: set by a beat's "score", kept until another beat changes or hides it
+    let sc = null, scFrom = 0;
+    for (const b of beats) if (b.start <= t && b.score !== undefined && b.score !== null) { sc = b.score === 'hide' ? null : b.score; scFrom = b.start; }
+    let cardOn = false;
+    for (let i = 0; i < beats.length; i++) {
+      const b = beats[i], c = b.card || b.hud; if (!c) continue;
+      const t1 = beats[Math.min(beats.length - 1, i + Math.max(1, c.hold || 1) - 1)].end;
+      if (t >= b.start && t < t1) { card(c, t, b.start, t1); cardOn = cardOn || c.kind !== 'count'; }
+    }
+    if (sc && !cardOn) scorebug(sc, clamp01((t - scFrom) / .25));
+    for (const b of beats) for (const ch of b.chunks || []) if (t >= ch.t0 && t < ch.t1) caption(ch.text, 1240);
+  }
   function overlay(t) {
     ctx.clearRect(0, 0, W, H);
     ctx.drawImage(renderer.domElement, 0, 0);
     if (vignette) { ctx.fillStyle = vigGrad; ctx.fillRect(0, 0, W, H); }
     const endStart = data.end_card ? data.duration - data.end_card : 1e9;
     const show = K.hideText ? 0 : 1;
+    if (NARR) { narratedText(t); flashFade(t); return; }
     // the hook question sits on screen through beat 0 (TikTok's buttons cover the right edge and bottom ~380px)
     const b0 = beats[0] || { start: 0, end: 3 };
     block(data.title, data.highlight, 520, 470, 840, `500 SIZE ${SERIF}`, 70, 1.18, show * Math.min(clamp01(t / .35), 1 - clamp01((t - b0.end + .1) / .4)));
@@ -833,12 +1223,7 @@ export async function boot(data, sceneUrl) {
       ctx.shadowColor = 'rgba(0,0,0,.7)'; ctx.shadowBlur = 16; ctx.fillStyle = '#fff'; ctx.fillText(v, 62, 202); ctx.restore();
       label(h.sub, 64, 210 + size * 1.04, 21, a * .8, 600, .13);
     }
-    let fo = 0, fc = '#fff';
-    for (const f of flashes) { const a = (t - f.t0) / f.dur; if (a >= 0 && a < 1) { const v = a < .12 ? a / .12 : 1 - ease.out((a - .12) / .88); if (v > fo) { fo = v; fc = f.color; } } }
-    if (fo > 0) { ctx.save(); ctx.globalAlpha = fo; ctx.fillStyle = fc; ctx.fillRect(0, 0, W, H); ctx.restore(); }
-    let fd = 0;
-    for (const f of fades) if (t >= f.t0) fd = f.dir > 0 ? clamp01((t - f.t0) / f.dur) : 1 - clamp01((t - f.t0) / f.dur);
-    if (fd > 0) { ctx.save(); ctx.globalAlpha = fd; ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H); ctx.restore(); }
+    flashFade(t);
     // the end card repeats the hook on dark, so the video loops back into its own first second
     const ea = clamp01((t - endStart) / .5);
     if (ea > 0) {
@@ -846,6 +1231,14 @@ export async function boot(data, sceneUrl) {
       const used = block(data.title, data.highlight, 520, 820, 860, `500 SIZE ${SERIF}`, 70, 1.2, ea);
       if (data.end_fact) block(data.end_fact.toUpperCase(), [], 520, 850 + used, 780, `600 SIZE ${SANS}`, 22, 1.6, ea * .55);
     }
+  }
+  function flashFade(t) {
+    let fo = 0, fc = '#fff';
+    for (const f of flashes) { const a = (t - f.t0) / f.dur; if (a >= 0 && a < 1) { const v = a < .12 ? a / .12 : 1 - ease.out((a - .12) / .88); if (v > fo) { fo = v; fc = f.color; } } }
+    if (fo > 0) { ctx.save(); ctx.globalAlpha = fo; ctx.fillStyle = fc; ctx.fillRect(0, 0, W, H); ctx.restore(); }
+    let fd = 0;
+    for (const f of fades) if (t >= f.t0) fd = f.dir > 0 ? clamp01((t - f.t0) / f.dur) : 1 - clamp01((t - f.t0) / f.dur);
+    if (fd > 0) { ctx.save(); ctx.globalAlpha = fd; ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H); ctx.restore(); }
   }
   window.__grab = (q = .9) => out.toDataURL('image/jpeg', q);
 
@@ -858,6 +1251,7 @@ export async function boot(data, sceneUrl) {
     runCamPath(t);
     for (const u of updaters) u(t, dt);
     if (sceneApi.update) sceneApi.update(t, dt);
+    runShots(t);
     // camera shake + a gentle handheld sway, added after the scene placed the camera, removed after drawing
     let amp = 0;
     for (const s of shakes) { const a = (t - s.t0) / s.dur; if (a >= 0 && a < 1) amp += s.amp * (1 - a) * (1 - a); }

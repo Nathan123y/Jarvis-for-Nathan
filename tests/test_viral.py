@@ -156,6 +156,61 @@ class AudioTests(unittest.TestCase):
                 x = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
         self.assertGreater(np.abs(x).max(), 10000)
 
+    # ── the narrated style (2026-11-05 reference: voiceover, word captions, broadcast cards) ──
+    NARR = {"topic": "x", "title": "ignored", "set": "stadium", "music": "drive",
+            "beats": [{"say": "Could Real Madrid beat eleven goalkeepers?", "sfx": "whistle"},
+                      {"say": "In this hypothetical, Madrid have won four straight.",
+                       "card": {"kind": "panel", "title": "REAL MADRID", "rows": [{"text": "4 WINS", "bar": 3}, {"text": ""}],
+                                "chips": ["w", "W", "X", "?"], "hold": 9}},
+                      {"say": "Kickoff.", "score": {"home": "rma", "away": "gks", "h": "0", "a": 0, "clock": "00:00"}},
+                      {"say": "The crowd boos.", "sfx": "boo", "card": {"kind": "pill", "text": ""}},
+                      {"say": "Goal.", "score": "hide", "card": {"kind": "count", "from": 0, "to": 1e20}}]}
+
+    def test_narrated_script_keeps_cards_and_the_first_line_as_the_hook(self):
+        s = wv.clean_script(self.NARR, library={}, style="narrated")
+        self.assertEqual(s["style"], "narrated")
+        self.assertEqual(s["title"], "Could Real Madrid beat eleven goalkeepers?")
+        self.assertEqual(len(s["beats"]), 5)                        # nothing inserted
+        self.assertEqual(s["music"], "drive")
+        self.assertEqual(s["set"], "stadium")
+        card = s["beats"][1]["card"]
+        self.assertEqual(card["rows"], [{"text": "4 WINS", "bar": 1.0}])
+        self.assertEqual(card["chips"], ["W", "W", "?"])
+        self.assertEqual(card["hold"], 4)
+        self.assertEqual(s["beats"][2]["score"], {"home": "RMA", "away": "GKS", "h": 0, "a": 0, "clock": "00:00"})
+        self.assertIsNone(s["beats"][3]["card"])                    # an empty pill is dropped
+        self.assertEqual(s["beats"][3]["sfx"], "boo")
+        self.assertEqual(s["beats"][4]["score"], "hide")
+        self.assertEqual(s["beats"][4]["card"]["kind"], "text")     # an absurd number becomes text
+
+    def test_narrated_timeline_is_tight_and_questions_get_a_breath(self):
+        beats, total = wv.narrated_timeline([2.0, 1.0, .2], ["Their opponents?", "Ten elite footballers.", "Goal."])
+        self.assertAlmostEqual(beats[1][0] - beats[0][1], 0)
+        self.assertGreater(beats[0][1] - beats[0][0], beats[1][1] - beats[1][0] + .5)   # the question's pause
+        self.assertGreaterEqual(beats[2][1] - beats[2][0], .549)
+        self.assertAlmostEqual(total, beats[-1][1] + 1.6, places=2)
+
+    def test_caption_chunks_cover_the_sentence_in_order(self):
+        ch = wv.caption_chunks("Could Manchester United win their fifth straight game against ten blind footballers?",
+                               1.0, 4.0, 5.4)
+        self.assertEqual(" ".join(c["text"] for c in ch).split(), "Could Manchester United win their fifth straight game against ten blind footballers?".split())
+        self.assertTrue(all(len(c["text"].split()) <= 3 for c in ch))
+        self.assertTrue(all(a["t1"] == b["t0"] for a, b in zip(ch, ch[1:])))
+        self.assertEqual(ch[-1]["t1"], 5.4)
+        self.assertTrue(all(c["t0"] < c["t1"] for c in ch))
+        self.assertEqual(wv.caption_chunks("Hello there, friend.", 0.1, 1, 2, first=True)[0]["t0"], 0.0)
+        self.assertEqual([c["text"] for c in wv.caption_chunks("Usually, the crowd stays quiet.", 0, 2, 2.5)],
+                         ["Usually,", "the crowd stays", "quiet."])
+
+    def test_drive_bed_mix_is_loud_enough_and_the_right_length(self):
+        s = wv.clean_script(self.NARR, library={}, style="narrated")
+        voice = [np.sin(np.linspace(0, 900, int(wv.SR * .8))).astype(np.float32) * .3 for _ in s["beats"]]
+        beats, total = wv.narrated_timeline([.8] * len(s["beats"]), [b["say"] for b in s["beats"]])
+        with tempfile.TemporaryDirectory() as d, patch.object(wv, "sound_library", return_value=[]):
+            out = wv.mix(voice, beats, s, total, Path(d) / "a.wav", seed=2)
+            with wave.open(str(out)) as w:
+                self.assertAlmostEqual(w.getnframes() / wv.SR, total, places=1)
+
     def test_every_sound_effect_renders(self):
         for k in wv.SFX:
             self.assertTrue(np.isfinite(wv.sfx(k, 1)).all(), k)

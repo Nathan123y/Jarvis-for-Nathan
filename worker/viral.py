@@ -1,10 +1,14 @@
 """Viral videos: 3D "what if" shorts, made start to finish on this Mac and posted to TikTok.
 
-Each video:
-  1. Claude writes the script: a hook question, 10-16 short narrated beats with real numbers, an on-screen
-     counter (HUD), a twist, and a line that loops back into the hook.
-  2. Gemini's TTS voices each beat; the beat timings come from the real speech lengths.
-  3. Claude writes the 3D scene (a JS module) against the kit in assets/viral/kit.js, timed to those beats.
+Each video (the "narrated" style, copied from the reference the user picked on 2026-11-05: "Could Manchester United
+win their fifth straight game against ten blind footballers?"):
+  1. Claude writes the script: a hook question, a hypothetical setup, the one rule that sets up the joke, a deadpan
+     turn, staccato play-by-play, a stat-card time skip, a climax where the joke backfires, and the final score.
+     Each beat is one sentence, with optional broadcast cards (panel / pill / count) and a scorebug.
+  2. Gemini's TTS (voice Fenrir, nudged toward the reference's pitch and pace) reads it all in one take, cut into
+     sentences at the pauses; beat timings and the word-by-word yellow captions come from the real speech.
+  3. Claude writes the 3D scene (a JS module) against the kit in assets/viral/kit.js, timed to those beats, with
+     hard camera cuts every 1-2 s (K.shots) in a stylised stadium / arena (K.sets.stadium, court, ring ...).
   4. A test render catches errors (fed back to Claude to fix), then Claude looks at sample frames and fixes
      what looks wrong.
   5. Headless Chrome renders every frame on the GPU; numpy mixes voice + music + sound effects; ffmpeg encodes.
@@ -47,8 +51,13 @@ SR = 48000
 DEFAULTS = {"enabled": True,
             "times": "11:00,16:00,20:30",           # one video at each (TikTok's busy hours)
             "post": True,                           # post to TikTok; False = text the video to the user instead
-            "voice_mode": "none",                   # none (captions + sound, like the reference videos) | gemini | edge
-            "voice": "Charon",                      # Gemini TTS voice, when voice_mode is gemini
+            "style": "narrated",                    # narrated (voiceover + word captions + broadcast cards, the
+                                                    # 2026-11-05 Man United vs blind footballers reference) | captions
+            "voice_mode": "none",                   # captions style only: none | gemini | edge (narrated always speaks)
+            "voice": "Fenrir",                      # Gemini TTS voice: closest match to the reference narrator
+            "voice_speed": 1.05,                    # tempo of the narration (pitch kept)
+            "voice_pitch_hz": 155,                  # each take is nudged toward this median pitch (0 = leave it); the
+                                                    # reference narrator is a bright, energetic male voice
             "tts_model": "gemini-3.8-flash-tts",
             "ai_label": True,
             "handle": "whatifishowedu"}                # the TikTok account, for reading view counts                       # TikTok requires the AI-generated label on AI-made videos
@@ -179,6 +188,100 @@ Reply with only this JSON:
   "end_fact": "...", "caption": "...", "hashtags": ["..."]}}"""
 
 
+NARRATED_PROMPT = """You write viral short-form videos for a faceless TikTok account: NARRATED 3D "hypothetical" simulations.
+A deadpan male narrator tells a short story over a stylised 3D broadcast (stadium, players, crowd), sentence by
+sentence, with small yellow word-by-word captions, TV-style stat cards, a scorebug, and hard camera cuts every 1-2 s.
+This is the reference video that went viral; copy its writing EXACTLY in style, rhythm, structure and humour:
+
+  "Could Manchester United win their fifth straight game against ten blind footballers?"
+  "In this hypothetical, United have somehow won four straight."      [card: MANCHESTER UNITED / 4 CONSECUTIVE WINS / W W W W]
+  "One more, and their fans can finally declare the club is back."    [a WE'RE BACK banner in the stands]
+  "Their opponents?" "Ten elite blind footballers."                   [the opponents walk out of the tunnel; pill: BLIND FOOTBALL CLUB]
+  "In blind football, players track a rattling ball and rely on shouted instructions."   [sound rings around the ball]
+  "Usually, the crowd stays quiet so they can hear."                  [a PLEASE KEEP QUIET board]
+  "Unfortunately, this is Old Trafford."
+  "Kickoff." "Bruno Fernandes gets the ball." "The entire stadium boos."
+  "All ten defenders immediately turn toward him." "Bruno dribbles left." "The boos follow." "He cuts right."
+  "The boos get louder."
+  "The opposing coach realizes United's own fans have become a seventy-thousand-person sonar system."
+  "By halftime, United have seventy-eight percent possession and zero shots on target."   [card: HALF-TIME stats]
+  "In the ninetieth minute, Bruno attempts one final through ball." "The crowd groans."
+  "The defenders intercept and counter."
+  "United's goalkeeper charges off his line, screaming, "Keeper!"" "The striker hears him coming."
+  "One touch." "A chip over the goalkeeper." "Goal."
+  "United's back line appeals for offside." "The referee points to the centre circle."
+  "Final score: Manchester United zero, Blind Football Club one."     [card: FULL TIME result] (video ends right there)
+
+Why it works, and what every script must do the same way:
+- HOOK (sentence 0 = the title): a yes/no question about an absurd but specific matchup, with a real team/person, a
+  number and a stake ("Could X win their fifth straight game against ten blind footballers?"). No intro, no "hey".
+- SETUP in 2-3 sentences: "In this hypothetical, ..." + the stakes + who the opponent is ("Their opponents?" as a
+  one-line tease, then the reveal).
+- THE RULE: one real fact about the scenario that sets up the joke ("In blind football, players track a rattling
+  ball and rely on shouted instructions."), then the deadpan turn that breaks it ("Usually, the crowd stays quiet so
+  they can hear." "Unfortunately, this is Old Trafford.").
+- PLAY-BY-PLAY: very short present-tense sentences (1-6 words) like a broadcast ("Kickoff." "He cuts right.") where
+  the joke escalates beat by beat through ONE clear mechanism, then a sentence that names it in a funny precise way
+  ("...have become a seventy-thousand-person sonar system").
+- TIME SKIP with a stat card ("By halftime, ... seventy-eight percent possession and zero shots on target.").
+- CLIMAX in the final minute where the same mechanism backfires in a new way (the keeper screaming "Keeper!" gives
+  himself away), a quick finish, a failed appeal, and the final score as the LAST sentence. No moral, no
+  "follow for more", no question at the end. The underdog / absurd side usually wins.
+- Deadpan, dry, confident. Never explain the joke. Real names, real stadiums, real-sounding numbers. Plain words.
+
+Topic: an absurd hypothetical matchup or challenge with a real team, club or famous athlete and ONE funny mechanism
+that decides it. Football (soccer) clubs and stars are the core; NBA teams, boxers and other sports are fine too.
+Mix in fantasy or absurd opponents when it's funny (a team of toddlers, 11 goalkeepers, a team of identical twins,
+a medieval army, 11 grandmas with walking frames, a team that can only walk backwards, Zeus in goal). Examples:
+"Could Real Madrid beat eleven goalkeepers?", "Could Arsenal win a game where every goal must be a header?",
+"Could prime Messi beat an entire Sunday league team by himself?", "Could the Golden State Warriors beat five
+Shaqs?", "Could Man City beat a team that can pause time for one second?".
+Real people only in harmless, fun situations (never insulting, sexual or defamatory).
+{topic_line}
+Don't repeat these recent videos:
+{history}
+
+TikTok rules: no sexual content, no gore, nothing dangerous, no hate.
+
+Rules:
+- 26-36 sentences, 160-210 words in all (about 60-75 seconds spoken). Each beat is ONE sentence (or one short tease
+  like "Their opponents?"). Write numbers the way they're spoken ("seventy-eight percent", "ninetieth minute").
+- "say": the sentence, exactly as the narrator reads it.
+- "card": null, or a broadcast graphic shown during that beat (about 5-8 beats get one; "hold": how many beats it
+  stays up, 1-4):
+    {{"kind": "panel", "title": "MANCHESTER UNITED", "rows": [{{"text": "4 CONSECUTIVE WINS"}}], "chips": ["W","W","W","W"], "hold": 2}}
+    {{"kind": "panel", "tag": "HALF-TIME", "title": "MANCHESTER UNITED", "rows": [{{"text": "78% POSSESSION", "bar": 0.78}},
+      {{"text": "0 SHOTS ON TARGET", "hi": true}}], "hold": 2}}
+    {{"kind": "panel", "tag": "FULL TIME", "title": "", "rows": [{{"text": "MANCHESTER UNITED", "score": 0}},
+      {{"text": "BLIND FOOTBALL CLUB", "score": 1}}], "hold": 2}}
+    {{"kind": "pill", "text": "BLIND FOOTBALL CLUB"}}  (a name tag when someone is introduced)
+    {{"kind": "count", "label": "CROWD NOISE", "from": 0, "to": 74000, "unit": "", "sub": "FANS BOOING"}}  (a big number)
+  Chips: W / L / D / ?. "hi": true highlights a row in yellow (the punchline stat). Numbers must match the sentence.
+- "score": the scorebug from this beat on: {{"home": "MUN", "away": "BFC", "h": 0, "a": 0, "clock": "00:00"}}, "hide",
+  or null (unchanged). Set it at kickoff, update it on goals and time skips.
+- "scene": what we see during that sentence, as 1-2 concrete camera shots (e.g. "wide aerial of the pitch, players in
+  kickoff positions" / "low close-up of Bruno, number 8, receiving the ball, then the stands booing"). Show exactly
+  what's being said; text in the world (banners, boards, a big screen) is possible, e.g. a WE'RE BACK tifo.
+- Sound per beat: "ambience" = id of a background sound below that starts at this beat and keeps playing until
+  another beat changes it ("keep" = carry on, "none" = silence); "level" 0.3 (hushed) .. 1 .. 2.5 (roaring);
+  "sfx" = one sound effect id from the list or a synth effect: boo (a whole stadium booing), groan (a crowd's
+  disappointed "ohh"), kick (boot on ball), whistle (referee), boom, whoosh, hit, tick, rumble, bounce, dribble,
+  swish, buzzer, squeak, punch, bell; or "none". "sfx2": up to 3 more hits later in the beat [{{"id": "...", "at": 1.2}}].
+  Sound must match the picture literally (a goal in a packed stadium = a roar; boos when the sentence says boos).
+{sounds}
+- "music": "drive" (a low, tense rhythmic bed under the whole video, like the reference), "tension", or "none".
+- "set": stadium (football), court (basketball arena), ring (boxing), or street, city, backyard, ocean, plain,
+  space, room for other ideas.
+- "caption": the TikTok caption, at most 150 characters, ending in a question that baits comments.
+- "hashtags": 4-6, lowercase, without the # (mix big ones like fyp with topic ones).
+
+Reply with only this JSON:
+{{"format": "versus", "topic": "...", "title": "<sentence 0, the hook question>", "set": "stadium", "music": "drive",
+  "beats": [{{"say": "...", "card": null, "score": null, "ambience": "keep", "level": 1, "sfx": "none", "sfx2": [],
+             "scene": "..."}}],
+  "caption": "...", "hashtags": ["..."]}}"""
+
+
 def _json_from(text: str):
     text = (text or "").strip()
     m = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
@@ -243,10 +346,64 @@ def ask_claude(prompt: str, timeout_s: float = 900, images: Optional[list] = Non
     return gemini.text(contents, tier="gemini-3.5-flash", timeout_ms=int(timeout_s * 1000)) or ""
 
 
-SETS = ("backyard", "street", "city", "ocean", "plain", "space", "room", "court", "ring")
+SETS = ("backyard", "street", "city", "ocean", "plain", "space", "room", "court", "ring", "stadium")
+CHIPS = ("W", "L", "D", "?")
 
 
-def clean_script(s: dict, library: Optional[dict] = None) -> dict:
+def _num(v, default=0.0) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def clean_card(c) -> Optional[dict]:
+    """A broadcast graphic for one beat (panel / pill / count / timer / text), or None."""
+    if not isinstance(c, dict):
+        return None
+    kind = c.get("kind") if c.get("kind") in ("panel", "pill", "count", "timer", "text") else (
+        "panel" if c.get("rows") or c.get("title") else "text")
+    out = {"kind": kind, "hold": int(max(1, min(4, _num(c.get("hold"), 1))))}
+    if kind == "panel":
+        rows = []
+        for r in (c.get("rows") or [])[:3]:
+            if not isinstance(r, dict) or not str(r.get("text") or "").strip():
+                continue
+            row = {"text": str(r["text"]).strip()[:30]}
+            if r.get("bar") is not None:
+                row["bar"] = max(0.0, min(1.0, _num(r.get("bar"))))
+            if r.get("score") is not None:
+                row["score"] = str(r["score"])[:3]
+            if r.get("hi"):
+                row["hi"] = True
+            rows.append(row)
+        out.update(title=str(c.get("title") or "").strip()[:28], tag=str(c.get("tag") or "").strip()[:14], rows=rows,
+                   chips=[str(x).upper() for x in (c.get("chips") or []) if str(x).upper() in CHIPS][:6])
+        if not rows and not out["chips"] and not out["title"]:
+            return None
+    elif kind in ("pill", "text"):
+        out["text"] = str(c.get("text") or c.get("title") or "").strip()[:28]
+        if not out["text"]:
+            return None
+    else:
+        out.update({k: str(c.get(k) or "")[:30] for k in ("label", "unit", "sub")})
+        out.update({"from": _num(c.get("from")), "to": _num(c.get("to")), "decimals": int(max(0, min(3, _num(c.get("decimals")))))})
+        if max(abs(out["from"]), abs(out["to"])) >= 1e15:
+            out = {"kind": "text", "hold": out["hold"], "text": out["sub"] or out["label"]}
+    return out
+
+
+def clean_score(v):
+    """The scorebug from a beat on: a dict, "hide", or None (unchanged)."""
+    if v == "hide":
+        return "hide"
+    if not isinstance(v, dict):
+        return None
+    return {"home": str(v.get("home") or "")[:4].upper(), "away": str(v.get("away") or "")[:4].upper(),
+            "h": int(_num(v.get("h"))), "a": int(_num(v.get("a"))), "clock": str(v.get("clock") or "")[:6]}
+
+
+def clean_script(s: dict, library: Optional[dict] = None, style: str = "captions") -> dict:
     library = library if library is not None else {x["id"]: x for x in sound_library()}
     if not isinstance(s, dict) or not s.get("title") or not isinstance(s.get("beats"), list) or len(s["beats"]) < 5:
         raise ValueError("the script came back incomplete")
@@ -281,9 +438,14 @@ def clean_script(s: dict, library: Optional[dict] = None) -> dict:
               "hud": b.get("hud") if isinstance(b.get("hud"), dict) else None,
               "ambience": amb(b.get("ambience")), "level": level(b.get("level", 1)), "sfx": fx(b.get("sfx")),
               "sfx2": more(b.get("sfx2")), "scene": str(b.get("scene") or "")}
+             | ({"card": clean_card(b.get("card") or b.get("hud")), "score": clean_score(b.get("score"))} if style == "narrated" else {})
              for b in s["beats"] if isinstance(b, dict) and str(b.get("say") or "").strip()]
-    beats = beats[:22]
-    if beats[0]["say"].strip().lower() != str(s["title"]).strip().lower():
+    beats = beats[:40 if style == "narrated" else 22]
+    if style == "narrated":            # the first spoken sentence IS the hook; nothing gets inserted
+        for b in beats:
+            b["hud"] = None
+        s = dict(s, title=beats[0]["say"])
+    elif beats[0]["say"].strip().lower() != str(s["title"]).strip().lower():
         beats.insert(0, {"say": s["title"], "emph": [], "hud": None, "ambience": "keep", "level": 1.0, "sfx": "none", "sfx2": [],
                          "scene": "opening"})
     for b in beats:
@@ -298,23 +460,24 @@ def clean_script(s: dict, library: Optional[dict] = None) -> dict:
             if h["kind"] != "text" and max(abs(h["from"]), abs(h["to"])) >= 1e15:
                 h["kind"], h["text"] = "text", h.get("sub") or ""
     tags = [re.sub(r"[^a-z0-9_]", "", str(t).lower().lstrip("#")) for t in s.get("hashtags") or []]
-    return {"format": "versus" if s.get("format") == "versus" else "whatif",
+    return {"style": style, "format": "versus" if s.get("format") == "versus" else "whatif",
             "topic": str(s.get("topic") or s["title"]), "title": str(s["title"]).strip(),
             "highlight": [str(x) for x in (s.get("highlight") or [])][:2],
             "set": s.get("set") if s.get("set") in SETS else "backyard",
-            "music": "tension" if s.get("music") == "tension" else "none",
+            "music": s.get("music") if s.get("music") in ("tension", "drive") else "none",
             "beats": beats, "end_fact": str(s.get("end_fact") or "")[:160],
             "caption": str(s.get("caption") or s["title"])[:150], "hashtags": [t for t in tags if t][:6]}
 
 
-def write_script(history: list, topic: str = "", ask: Callable = ask_claude) -> dict:
+def write_script(history: list, topic: str = "", ask: Callable = ask_claude, style: str = "captions") -> dict:
     topic_line = f"This video's topic: {topic}" if topic else "Choose the topic yourself."
     hist = "\n".join(f"- {h}" for h in history[-40:]) or "- (none yet)"
+    prompt = NARRATED_PROMPT if style == "narrated" else SCRIPT_PROMPT
     last = None
     for _ in range(2):
         try:
-            return clean_script(_json_from(ask(SCRIPT_PROMPT.format(topic_line=topic_line, history=hist,
-                                                                    sounds=sounds_text()), timeout_s=300)))
+            return clean_script(_json_from(ask(prompt.format(topic_line=topic_line, history=hist,
+                                                             sounds=sounds_text()), timeout_s=420)), style=style)
         except ClaudeBusy:
             raise
         except Exception as exc:                 # one more try on a malformed reply
@@ -324,7 +487,7 @@ def write_script(history: list, topic: str = "", ask: Callable = ask_claude) -> 
 
 # ── 2. the voice ─────────────────────────────────────────────────────────────
 TTS_MODELS = ("gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts")   # 10 free requests a day each
-EDGE_VOICE = "en-US-ChristopherNeural"
+EDGE_VOICE = "en-US-GuyNeural"                 # the closest Edge voice to the reference narrator
 
 
 def gemini_tts(text: str, model: str, voice: str) -> bytes:
@@ -347,46 +510,79 @@ def gemini_tts(text: str, model: str, voice: str) -> bytes:
     return buf.getvalue()
 
 
-def split_by_pauses(x, rate: int, words: list[int], min_gap: float = .18):
-    """Cuts one recording of n lines into n pieces at its n-1 longest pauses. None when the pieces don't
-    match the lines (a line's share of the speech must be close to its share of the words)."""
+def split_by_pauses(x, rate: int, words, min_gap: float = .1, lines: Optional[list] = None):
+    """Cuts one recording of n lines into n pieces at pauses. Every pause of at least `min_gap` is a candidate cut;
+    a dynamic programme picks the n-1 cuts whose pieces best match each line's expected length (from its letters,
+    with extra time for commas) while preferring the longest pauses. None when no cut set fits the lines."""
     import numpy as np
     n = len(words)
     if n == 1:
         return [x]
-    hop = int(rate * .02)
+    hop = int(rate * .01)
     rms = np.array([np.sqrt(np.mean(x[i:i + hop] ** 2)) for i in range(0, len(x) - hop, hop)])
     if not len(rms):
         return None
     quiet = rms < max(.004, np.percentile(rms, 90) * .06)
-    runs, i = [], 0
+    runs, i = [], 0                                       # (length in s, centre sample) of every pause
     while i < len(quiet):
         if quiet[i]:
             j = i
             while j < len(quiet) and quiet[j]:
                 j += 1
-            if (j - i) * .02 >= min_gap and i > 0 and j < len(quiet):
-                runs.append((j - i, i, j))
+            if (j - i) * .01 >= min_gap and i > 0 and j < len(quiet):
+                runs.append(((j - i) * .01, ((i + j) // 2) * hop))
             i = j
         else:
             i += 1
     if len(runs) < n - 1:
         return None
-    cuts = sorted(((i + j) // 2) * hop for _, i, j in sorted(runs, reverse=True)[:n - 1])
+    weight = ([len(re.sub(r"\W", "", l)) + 4 * len(re.findall(r"[,;:]", l)) + 3 for l in lines] if lines
+              else [w * 5.0 for w in words])
+    total = len(x) / rate
+    expect = [total * w / sum(weight) for w in weight]
+    pos = [0] + [c for _, c in runs] + [len(x)]
+    gap = [0.0] + [g for g, _ in runs] + [0.0]
+    m = len(pos)
+    INF = float("inf")
+    # best[k][j]: lowest cost with line k ending at cut j; the pieces must stay in order
+    best = [[INF] * m for _ in range(n)]
+    back = [[-1] * m for _ in range(n)]
+
+    def cost(a, b, k):
+        d = (pos[b] - pos[a]) / rate
+        return ((d - expect[k]) / (expect[k] + .35)) ** 2
+    for j in range(1, m):
+        best[0][j] = cost(0, j, 0) - .6 * gap[j]
+    for k in range(1, n):
+        lo = k                                            # at least k cuts before
+        for j in range(lo + 1, m):
+            if k == n - 1 and j != m - 1:
+                continue
+            bonus = -.6 * gap[j] if j != m - 1 else 0
+            for a in range(lo, j):
+                if best[k - 1][a] == INF:
+                    continue
+                c = best[k - 1][a] + cost(a, j, k) + bonus
+                if c < best[k][j]:
+                    best[k][j], back[k][j] = c, a
+    if best[n - 1][m - 1] == INF:
+        return None
+    cuts, j = [], m - 1
+    for k in range(n - 1, 0, -1):
+        j = back[k][j]; cuts.append(j)
+    cuts = [pos[c] for c in reversed(cuts)]
     pieces = [x[a:b] for a, b in zip([0] + cuts, cuts + [len(x)])]
-    total_w, total_t = sum(words), sum(len(p) for p in pieces)
-    for p, w in zip(pieces, words):
-        share_t, share_w = len(p) / total_t, w / total_w
-        if not (share_w * .45 <= share_t <= share_w * 2.2 + .02):
+    for p, e in zip(pieces, expect):                      # a piece far off its line's length = a bad cut
+        if not (e * .4 - .15 <= len(p) / rate <= e * 2.4 + .3):
             return None
     return pieces
 
 
-def edge_tts(text: str, out: Path) -> None:
+def edge_tts(text: str, out: Path, rate: str = "-6%") -> None:
     import asyncio
     import edge_tts as et
     mp3 = out.with_suffix(".mp3")
-    asyncio.run(et.Communicate(text, EDGE_VOICE, rate="-6%").save(str(mp3)))
+    asyncio.run(et.Communicate(text, EDGE_VOICE, rate=rate).save(str(mp3)))
     subprocess.run([ffmpeg(), "-loglevel", "error", "-y", "-i", str(mp3), "-ac", "1", "-ar", "24000", str(out)], check=True)
     mp3.unlink(missing_ok=True)
 
@@ -405,6 +601,50 @@ def _write_wav(path: Path, x, rate: int) -> None:
         w.writeframes((np.clip(x, -1, 1) * 32767).astype(np.int16).tobytes())
 
 
+def median_f0(x, rate: int) -> float:
+    """the median pitch (Hz) of the voiced parts of a recording; 0 when it can't tell"""
+    import numpy as np
+    step = max(1, rate // 16000)
+    x = x[::step]; sr = rate // step
+    hop, win, out = sr // 100, sr // 20, []
+    frames = range(0, len(x) - win, hop)
+    rms = np.array([np.sqrt(np.mean(x[i:i + win] ** 2)) for i in frames])
+    if not len(rms):
+        return 0.0
+    thr = np.percentile(rms, 80) * .5
+    lo, hi = sr // 320, sr // 65
+    for k, i in enumerate(frames):
+        if rms[k] < thr:
+            continue
+        fr = x[i:i + win] * np.hanning(win)
+        ac = np.correlate(fr, fr, "full")[win - 1:]
+        j = lo + int(np.argmax(ac[lo:hi]))
+        if ac[j] > .7 * ac[0]:
+            out.append(sr / j)
+    return float(np.median(out)) if len(out) > 20 else 0.0
+
+
+def _tempo(path: Path, factor: float, pitch_hz: float = 0) -> None:
+    """speeds a wav up (or down) in place keeping its pitch, and nudges its pitch toward `pitch_hz` (by at most
+    +4 / -2 semitones; 0 = leave the pitch alone)"""
+    import numpy as np
+    with wave.open(str(path), "rb") as w:
+        rate, raw = w.getframerate(), w.readframes(w.getnframes())
+    shift = 1.0
+    if pitch_hz:
+        f0 = median_f0(np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768, rate)
+        if f0:
+            shift = max(2 ** (-2 / 12), min(2 ** (4 / 12), pitch_hz / f0))
+            if abs(shift - 1) < .02:
+                shift = 1.0
+    if abs(factor - 1) < .005 and shift == 1.0:
+        return
+    chain = f"atempo={factor:.3f}" if shift == 1.0 else f"asetrate={rate * shift:.0f},aresample={rate},atempo={factor / shift:.4f}"
+    tmp = path.with_suffix(".tempo.wav")
+    subprocess.run([ffmpeg(), "-loglevel", "error", "-y", "-i", str(path), "-filter:a", chain, str(tmp)], check=True)
+    tmp.replace(path)
+
+
 def voice_lines(lines: list[str], job: Path, cfg: dict, log: Callable = print) -> list[Path]:
     """Every line in ONE voice. Gemini reads the whole narration in one request (its free tier allows 10 a
     day), cut into lines at the pauses; else Microsoft's Edge voice line by line; else the Mac's `say`."""
@@ -415,12 +655,14 @@ def voice_lines(lines: list[str], job: Path, cfg: dict, log: Callable = print) -
         try:
             whole = job / "voice_all.wav"
             whole.write_bytes(gemini_tts("\n\n".join(lines), model, cfg["voice"]))
+            _tempo(whole, float(cfg.get("voice_speed") or 1),
+                   float(cfg.get("voice_pitch_hz") or 0) if cfg.get("style") == "narrated" else 0)
             with wave.open(str(whole), "rb") as w:
                 rate = w.getframerate()
             import numpy as np
             with wave.open(str(whole), "rb") as w:
                 x = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768
-            pieces = split_by_pauses(x, rate, words)
+            pieces = split_by_pauses(x, rate, words, lines=lines)
             if pieces is None:
                 log(f"viral: couldn't cut {model}'s narration into lines cleanly; trying the next voice")
                 continue
@@ -430,8 +672,9 @@ def voice_lines(lines: list[str], job: Path, cfg: dict, log: Callable = print) -
         except Exception as exc:
             log(f"viral: {model} voice failed ({str(exc)[:90]})")
     try:
+        speed = float(cfg.get("voice_speed") or 1)
         for text, p in zip(lines, paths):
-            edge_tts(text, p)
+            edge_tts(text, p, rate=f"{round((speed * 1.03 - 1) * 100):+d}%" if cfg.get("style") == "narrated" else "-6%")
         log("viral: voiced with the Edge narrator")
         return paths
     except Exception as exc:
@@ -478,6 +721,43 @@ def timeline(lengths: list, hook_min: float = 3.2, gap: float = 0.38, end_card: 
     return out, round(t + 0.4 + end_card, 3)
 
 
+def narrated_timeline(lengths: list, says: list, gap: float = .24, tail: float = 1.6) -> tuple[list, float]:
+    """Narrated style: sentences back to back with the reference's short breaths (a question gets a longer one, so
+    the tease lands); the last line holds a moment, then the video ends (TikTok loops it)."""
+    t, out = .1, []
+    for n, say in zip(lengths, says):
+        g = gap + (.22 if str(say).rstrip().endswith("?") else 0)
+        d = max(n + g, .55)
+        out.append((round(t, 3), round(t + d, 3)))
+        t += d
+    return out, round(t + tail, 3)
+
+
+def caption_chunks(say: str, start: float, spoken: float, end: float, first: bool = False) -> list[dict]:
+    """A sentence as on-screen chunks of 1-3 words timed to the speech (by word length; a comma or full stop is a
+    pause), like the reference's small yellow captions. Each chunk stays up until the next one."""
+    words = str(say).split()
+    if not words:
+        return []
+    groups, cur = [], []
+    for w in words:
+        cur.append(w)
+        if len(cur) >= 3 or len(" ".join(cur)) >= 20 or re.search(r"[,.?!:;]$", w):
+            groups.append(cur); cur = []
+    if cur:
+        groups.append(cur)
+    weight = lambda w: len(re.sub(r"\W", "", w)) + 2 + (3 if re.search(r"[,.?!:;]$", w) else 0)
+    total = sum(weight(w) for w in words)
+    t0, acc, out = start + .05, 0, []
+    for g in groups:
+        a = t0 + spoken * acc / total
+        acc += sum(weight(w) for w in g)
+        out.append({"text": " ".join(g), "t0": round(0.0 if first and not out else a, 3)})
+    for i, c in enumerate(out):
+        c["t1"] = out[i + 1]["t0"] if i + 1 < len(out) else round(end, 3)
+    return out
+
+
 # ── the sound library (public-domain clips from Wikimedia Commons, labelled by Gemini) ─────────────────
 SFX_DIR = ROOT / "memory" / "viral_sfx"
 
@@ -521,7 +801,30 @@ def caption_lengths(beats: list) -> list[float]:
 
 
 # ── 3. music and sound effects ───────────────────────────────────────────────
-SFX = ("none", "boom", "whoosh", "riser", "hit", "tick", "rumble", "bounce", "dribble", "swish", "buzzer", "squeak", "punch", "whistle", "bell")
+SFX = ("none", "boom", "whoosh", "riser", "hit", "tick", "rumble", "bounce", "dribble", "swish", "buzzer", "squeak", "punch", "whistle",
+       "bell", "boo", "groan", "kick")
+
+
+def _crowd_vowel(dur: float, rng, f1: float, f2: float, voices: int = 46, glide: float = 0.0, attack: float = .5):
+    """a stadium-sized crowd holding one vowel: many detuned voices, each a few formant-shaped harmonics"""
+    import numpy as np
+    n = int(SR * dur); t = np.arange(n) / SR
+    out = np.zeros(n, np.float32)
+    for v in range(voices):
+        f0 = rng.uniform(92, 175) * (1 + rng.uniform(-.02, .02))
+        bend = 1 - glide * np.clip((t - rng.uniform(.1, .4)) / max(.3, dur - .4), 0, 1)
+        vib = 1 + .012 * np.sin(2 * np.pi * rng.uniform(4, 6.5) * t + rng.uniform(0, 6))
+        ph = 2 * np.pi * np.cumsum(f0 * bend * vib) / SR
+        on = rng.uniform(0, attack)
+        env = np.clip((t - on) / .25, 0, 1) * np.clip((dur - t) / rng.uniform(.25, .7), 0, 1)
+        voice = np.zeros(n, np.float32)
+        for k in range(1, 15):
+            fk = f0 * k
+            g = np.exp(-((fk - f1) / 140) ** 2) + .55 * np.exp(-((fk - f2) / 220) ** 2) + .04
+            voice += np.sin(k * ph) * g / k ** .3
+        out += voice * env * rng.uniform(.6, 1)
+    out += _lowpass(rng.standard_normal(n).astype(np.float32), .08) * .6 * np.clip(t / attack, 0, 1) * np.clip((dur - t) / .5, 0, 1)
+    return (_lowpass(out, .25) / voices * 2.2).astype(np.float32)
 
 
 def sfx(kind: str, seed: int = 0):
@@ -586,6 +889,16 @@ def sfx(kind: str, seed: int = 0):
         f = 2900 + 120 * np.sign(np.sin(2 * np.pi * 32 * t))
         env = np.minimum(1, t * 40) * np.minimum(1, (.7 - t) * 15)
         return (np.sin(2 * np.pi * np.cumsum(f) / SR) * env * .25).astype(np.float32)
+    if kind == "boo":                                    # a whole stadium booing ("boooo"), about 3 s
+        x = _crowd_vowel(3.2, rng, 330, 800, attack=.45)
+        return (x * (1 + .25 * np.sin(2 * np.pi * .9 * np.arange(len(x)) / SR))).astype(np.float32)
+    if kind == "groan":                                  # a crowd's disappointed "ohhh", sliding down
+        return _crowd_vowel(1.9, rng, 520, 950, glide=.22, attack=.18)
+    if kind == "kick":                                   # boot on ball: a hollow thump and a leathery slap
+        n = int(SR * .4); t = np.arange(n) / SR
+        thump = np.sin(2 * np.pi * (140 + 160 * np.exp(-t * 60)) * t) * np.exp(-t * 26)
+        slap = _lowpass(rng.standard_normal(n), .55) * np.exp(-t * 160) * .9
+        return ((thump + slap) * .9).astype(np.float32)
     if kind == "bell":                                   # boxing ring bell
         n = int(SR * 2.2); t = np.arange(n) / SR
         return (sum(np.sin(2 * np.pi * f * t) * a for f, a in ((880, 1), (2210, .5), (3300, .3))) * np.exp(-t * 2.2) * .3).astype(np.float32)
@@ -629,6 +942,39 @@ def music(seconds: float, seed: int = 0):
     out = out * build + pulse * build * .5
     air = _lowpass(_lowpass(rng.standard_normal(n).astype(np.float32), .01), .05) * .25
     return (out + air).astype(np.float32)
+
+
+def music_drive(seconds: float, seed: int = 0):
+    """The reference's bed: a low, tense, rhythmic electronic loop (~120 bpm) - muted kick, off-beat hats, a minor
+    eighth-note bass - that builds toward the end and stops dead on the last line."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    n = int(seconds * SR); t = np.arange(n) / SR
+    pad = music(seconds, seed)                           # the minor pad underneath
+    out = np.zeros(n, np.float32); out[:min(n, len(pad))] = pad[:n] * .55
+    beat = .5
+    roots = [45, 41, 48, 43] if seed % 2 == 0 else [38, 46, 41, 36]
+    hz = lambda m: 440 * 2 ** ((m - 69) / 12)
+    kick_n = int(SR * .3); kt = np.arange(kick_n) / SR
+    kick = np.sin(2 * np.pi * (48 + 70 * np.exp(-kt * 30)) * kt) * np.exp(-kt * 11)
+    hat_n = int(SR * .06); ht = np.arange(hat_n) / SR
+    hat_src = rng.standard_normal(hat_n); hat = (hat_src - _lowpass(hat_src, .3)) * np.exp(-ht * 70) * .22
+    note_n = int(SR * beat / 2); nt = np.arange(note_n) / SR
+    for i in range(int(seconds / (beat / 2))):
+        a = int(i * beat / 2 * SR)
+        if a >= n:
+            break
+        prog = a / n
+        bar = int(i / 16) % 4
+        f = hz(roots[bar]) * (2 if i % 8 == 6 else 1)
+        saw = sum(np.sin(2 * np.pi * f * k * nt) / k for k in range(1, 6))
+        note = saw * np.exp(-nt * 9) * (.10 + .06 * prog)
+        out[a:a + note_n] += note[:max(0, n - a)]
+        if i % 2 == 0 and prog > .08:
+            out[a:a + kick_n] += kick[:max(0, n - a)] * (.35 + .3 * prog)
+        if i % 2 == 1 and prog > .25:
+            out[a:a + hat_n] += hat[:max(0, n - a)] * (.6 + .8 * prog)
+    return _lowpass(out, .5).astype(np.float32)
 
 
 def mix(voice: Optional[list], beats: list, script: dict, duration: float, out: Path, seed: int = 0) -> Path:
@@ -706,10 +1052,14 @@ def mix(voice: Optional[list], beats: list, script: dict, duration: float, out: 
             vtrack[a:a + len(v)] += v[:max(0, n - a)]
     env = np.convolve(np.abs(vtrack), np.ones(int(SR * .25)) / (SR * .25), mode="same")
     duck = 1 - .55 * np.clip(env / (env.max() + 1e-6) * 4, 0, 1)
-    bed = music(n / SR, seed)[:n] * (.3 if script.get("music") == "tension" or voice else 0)
+    if script.get("music") == "drive":
+        bed = np.zeros(n, np.float32); d = music_drive(n / SR + .01, seed)[:n]; bed[:len(d)] = d * .38
+        bed[max(0, int((beats[-1][0] + .2) * SR)):] *= .25    # drops away under the final line, like the reference
+    else:
+        bed = music(n / SR, seed)[:n] * (.3 if script.get("music") == "tension" or (voice and script.get("style") != "narrated") else 0)
     air = _lowpass(_lowpass(np.random.default_rng(seed).standard_normal(n).astype(np.float32), .01), .05) * .02
     mixd = (vtrack / (np.abs(vtrack).max() or 1)) * .9 + (bed + amb) * duck + fx * (.35 + .65 * duck) + air
-    fade = int(SR * 2.0)                                  # everything fades out over the end card
+    fade = int(SR * (.8 if script.get("style") == "narrated" else 2.0))     # everything fades out at the end
     mixd[-fade:] *= np.linspace(1, 0, fade)
     mixd = mixd[:int(duration * SR)]
     mixd = np.tanh(mixd / (np.abs(mixd).max() + 1e-6) * 1.4) / np.tanh(1.4) * .89    # soft-limit, then -1 dB
@@ -747,6 +1097,15 @@ Places (each one sets the sky and lighting too; call exactly one, first):
   K.sets.city({night})    street along -z, towers both sides (x=±16..20), cars, centre line
   K.sets.ocean({env, waves})  K.sets.plain({env, ground: 'sand'|'snow'|'mars'|'moon'|'rock'})
   K.sets.space()          black sky + stars (add planets/suns yourself)
+  K.sets.stadium({home, alt, name, boards: [..], banners: [..], mosaic: 'TEXT'}) -> a packed football stadium in
+                          daylight: pitch x -34..34, z -52.5..52.5 (centre spot 0,0,0; goals at z = +52.5 and -52.5,
+                          posts at x = ±3.66), two tiers of stands on all four sides full of fans in `home` colours
+                          (they jump on K.cheer), roof, LED boards (boards texts) around the pitch, banners between the
+                          tiers, `mosaic` text spelled by the fans in the side stands, the players' tunnel at x=-38.2,
+                          z=0 (mouth facing +x), dugouts at x≈-39, z=±9. Front-row fans for close-ups: the lower stand
+                          starts 41 m from the centre line on x (rows step .8 m back and .45 m up from y≈1) and 60 m on z;
+                          put K.crowd spectators there (or on the touchline) for reaction shots.
+                          Returns {ball (a K.soccerBall), goals, tunnel, bench, crowdAt(x, z) -> a seat Vector3}.
   K.sets.room({env})      bedroom x,z in -4..4, y 0..3: bed at (-2.2,-2.6), desk at (2.6,-3.3), window on the back wall
   K.sets.street({people}) busy daytime sidewalk along -z: walk the camera down x=6 at eye height 1.75 (y=.16 pavement);
                           road x<3, shopfronts x=10; returns {people (walking crowd), birds (pigeons near 5.5,-7)}
@@ -782,6 +1141,15 @@ Pieces (all return the object; pos is [x,y,z]):
       .play('Idle'|'Walk'|'Run'|'Attack'|'Jump'|'Death', t) every frame (t in seconds; loops wrap); move .position
       yourself (walk ~2 m/s, run ~8 m/s). Herds: make many and offset their t.
   K.birds([x,y,z], count, radius) -> pigeons; .scatter(t0) makes them fly off
+  K.sign(text, [x,y,z], {w, h, bg, fg, size, rot, tilt, glow, border}) -> a flat text sign in the world (banner,
+      board, tifo in the stands, big screen; '\n' for two lines); sign.setText('...') redraws it (a big screen
+      ticking up "GAME 5 WWWW?"). It faces +z; rot = yaw (Math.PI faces -z), tilt = lean back.
+  K.rings(pos | null, {follow: object, offset, t0, t1, every, life, size, color, opacity, flat}) -> sound / sonar
+      rings pulsing out (around a rattling ball, a shouting player, a booing stand; flat = on the ground, false =
+      facing the camera)
+  K.soccerBall(pos, r=.11) -> a low-poly match ball; ball.path([{t, pos:[x,y,z], h?}]) moves it along keyframes (h =
+      arc height on the way to that key: a chip or a cross); it spins as it rolls
+  K.goal(pos, dir)  K.tunnel(pos, rot, {color})
   K.hand({item: 'coffee'|'phone'|'none'}) -> first-person forearm in the lower right; call hand.bob(t) each frame
   K.glow(pos, {color, size, light, range}) -> glowing point with halo + light; .setPower(x) scales it (0 hides)
   K.beam(from, to, {color, width})   K.streak({color, size, tail}) -> meteor; call .fly(from, to, progress) each frame
@@ -792,7 +1160,11 @@ Effects, all scheduled by time (they animate themselves):
   K.debris(pos, {t0, count, speed, color, size, dir, spread})  K.smoke(pos, {t0, t1, rate, rise, size, color, life})
   K.fire(pos, {t0, t1, size})  K.shake(t0, dur, amp)  K.handheld(amount 0..1, default .6)
   K.flash(t0, dur, '#fff')  K.fadeOut(t0, dur)  K.fadeIn(t0, dur)  K.vignette(on)  K.hideText = true/false
-Camera: K.camPath([{t, pos:[x,y,z], look:[x,y,z], fov?, ease?}, ...]) glides between keyframes every frame
+Camera: K.shots([{t, pos, look, fov?, to?: {pos?, look?, fov?}, follow?: object, lookOffset?, chase?: [dx,dy,dz]}, ...])
+  = TV-style HARD CUTS: each shot holds from its t until the next shot's t, drifting from pos/look to `to` (a slow
+  push-in or pan). follow: keep looking at an object (a player, the ball) + lookOffset; chase: the camera rides
+  along at follow + chase. Use K.shots for the narrated style.
+  K.camPath([{t, pos:[x,y,z], look:[x,y,z], fov?, ease?}, ...]) glides between keyframes every frame
   (eye height 1.6 for first-person). Or set camera.position / camera.lookAt yourself inside update().
   Default fov 62. Shake and a gentle handheld sway are added on top automatically.
 
@@ -810,6 +1182,33 @@ Make it look like a polished viral simulation video:
 - Huge things (planets, waves, blasts) need the camera far enough back; check every object is in front of the
   camera at its moment. Keep geometry counts sane (< 200k instances, < 300 meshes).
 - The end card covers the last ~2.6 s, so the final shot can simply hold."""
+
+NARRATED_RULES = """
+THIS VIDEO IS THE NARRATED STYLE (like a viral "hypothetical" football short): a narrator reads one sentence per beat;
+the kit draws the small yellow word-by-word captions (at 62-68% of the height), the broadcast cards and the scorebug
+(top 10-30% of the frame) itself. Keep the important action in the middle band (25-60% of the height).
+- EDIT LIKE THE REFERENCE: K.shots with a hard cut at EVERY beat start, and a second cut inside any beat longer than
+  2 s (every 1-2 s overall). Vary the shot every time: wide aerial of the whole pitch, TV broadcast angle from the
+  side stand (pos about [-20..20, 8-14, 30-45] looking at the play), low close-up at boot height of the ball, medium
+  shot of a player from the front (camera 2-4 m away at y 1.2-1.6), reaction close-up of fans in the front row,
+  over-the-shoulder, behind-the-goal, a tilt up to a sign in the stands. Slight push-ins (`to`) keep it alive.
+- Every sentence is SHOWN literally at its time: who is talked about is on screen, doing it (dribbling, booing
+  fans with arms up, the keeper charging, the referee pointing). Players animate EVERY frame (run/jog/idle/etc.).
+- Players are K.person with team kits (shirt colour, number, legs 'shorts', pants = shorts colour, shoes colour);
+  props on bones (e.g. a black blindfold box on bone('Head')). Keep the ball (K.soccerBall / the set's ball) moving
+  with ball.path in sync with the passes and shots described.
+- In-world text sells the jokes: K.sign banners/tifos/boards ("WE'RE BACK", "PLEASE KEEP QUIET"), a big screen.
+- K.rings for anything about sound (rattling ball, shouting, booing, a "sonar" effect).
+- FRAMING like a TV broadcast: most shots are MEDIUM (one to three players filling half the frame height: camera 4-7 m
+  from them at y 1.3-2, looking at chest height) or the broadcast angle; at most a quarter are wide aerials. A
+  close-up keeps the camera at least 2.2 m from anyone's body (never inside or brushing a character, never looking
+  up from below the waist) and a ball close-up is 1-1.5 m from the ball with players visible behind it. Every
+  shot's subject must be in front of the camera and in the middle band at that moment (players move: aim at where
+  they ARE, use follow).
+- Nothing glowing or floating that the story doesn't need: no glowing lines on the pitch, no light blobs, no
+  shirtless or oddly coloured extras. Kits: each team ONE shirt colour (goalkeepers may differ), matching shorts.
+- Bright, clean, saturated daylight look. No fades to black, no slow intros; the first frame already has action.
+- The video ends on the last sentence's shot (the final score card is drawn by the kit); just hold it."""
 
 SCENE_PROMPT = """{api}
 
@@ -836,7 +1235,7 @@ Fix it. Reply with only the full corrected module in one ```js block."""
 
 REVIEW_PROMPT = """{api}
 
-These are 8 sample frames (left to right, top to bottom) of a short 3D video, at these times: {times}.
+These are {n} sample frames (left to right, top to bottom) of a short 3D video, at these times: {times}.
 The video, beat by beat:
 {beats}
 
@@ -870,6 +1269,10 @@ def beats_text(script: dict, times: list) -> str:
     rows = []
     for i, (b, (s, e)) in enumerate(zip(script["beats"], times)):
         hud = f" | HUD: {json.dumps(b['hud'])}" if b.get("hud") else ""
+        if b.get("card"):
+            hud += f" | card (drawn by the kit): {json.dumps(b['card'])}"
+        if b.get("score"):
+            hud += f" | scorebug: {json.dumps(b['score'])}"
         rows.append(f"beat {i} [{s:.2f}-{e:.2f}s] sfx={b['sfx']} | caption: \"{b['say']}\" | show: {b['scene']}{hud}")
     return "\n".join(rows)
 
@@ -990,35 +1393,50 @@ def make(topic: str = "", log: Callable = print, ask: Callable = ask_claude, his
         script = json.loads((job / "script.json").read_text())
     else:
         log("viral: writing the script")
-        script = write_script(history, topic, ask)
+        script = write_script(history, topic, ask, style=cfg["style"])
         (job / "script.json").write_text(json.dumps(script, indent=1))
     log(f"viral: \"{script['title']}\" ({len(script['beats'])} beats)")
 
     voice = None
-    if cfg["voice_mode"] in ("gemini", "edge"):
+    narrated = script.get("style") == "narrated"
+    if narrated or cfg["voice_mode"] in ("gemini", "edge"):
         paths = [job / f"voice_{i:02d}.wav" for i in range(len(script["beats"]))]
         if not all(p.exists() for p in paths):
-            paths = voice_lines([b["say"] for b in script["beats"]], job, dict(cfg, tts_model=cfg["tts_model"]
-                                if cfg["voice_mode"] == "gemini" else "none"), log)
+            gem = narrated and cfg["voice_mode"] != "edge" or cfg["voice_mode"] == "gemini"
+            paths = voice_lines([b["say"] for b in script["beats"]], job, dict(cfg, style=script.get("style"),
+                                tts_model=cfg["tts_model"] if gem else "none"), log)
         voice = [read_wav(p) for p in paths]
-        times, duration = timeline([len(v) / SR for v in voice])
+        if narrated:
+            times, duration = narrated_timeline([len(v) / SR for v in voice], [b["say"] for b in script["beats"]])
+        else:
+            times, duration = timeline([len(v) / SR for v in voice])
     else:
         times, duration = timeline(caption_lengths(script["beats"]), hook_min=2.6, gap=0)
     seed = int(time.time()) % 100000
     data = {"seed": seed, "fps": FPS, "duration": duration, "title": script["title"], "highlight": script["highlight"],
-            "end_fact": script["end_fact"], "end_card": 2.6,
+            "end_fact": script["end_fact"], "end_card": 0 if narrated else 2.6, "style": script.get("style", "captions"),
             "beats": [{"start": s, "end": e, "say": b["say"], "emph": b["emph"], "hud": b["hud"], "scene": b["scene"]}
                       for b, (s, e) in zip(script["beats"], times)]}
+    if narrated:
+        for i, (d, b, v) in enumerate(zip(data["beats"], script["beats"], voice)):
+            d.update(card=b.get("card"), score=b.get("score"),
+                     chunks=caption_chunks(b["say"], d["start"], len(v) / SR, d["end"], first=i == 0))
     (job / "data.json").write_text(json.dumps(data, indent=1))
     btxt = beats_text(script, times)
+    api = KIT_API
+    if narrated:
+        for line in ("- There is no narrator: the captions carry the story, so every beat needs its own clear visual moment.\n",
+                     "- The end card covers the last ~2.6 s, so the final shot can simply hold."):
+            api = api.replace(line, "")
+        api += "\n" + NARRATED_RULES
 
     if keep_scene and (job / "scene.js").exists():
         log("viral: keeping the scene that's already written")
     else:
         log(f"viral: {duration:.0f}s long; building the 3D scene")
-        code = _code_from(ask(SCENE_PROMPT.format(api=KIT_API, duration=duration, title=script["title"],
+        code = _code_from(ask(SCENE_PROMPT.format(api=api, duration=duration, title=script["title"],
                                                   set=script["set"], beats=btxt), timeout_s=900))
-        sample = review_times(times, duration)
+        sample = review_times(times, duration, n=12 if narrated else 8)
         frames = None
         for attempt in range(3):
             (job / "scene.js").write_text(code)
@@ -1029,12 +1447,12 @@ def make(topic: str = "", log: Callable = print, ask: Callable = ask_claude, his
                 log(f"viral: scene error ({exc}); asking for a fix")
                 if attempt == 2:
                     raise RuntimeError(f"the 3D scene kept failing: {exc}")
-                code = _code_from(ask(FIX_PROMPT.format(api=KIT_API, error=str(exc)[:900], duration=duration, beats=btxt,
+                code = _code_from(ask(FIX_PROMPT.format(api=api, error=str(exc)[:900], duration=duration, beats=btxt,
                                                         code=code), timeout_s=900))
         # one look at the frames, and a revision if something's off
         sheet = contact_sheet(frames, job / "review.jpg")
         try:
-            reply = ask(REVIEW_PROMPT.format(api=KIT_API, times=", ".join(f"{x:.1f}s" for x in sample), beats=btxt, code=code),
+            reply = ask(REVIEW_PROMPT.format(api=api, n=len(sample), times=", ".join(f"{x:.1f}s" for x in sample), beats=btxt, code=code),
                         timeout_s=900, images=[sheet])
             if reply.strip().upper() != "OK" and "```" in reply:
                 revised = _code_from(reply)
@@ -1074,8 +1492,8 @@ def make(topic: str = "", log: Callable = print, ask: Callable = ask_claude, his
     return rec
 
 
-SOUND_CHECK = """You are the sound editor of a short viral 3D video (no narrator; captions + sound only). Listen to the
-attached soundtrack and compare it, beat by beat, with what is on screen:
+SOUND_CHECK = """You are the sound editor of a short viral 3D video. Listen to the attached soundtrack (ignore any
+narrator's voice; judge the background sounds and effects) and compare it, beat by beat, with what is on screen:
 {beats}
 
 The sound library (only these ids may be used; "none" = silence, synth effects: boom, whoosh, riser, hit, tick, rumble, bounce, dribble, swish, buzzer, squeak,
@@ -1141,7 +1559,7 @@ def sound_check(audio: Path, times: list, script: dict, log: Callable = print) -
         if isinstance(f.get("sfx2"), list):
             b["sfx2"] = f["sfx2"]
     try:
-        return clean_script(new, lib)
+        return clean_script(new, lib, style=script.get("style", "captions"))
     except Exception:
         return None
 

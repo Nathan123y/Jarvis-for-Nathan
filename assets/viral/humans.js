@@ -317,6 +317,7 @@ export function humanKit(K, updaters) {
       puppets.push(pp);
     }
     updaters.push((t) => {
+      cheerAt(t);
       for (const pp of puppets) {
         if (cheer.on) {
           const x = t * (1.1 + pp.mode * .15) + pp.ph;
@@ -333,7 +334,19 @@ export function humanKit(K, updaters) {
     return puppets;
   }
   /** spectators (every crowd) cheer from time t0: on = true/false or an intensity 0..1 */
-  K.cheer = (on = true, t0 = 0) => { cheer.on = on === true ? 1 : (+on || 0); cheer.from = t0; };
+  // calls stack on a timeline (K.cheer(true, 10); K.cheer(false, 14) = cheer from 10 s to 14 s)
+  const cheerPlan = []; let cheerNow = 0;
+  K.cheer = (on = true, t0 = cheerNow) => {
+    const v = on === true ? 1 : (+on || 0), last = cheerPlan[cheerPlan.length - 1];
+    if (last && last.on === v && last.t0 <= t0) return;
+    cheerPlan.push({ on: v, t0 }); cheerPlan.sort((a, b) => a.t0 - b.t0);
+  };
+  function cheerAt(t) {
+    cheerNow = t; cheer.on = 0; cheer.from = -1e9;
+    for (const c of cheerPlan) if (c.t0 <= t) { cheer.on = c.on; cheer.from = c.t0; }
+    return cheer;
+  }
+  K.cheerLevel = (t) => { cheerAt(t); return cheer.on * Math.min(1, Math.max(0, t - cheer.from) * 3); };
   K.crowd = (a, b, count = 30, o = {}) => {
     const { walk = true, speed = 1.3, face = null, s = 1 } = o;
     const people = [];
@@ -367,7 +380,7 @@ export function humanKit(K, updaters) {
       const lib = LIB[sex];
       const g = new THREE.Group();
       const mesh = new THREE.SkinnedMesh(lib.body.geometry, bodyMaterial(lib.body.material, { skinMap, skinTint,
-        shirt: SHIRTS[(i * 7) % SHIRTS.length], sleeves: i % 3 ? 'short' : 'long', pants: PANTS[(i * 3) % PANTS.length], number: o.jerseys && i % 4 === 0 ? o.jerseys : null }));
+        shirt: (o.shirts || SHIRTS)[(i * 7) % (o.shirts || SHIRTS).length], sleeves: i % 3 ? 'short' : 'long', pants: PANTS[(i * 3) % PANTS.length], number: o.jerseys && i % 4 === 0 ? o.jerseys : null }));
       mesh.bindMode = THREE.DetachedBindMode; mesh.bind(pup.skeleton, new THREE.Matrix4()); mesh.frustumCulled = false; g.add(mesh);
       for (const [src, color] of hairMeshes({ hair: sex === 'f' ? ['long', 'buns', 'parted'][i % 3] : ['buzzed', 'parted', 'bald', 'buzzed'][i % 4],
                                               hairColor: [0x2a1c12, 0x111111, 0x6b4a2a, 0xc9a35a][i % 4] }, sex)) {
