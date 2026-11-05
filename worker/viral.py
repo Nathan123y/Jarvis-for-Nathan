@@ -55,12 +55,11 @@ DEFAULTS = {"enabled": True,
                                                     # 2026-11-05 Man United vs blind footballers reference) | captions
             "voice_mode": "none",                   # captions style only: none | gemini | edge (narrated always speaks)
             "voice": "Fenrir",                      # Gemini TTS voice: closest match to the reference narrator
-            "voice_speed": 1.0,                     # tempo of the narration (pitch kept)
+            "voice_speed": 1.08,                     # tempo of the narration (pitch kept)
             "voice_pitch_hz": 180,                  # each take is nudged toward this median pitch (0 = leave it); the
                                                     # reference narrator is a bright, energetic male voice (~175-220 Hz)
-            # a bracketed delivery tag in front of the narration (narrated style). Gemini reads plain-prose style
-            # notes aloud, but a [tag] steers it silently: it made Fenrir livelier and brighter (179 Hz, wider range)
-            "voice_tag": "[energetic, punchy, fast TikTok narrator]",
+            # no style tag: Gemini sometimes reads a [tag] aloud ("energetic fast TikTok narrator" opened the
+            # Haaland video on 2026-11-05), so the narration is sent bare and only the pitch is nudged
             "tts_model": "gemini-3.8-flash-tts",
             "ai_label": True,
             "handle": "whatifishowedu"}                # the TikTok account, for reading view counts                       # TikTok requires the AI-generated label on AI-made videos
@@ -665,8 +664,7 @@ def voice_lines(lines: list[str], job: Path, cfg: dict, log: Callable = print) -
     for model in models:
         try:
             whole = job / "voice_all.wav"
-            tag = str(cfg.get("voice_tag") or "").strip() if cfg.get("style") == "narrated" else ""
-            whole.write_bytes(gemini_tts(((tag + " ") if tag else "") + "\n\n".join(lines), model, cfg["voice"]))
+            whole.write_bytes(gemini_tts("\n\n".join(lines), model, cfg["voice"]))   # bare text: no style notes
             _tempo(whole, float(cfg.get("voice_speed") or 1),
                    float(cfg.get("voice_pitch_hz") or 0) if cfg.get("style") == "narrated" else 0)
             with wave.open(str(whole), "rb") as w:
@@ -675,12 +673,6 @@ def voice_lines(lines: list[str], job: Path, cfg: dict, log: Callable = print) -
             with wave.open(str(whole), "rb") as w:
                 x = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768
             pieces = split_by_pauses(x, rate, words, lines=lines)
-            if pieces is not None and tag and len(lines) > 1:     # the tag spoken aloud would bloat line 1
-                share = len(pieces[0]) / max(1, len(x))
-                exp = (len(re.sub(r"\W", "", lines[0])) + 3) / sum(len(re.sub(r"\W", "", l)) + 3 for l in lines)
-                if share > exp * 1.8 + .02:
-                    log(f"viral: {model} seems to have read the style tag aloud; trying the next voice")
-                    continue
             if pieces is None:
                 log(f"viral: couldn't cut {model}'s narration into lines cleanly; trying the next voice")
                 continue
