@@ -229,13 +229,21 @@ Why it works, and what every script must do the same way:
   "follow for more", no question at the end. The underdog / absurd side usually wins.
 - Deadpan, dry, confident. Never explain the joke. Real names, real stadiums, real-sounding numbers. Plain words.
 
-Topic: an absurd hypothetical matchup or challenge with a real team, club or famous athlete and ONE funny mechanism
-that decides it. Football (soccer) clubs and stars are the core; NBA teams, boxers and other sports are fine too.
-Mix in fantasy or absurd opponents when it's funny (a team of toddlers, 11 goalkeepers, a team of identical twins,
-a medieval army, 11 grandmas with walking frames, a team that can only walk backwards, Zeus in goal). Examples:
-"Could Real Madrid beat eleven goalkeepers?", "Could Arsenal win a game where every goal must be a header?",
-"Could prime Messi beat an entire Sunday league team by himself?", "Could the Golden State Warriors beat five
-Shaqs?", "Could Man City beat a team that can pause time for one second?".
+Topic: OUT OF POCKET. The single biggest thing that gets views is a premise so unhinged and funny that people
+send it to their friends and argue in the comments. Our best video so far: "Could Josh Jacobs Beat a Defensive Line
+of Pregnant Women?" Aim at that energy every time: a real star or team (NFL, NBA, football clubs, boxers, any sport)
+vs an opponent or condition nobody would ever put in a sentence (a defensive line of pregnant women, eleven grandmas
+on mobility scooters, forty kindergarteners who've had espresso, a team of Florida men, a referee who's the
+opposing team's mom, a goalkeeper who's actually a golden retriever, a stadium where the crowd is all exes, a team
+of mall cops, a pitch made of ice, 100 dads who all think they could've gone pro). Then ONE funny mechanism decides
+it, played completely straight and deadpan like the reference (the funnier and more specific the better: nobody
+is allowed to tackle a pregnant woman, so every play just walks straight past him). Examples of the bar:
+"Could Josh Jacobs Beat a Defensive Line of Pregnant Women?", "Could Prime Shaq Get a Rebound Against 50 Grandmas?",
+"Could Real Madrid Score If Every Defender Was Somebody's Mom?", "Could Mike Tyson Win a Fight Where He's Not
+Allowed to Hurt Anyone's Feelings?", "Could the Chiefs Beat a Team of Mall Cops Who Take It Way Too Seriously?",
+"Could Messi Dribble Past 11 Toddlers Who Are All Holding Ice Cream?". Never a bland or "fair" matchup.
+Edgy and inappropriate-adjacent is GOOD; the joke lands on the situation and the star's struggle, never on punching
+down at a group (the underdog side wins and looks great, like the blind footballers).
 Real people only in harmless, fun situations (never insulting, sexual or defamatory).
 {topic_line}
 Don't repeat these recent videos:
