@@ -63,6 +63,8 @@ DEFAULTS = {"enabled": True,
             # Haaland video on 2026-11-05), so the narration is sent bare
             "tts_model": "gemini-3.8-flash-tts",
             "ai_label": True,
+            "claude_model": "opus",                 # the strongest Claude on the membership writes the script + 3D scene
+            "claude_effort": "high",                # was medium; more thinking = better scenes (uses more of the plan's limits)
             "instagram": True,                      # also post each video as a Reel on the videos' own Instagram page
                                                     # (a new page, NOT the user's personal one; user's choice 2026-11-05)
             "handle": "whatifishowedu"}                # the TikTok account, for reading view counts                       # TikTok requires the AI-generated label on AI-made videos
@@ -304,7 +306,7 @@ def _json_from(text: str):
     return json.loads(text[a:b + 1])
 
 
-def claude_run(prompt: str, images: Optional[list] = None, timeout_s: float = 900, effort: str = "medium") -> str:
+def claude_run(prompt: str, images: Optional[list] = None, timeout_s: float = 900, effort: str = "") -> str:
     """One `claude -p` turn on the membership login (never an API key), with time for long code. "" on failure."""
     import os
     import tempfile
@@ -321,10 +323,13 @@ def claude_run(prompt: str, images: Optional[list] = None, timeout_s: float = 90
         if names:
             prompt = "First read these image files in the current folder: " + ", ".join(names) + "\n\n" + prompt
         env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+        cfg = settings()
+        model = ["--model", cfg["claude_model"]] if cfg.get("claude_model") else []
         try:
             r = subprocess.run([exe, "-p", "--output-format", "json", "--system-prompt", gemini._ONE_SHOT_SYSTEM,
                                 "--tools", "Read" if names else "", "--strict-mcp-config", "--setting-sources", "",
-                                "--no-session-persistence", "--disable-slash-commands", "--effort", effort],
+                                "--no-session-persistence", "--disable-slash-commands",
+                                "--effort", effort or cfg.get("claude_effort") or "medium"] + model,
                                input=prompt, capture_output=True, text=True, cwd=tmp, env=env, timeout=timeout_s)
             out = json.loads(r.stdout)
         except Exception as exc:
