@@ -56,10 +56,10 @@ DEFAULTS = {"enabled": True,
             "voice_mode": "none",                   # captions style only: none | gemini | edge (narrated always speaks)
             "voice": "Fenrir",                      # Gemini TTS voice: closest match to the reference narrator
             "voice_speed": 1.08,                     # tempo of the narration (pitch kept)
-            "voice_pitch_hz": 180,                  # each take is nudged toward this median pitch (0 = leave it); the
-                                                    # reference narrator is a bright, energetic male voice (~175-220 Hz)
+            "voice_pitch_hz": 0,                    # nudge each take toward this median pitch (0 = leave it). Was 180:
+                                                    # shifting Fenrir up made him a "squeaky chipmunk" (user, 11-05)
             # no style tag: Gemini sometimes reads a [tag] aloud ("energetic fast TikTok narrator" opened the
-            # Haaland video on 2026-11-05), so the narration is sent bare and only the pitch is nudged
+            # Haaland video on 2026-11-05), so the narration is sent bare
             "tts_model": "gemini-3.8-flash-tts",
             "ai_label": True,
             "handle": "whatifishowedu"}                # the TikTok account, for reading view counts                       # TikTok requires the AI-generated label on AI-made videos
