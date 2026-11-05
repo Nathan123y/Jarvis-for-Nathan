@@ -1696,6 +1696,21 @@ def tiktok_post(video: Path, caption: str, ai_label: bool = True, log: Callable 
 
 # ---------------- Instagram Reels (the same video, posted right after TikTok) ----------------
 
+IG_SWAP = {"#fyp": "#reels", "#foryou": "#explorepage", "#foryoupage": "#explorepage", "#fypシ": "#reels"}
+
+
+def ig_caption(caption: str) -> str:
+    """TikTok's caption with Instagram's discovery tags instead of TikTok-only ones (#fyp means nothing on Reels)."""
+    out, seen = [], set()
+    for w in caption.split(" "):
+        w = IG_SWAP.get(w.lower(), w)
+        if w.startswith("#") and w.lower() in seen:
+            continue
+        seen.add(w.lower())
+        out.append(w)
+    return " ".join(out)
+
+
 def _ig_context(p, visible: bool):
     IG_PROFILE.mkdir(parents=True, exist_ok=True)
     args = ["--disable-blink-features=AutomationControlled"]
@@ -2062,7 +2077,7 @@ class ViralService:
     def post_instagram(self, rec: dict, cfg: dict) -> str:
         """The same video as a Reel on the videos' Instagram page (a failure there never stops TikTok)."""
         try:
-            ig_post(Path(rec["path"]), rec["caption"], cfg["ai_label"], self.log)
+            ig_post(Path(rec["path"]), ig_caption(rec["caption"]), cfg["ai_label"], self.log)
             _mark(rec["path"], ig_posted=True)
             self.log(f"viral: posted to Instagram: {rec['title']}")
             return "posted"
