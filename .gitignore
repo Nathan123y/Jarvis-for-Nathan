@@ -102,6 +102,7 @@ config/google_forms_token.json.tmp
 memory/viral/
 memory/viral.json
 memory/tiktok_profile/
+memory/instagram_profile/
 # the sound library (public-domain clips from Wikimedia Commons; rebuilt by worker/viral.py)
 memory/viral_sfx/
 memory/kokoro/

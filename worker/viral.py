@@ -45,6 +45,7 @@ STATE = ROOT / "memory" / "viral.json"
 WORK = ROOT / "memory" / "viral"                    # one folder per video: script, voice, scene, frames
 OUT = Path.home() / "Movies" / "Jarvis Viral"       # the finished mp4s
 PROFILE = ROOT / "memory" / "tiktok_profile"        # the Chrome profile logged into TikTok
+IG_PROFILE = ROOT / "memory" / "instagram_profile"  # the Chrome profile logged into the videos' Instagram page
 NS = "viral_videos"
 FPS = 30
 SR = 48000
@@ -62,6 +63,8 @@ DEFAULTS = {"enabled": True,
             # Haaland video on 2026-11-05), so the narration is sent bare
             "tts_model": "gemini-3.8-flash-tts",
             "ai_label": True,
+            "instagram": True,                      # also post each video as a Reel on the videos' own Instagram page
+                                                    # (a new page, NOT the user's personal one; user's choice 2026-11-05)
             "handle": "whatifishowedu"}                # the TikTok account, for reading view counts                       # TikTok requires the AI-generated label on AI-made videos
 CHROME_ARGS = ["--use-angle=metal", "--enable-gpu", "--ignore-gpu-blocklist"]
 
@@ -1681,6 +1684,118 @@ def tiktok_post(video: Path, caption: str, ai_label: bool = True, log: Callable 
             ctx.close()
 
 
+# ---------------- Instagram Reels (the same video, posted right after TikTok) ----------------
+
+def _ig_context(p, visible: bool):
+    IG_PROFILE.mkdir(parents=True, exist_ok=True)
+    args = ["--disable-blink-features=AutomationControlled"]
+    if not visible:
+        args.append("--window-position=-2400,0")
+    return p.chromium.launch_persistent_context(str(IG_PROFILE), channel="chrome", headless=False, args=args,
+                                                viewport={"width": 1280, "height": 900}, ignore_default_args=["--enable-automation"])
+
+
+def ig_logged_in(ctx) -> bool:
+    return any(c["name"] == "sessionid" and c.get("value") for c in ctx.cookies("https://www.instagram.com"))
+
+
+def ig_login(wait_s: int = 900) -> bool:
+    """Opens Instagram's login page in a Chrome window; returns once the user has logged in."""
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        ctx = _ig_context(p, visible=True)
+        pg = ctx.pages[0] if ctx.pages else ctx.new_page()
+        pg.goto("https://www.instagram.com/accounts/login/")
+        end = time.time() + wait_s
+        while time.time() < end:
+            if ig_logged_in(ctx):
+                time.sleep(5)
+                ctx.close()
+                return True
+            time.sleep(2)
+        ctx.close()
+    return False
+
+
+def _ig_click(pg, texts, timeout: int = 4000) -> bool:
+    """Clicks the first visible button/link whose text is one of `texts`."""
+    for t in texts:
+        loc = pg.locator(f"[role=dialog] [role=button]:text-is('{t}'), [role=dialog] button:text-is('{t}'), "
+                         f"button:text-is('{t}'), [role=button]:text-is('{t}')")
+        for i in range(loc.count()):
+            el = loc.nth(i)
+            try:
+                if el.is_visible():
+                    el.click(timeout=timeout)
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+def ig_post(video: Path, caption: str, ai_label: bool = True, log: Callable = print, dry_run: bool = False) -> str:
+    """Uploads the video as a Reel through instagram.com in the logged-in profile. Raises on failure (with a screenshot)."""
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        ctx = _ig_context(p, visible=False)
+        pg = ctx.pages[0] if ctx.pages else ctx.new_page()
+        shot = WORK / f"instagram-{int(time.time())}.png"
+        try:
+            if not ig_logged_in(ctx):
+                raise NotLoggedIn("Instagram isn't logged in (run: python3 -m worker.viral iglogin)")
+            pg.goto("https://www.instagram.com/", wait_until="domcontentloaded", timeout=60000)
+            pg.wait_for_timeout(6000)
+            if "login" in pg.url:
+                raise NotLoggedIn("Instagram sent us to the login page")
+            _ig_click(pg, ["Not Now", "Not now"])          # "turn on notifications" / "save login info"
+            pg.locator("svg[aria-label='New post'], svg[aria-label='Create']").first.click(timeout=20000)
+            pg.wait_for_timeout(1500)
+            _ig_click(pg, ["Post"])                         # newer menus ask Post / Live / Ad
+            pg.wait_for_timeout(1000)
+            pg.locator("input[type=file]").last.set_input_files(str(video), timeout=60000)
+            pg.wait_for_timeout(5000)
+            _ig_click(pg, ["OK"])                           # "Video posts are now shared as reels"
+            try:                                            # keep the full 9:16 frame (the default crop is square)
+                pg.locator("svg[aria-label='Select crop']").first.click(timeout=15000)
+                pg.wait_for_timeout(800)
+                pg.locator("text=Original").first.click(timeout=5000)
+                pg.wait_for_timeout(800)
+            except Exception:
+                log("viral: Instagram's crop menu wasn't there; posting with its default frame")
+            for _ in range(2):                              # crop -> edit -> caption
+                if not _ig_click(pg, ["Next"], timeout=10000):
+                    raise RuntimeError("Instagram's Next button wasn't there")
+                pg.wait_for_timeout(3000)
+            box = pg.locator("div[aria-label='Write a caption...'], div[contenteditable='true']").first
+            box.click(timeout=20000)
+            pg.keyboard.type(caption[:2200], delay=6)
+            if ai_label:
+                try:
+                    pg.locator("text=Advanced settings").first.click(timeout=5000)
+                    pg.wait_for_timeout(800)
+                    sw = pg.locator("text=/AI label/i").locator("xpath=following::input[@role='switch'][1]").first
+                    if sw.count() and sw.get_attribute("aria-checked") != "true":
+                        sw.click(timeout=5000)
+                except Exception:
+                    log("viral: couldn't find Instagram's AI label switch")
+            if dry_run:
+                pg.screenshot(path=str(shot))
+                return f"dry run: ready to share (screenshot {shot})"
+            if not _ig_click(pg, ["Share"], timeout=15000):
+                raise RuntimeError("Instagram's Share button wasn't there")
+            done = pg.locator("text=/reel has been shared|post has been shared|Reel shared/i").first
+            done.wait_for(state="visible", timeout=600000)
+            return "posted"
+        except Exception:
+            try:
+                pg.screenshot(path=str(shot))
+            except Exception:
+                pass
+            raise
+        finally:
+            ctx.close()
+
+
 def _close_modals(pg, log: Callable, posting: bool = False) -> None:
     """TikTok Studio pop-ups: never leave the page ("Are you sure you want to exit?" -> Cancel); after the Post
     click, accept a "post now?" confirmation; dismiss anything else."""
@@ -1922,6 +2037,27 @@ class ViralService:
         return self.deliver(rec, cfg)
 
     def deliver(self, rec: dict, cfg: dict) -> str:
+        out = self._deliver_tiktok(rec, cfg)
+        if cfg["post"] and cfg.get("instagram"):
+            self.post_instagram(rec, cfg)
+        return out
+
+    def post_instagram(self, rec: dict, cfg: dict) -> str:
+        """The same video as a Reel on the videos' Instagram page (a failure there never stops TikTok)."""
+        try:
+            ig_post(Path(rec["path"]), rec["caption"], cfg["ai_label"], self.log)
+            _mark(rec["path"], ig_posted=True)
+            self.log(f"viral: posted to Instagram: {rec['title']}")
+            return "posted"
+        except NotLoggedIn:
+            self.log("viral: Instagram isn't logged in yet (python3 -m worker.viral iglogin)")
+            return "not logged in"
+        except Exception as exc:
+            self.log(f"viral: Instagram post failed: {exc}")
+            self.notify("viral", f"🎬 Couldn't post \"{rec['title']}\" to Instagram ({str(exc)[:100]}). TikTok is unaffected.")
+            return "failed"
+
+    def _deliver_tiktok(self, rec: dict, cfg: dict) -> str:
         if cfg["post"]:
             try:
                 tiktok_post(Path(rec["path"]), rec["caption"], cfg["ai_label"], self.log)
@@ -1987,6 +2123,14 @@ def main(argv: list[str]) -> int:
     if cmd == "login":
         print("A Chrome window is opening: log in to TikTok there (it waits up to 15 minutes).")
         print("Logged in." if tiktok_login() else "Timed out before you logged in.")
+        return 0
+    if cmd == "iglogin":
+        print("A Chrome window is opening: log in to the videos' Instagram page there (it waits up to 15 minutes).")
+        print("Logged in." if ig_login() else "Timed out before you logged in.")
+        return 0
+    if cmd == "igpost" and len(argv) >= 2:
+        words = [a for a in argv[2:] if not a.startswith("--")]
+        print(ig_post(Path(argv[1]), " ".join(words), settings()["ai_label"], dry_run="--dry-run" in argv))
         return 0
     if cmd == "post" and len(argv) >= 2:
         print(tiktok_post(Path(argv[1]), argv[2] if len(argv) > 2 else "", settings()["ai_label"]))

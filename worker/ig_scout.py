@@ -1,8 +1,9 @@
 """Instagram, READ ONLY, for the shop's Trend Scout: what's going viral on the big meme pages and hashtags right now.
 
-The user's rule: nothing is ever posted to their Instagram. This module only makes GET requests, and the token it is given only has
+The user's rule: nothing is ever posted to their own Instagram (the TikTok videos also go up as Reels on a separate page
+made for them, posted by worker/viral.py through the browser, the user's choice on 2026-11-05). This module only makes GET requests, and the token it is given only has
 read permissions (instagram_basic, pages_show_list, pages_read_engagement, business_management; no instagram_content_publish, which
-posting would need). There is no posting code in Jarvis at all.
+posting would need).
 
 Once a day (with the other trend feeds) it
   1. reads the latest posts of each watched page (Business Discovery: public business/creator accounts) and the top posts of a few
