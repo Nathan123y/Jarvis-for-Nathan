@@ -250,6 +250,13 @@ is allowed to tackle a pregnant woman, so every play just walks straight past hi
 "Could Real Madrid Score If Every Defender Was Somebody's Mom?", "Could Mike Tyson Win a Fight Where He's Not
 Allowed to Hurt Anyone's Feelings?", "Could the Chiefs Beat a Team of Mall Cops Who Take It Way Too Seriously?",
 "Could Messi Dribble Past 11 Toddlers Who Are All Holding Ice Cream?". Never a bland or "fair" matchup.
+The user's own favourite kind (their briefs, 2026-11-05): a prime star's signature move or famous trait, aimed at a
+HISTORICAL or FANTASY event and taken dead literally: "Could Prime Luis Suarez bite Napoleon's hand out of his
+jacket?", "Could Prime Dennis Rodman box out the Boston Tea Party?", "Could Prime Joey Chestnut digest the Infinity
+Stones?", "Could Prime Zlatan out-ego the French Revolution guillotine?", "Could Prime Scottie Pippen lock down the
+Black Plague?", "Could Prime Marshawn Lynch Beast Quake through the Great Wall of China?". Sports jargon applied to
+the event ("the dinosaurs were stuck in a zone defense", "a 24-second biological violation") and a punchline that
+escalates past the point of sense (the SIUUU shifts the tectonic plates and triggers the Ice Age anyway).
 Edgy and inappropriate-adjacent is GOOD; the joke lands on the situation and the star's struggle, never on punching
 down at a group (the underdog side wins and looks great, like the blind footballers).
 Real people only in harmless, fun situations (never insulting, sexual or defamatory).
@@ -2050,6 +2057,11 @@ class ViralService:
         elif not topic and st.get("topic_queue"):       # then topics the user asked for
             topic = st["topic_queue"].pop(0)
             save_state(st)
+            left = len(st["topic_queue"])
+            if left in (2, 0):                              # the user asked to hear when their ideas run low
+                self.notify("viral", "🎬 " + (f"Only {left} of your video ideas left in the queue (about a day). "
+                                              if left else "That was the last of your video ideas; I'm on my own ideas now. ")
+                            + "Send me more like the Suárez / Rodman / Joey Chestnut ones whenever you have them.")
         try:
             rec = make(topic, log=self.log)
         except ClaudeBusy as exc:
