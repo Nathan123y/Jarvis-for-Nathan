@@ -115,6 +115,23 @@ _PROBE_SECONDS = {"output": 0.6, "input": 0.35}
 # Cache: {(api_name_or_None, kind): bool}
 _probe_results: dict = {}
 
+# ── Opening a device can hang ────────────────────────────────────────────────
+#
+# Measured on macOS with a DisplayPort monitor whose audio is not running:
+# start() or write() on it may never return ("Audio Hardware Not Running"), and
+# while it is stuck the MacBook speakers stop responding in the same process.
+# The speaker open waited on this scan, so one monitor silenced Jarvis on every
+# device. A time limit alone does not cure that, so on macOS the scan does not
+# open anything. It has no fake sinks to find, as there is only Core Audio. Only
+# the device actually chosen is opened, in resolve(), and that gets a time limit.
+_OPEN_TIMEOUT = 5.0
+_hung: set = set()
+
+
+def _scan_opens_devices() -> bool:
+    import platform
+    return platform.system() != "Darwin"
+
 
 def _transport_works(idx: int, kind: str, api_key) -> bool:
     """Does this host API actually move audio, or only pretend to?
@@ -214,7 +231,29 @@ def _usable(idx: int, kind: str) -> bool:
     `check_output_settings`, because that function lies: it passed for an MME
     endpoint that then failed to open with "The specified format is not
     supported or cannot be translated" [MME error 32]. Opening and immediately
-    closing costs milliseconds and is the only answer that holds."""
+    closing costs milliseconds and is the only answer that holds.
+
+    A device that does not answer within _OPEN_TIMEOUT counts as unusable until
+    the next launch. Its stuck thread cannot be killed, so it sleeps as a daemon."""
+    if idx in _hung:
+        return False
+    result = [False]
+
+    def _check():
+        result[0] = _opens(idx, kind)
+
+    worker = threading.Thread(target=_check, daemon=True, name=f"audio-open-{idx}")
+    worker.start()
+    worker.join(_OPEN_TIMEOUT)
+    if worker.is_alive():
+        _hung.add(idx)
+        print(f"[Audio] {kind} device {idx} did not respond within "
+              f"{_OPEN_TIMEOUT:.0f} s — skipping it until Jarvis restarts")
+        return False
+    return result[0]
+
+
+def _opens(idx: int, kind: str) -> bool:
     st = None
     try:
         import sounddevice as sd
@@ -271,6 +310,7 @@ def _query() -> dict[str, list[str]]:
             apis = []
 
         preferred = _PREFERRED_APIS.get(platform.system(), ())
+        measure = _scan_opens_devices()
 
         def _collect(api_filter, kind) -> list[tuple[int, str]]:
             """(index, name) for named, non-pseudo devices on one side that can
@@ -287,7 +327,7 @@ def _query() -> dict[str, list[str]]:
                     api = apis[dev["hostapi"]].lower() if dev.get("hostapi", -1) < len(apis) else ""
                     if api_filter not in api:
                         continue
-                if not _usable(idx, kind):
+                if measure and not _usable(idx, kind):
                     continue
                 seen.add(name)
                 found.append((idx, name))
@@ -303,7 +343,7 @@ def _query() -> dict[str, list[str]]:
                 if not found:
                     continue
                 # One probe per API per direction, cached, on this thread.
-                if not _transport_works(found[0][0], kind, (api_filter, kind)):
+                if measure and not _transport_works(found[0][0], kind, (api_filter, kind)):
                     continue
                 _chosen_api[kind] = api_filter
                 out[kind] = [_display_name(n, devices) for _i, n in found]
