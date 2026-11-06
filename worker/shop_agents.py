@@ -127,7 +127,8 @@ def designer_notes(nb: dict, spinoff: Optional[dict]) -> str:
     out = ["Notes the shop's agents wrote for themselves from past results (follow them):", lessons_text(nb)]
     if spinoff:
         out.append(f"THIS DESIGN IS A SPIN-OFF OF A WINNER: \"{spinoff.get('slogan')}\" ({spinoff.get('niche')}) sold. Make a NEW joke "
-                   "on the same theme, for the same buyers, in the same style; not the same slogan, and don't use the trend list.")
+                   "on the same theme, for the same buyers, in the same style; not the same slogan, and don't use the trend list. "
+                   f"Its listing was titled \"{spinoff.get('title')}\": keep the search words a buyer would type for this theme.")
     return "\n".join(out)
 
 

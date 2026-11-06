@@ -271,6 +271,8 @@ DEFAULTS = {"enabled": True, "designs_per_day": 1, "time": "06:00",  # live befo
             "etsy_per_design": 3,
             # eBay lists 250 a month free, and its listings renew monthly against that, so live listings stay under it
             "ebay_max": 250,
+            # every daily design riffs on a design that sold, not one in two (2026-11-06, user: focus on what sold)
+            "winner_focus": True,
             "video_times": ""}                 # e.g. "11:00,15:00,19:00", one video at each; empty = no videos (off: user prefers the photos)
 
 BLOCKED = re.compile(r"(?<![a-z])(" + "|".join([
@@ -391,6 +393,12 @@ def christmas_style(day, slot: int, per_day: int) -> str:
     if slot == 0:
         return NICHE_ROTATION[turn % len(NICHE_ROTATION)]
     return GIFT_ROTATION[(turn // 2 + slot) % len(GIFT_ROTATION)]
+
+
+def season_running(name: Optional[str], day) -> bool:
+    """Whether a season's selling window covers this day (unlike season_for, which takes turns when two overlap)."""
+    s = SEASONS.get(name or "")
+    return bool(s) and s["start"] <= (day.month, day.day) <= s["end"]
 
 
 def settings() -> dict:
@@ -850,6 +858,9 @@ class Shop:
         st = load_state(self.state_path)
         recent = [d.get("niche", "") + ": " + d.get("slogan", "") for d in st["designs"]]
         parent = next((d for d in st["designs"] if d.get("id") == spinoff), None) if spinoff else None
+        if parent and parent.get("style") != "video":       # same look, products and season as the design that sold
+            style = style or parent.get("style")
+            season = season or parent.get("season")
         trending = "" if parent else self.trending(st)
         nb = shop_agents.load(self.nb_path)
         notes = shop_agents.designer_notes(nb, parent)
@@ -863,7 +874,7 @@ class Shop:
             notes = VIDEO_NOTE.format(topic=video) + "\n\n" + notes
             only = only or VIDEO_PRODUCTS
         line = LINES.get(style or "")
-        audience = None if parent or video else pick_audience(line["audiences"] if line else AUDIENCES, st["designs"], style or "plain")
+        audience = parent.get("audience") if parent else None if video else pick_audience(line["audiences"] if line else AUDIENCES, st["designs"], style or "plain")
         if line:
             year = datetime.fromtimestamp(self.clock()).year
             notes = line["note"].format(audience=audience, year=year) + "\n\n" + notes
@@ -1250,10 +1261,10 @@ class ShopService:
         today = now.date().isoformat()
         h, m = (int(x) for x in str(cfg["time"]).split(":"))
         made_today = sum(1 for d in st["designs"] if datetime.fromtimestamp(d["made"]).date().isoformat() == today
-                         and not d.get("season"))
+                         and (d.get("spinoff_of") or not d.get("season")))
         season = season_for(now.date())
         holiday_today = sum(1 for d in st["designs"] if datetime.fromtimestamp(d["made"]).date().isoformat() == today
-                            and d.get("season") and not d.get("series"))
+                            and d.get("season") and not d.get("series") and not d.get("spinoff_of"))
         # the holiday line's design(s), from half an hour after the daily one
         holiday = bool(season) and holiday_today < cfg["holiday_per_day"] and \
             now.hour * 60 + now.minute >= h * 60 + m + 30 + holiday_today * 240
@@ -1299,8 +1310,12 @@ class ShopService:
                     else:
                         shop.make_design(season=season, style=style)
                 else:                                      # the daily design: every other one riffs on a winner, if there is one
-                    win = shop_agents.next_spinoff(shop_agents.load(shop.nb_path), bool(st.get("last_was_spinoff")),
+                    win = shop_agents.next_spinoff(shop_agents.load(shop.nb_path),
+                                                   bool(st.get("last_was_spinoff")) and not cfg.get("winner_focus"),
                                                    int(st.get("spinoffs_made") or 0))
+                    parent = next((d for d in st["designs"] if d.get("id") == win), None)
+                    if parent and parent.get("season") and not season_running(parent["season"], now.date()):
+                        win = None                         # no Christmas spin-offs once Christmas orders have closed
                     shop.make_design(spinoff=win)
                     st = load_state(shop.state_path)
                     st["last_was_spinoff"] = bool(win)
