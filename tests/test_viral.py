@@ -99,6 +99,39 @@ class TimingTests(unittest.TestCase):
         self.assertEqual(wv.due_slots("bad, 16:15", [], now), ["16:15"])
 
 
+class CleanupTests(unittest.TestCase):
+    """A video's files go once it is up everywhere, and stay if any post failed."""
+
+    def run_deliver(self, tiktok, instagram):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out, work, texts = root / "out", root / "work", root / "texts"
+            job = work / "job1"
+            job.mkdir(parents=True), out.mkdir(), texts.mkdir()
+            (job / "script.json").write_text("{}")
+            video, copy = out / "v.mp4", texts / "v.mp4"
+            video.write_bytes(b"x"), copy.write_bytes(b"x")
+            rec = {"title": "t", "caption": "c", "path": str(video), "job": str(job)}
+            svc = wv.ViralService.__new__(wv.ViralService)
+            svc.log = lambda m: None
+            with patch.object(wv, "OUT", out), patch.object(wv, "WORK", work), \
+                    patch("core.phone_alerts.FILE_DIR", texts), \
+                    patch.object(svc, "_deliver_tiktok", return_value=tiktok, create=True), \
+                    patch.object(svc, "post_instagram", return_value=instagram, create=True):
+                svc.deliver(rec, {"post": True, "instagram": instagram is not None})
+            return video.exists(), copy.exists(), job.exists()
+
+    def test_posted_everywhere_deletes_all_files(self):
+        self.assertEqual(self.run_deliver("posted", "posted"), (False, False, False))
+
+    def test_instagram_off_counts_as_done(self):
+        self.assertEqual(self.run_deliver("posted", None), (False, False, False))
+
+    def test_failed_post_keeps_files(self):
+        self.assertEqual(self.run_deliver("posted", "failed"), (True, True, True))
+        self.assertEqual(self.run_deliver("texted", "posted"), (True, True, True))
+
+
 class StatsTests(unittest.TestCase):
     def test_counts_parse(self):
         self.assertEqual([wv.parse_count(x) for x in ("987", "1.2K", "3.4M", "12,345", "")], [987, 1200, 3400000, 12345, 0])

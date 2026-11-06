@@ -2082,8 +2082,9 @@ class ViralService:
 
     def deliver(self, rec: dict, cfg: dict) -> str:
         out = self._deliver_tiktok(rec, cfg)
-        if cfg["post"] and cfg.get("instagram"):
-            self.post_instagram(rec, cfg)
+        ig = self.post_instagram(rec, cfg) if cfg["post"] and cfg.get("instagram") else "off"
+        if out == "posted" and ig in ("posted", "off"):     # up everywhere: no need to keep it (a failed post keeps its file)
+            remove_files(rec, self.log)
         return out
 
     def post_instagram(self, rec: dict, cfg: dict) -> str:
@@ -2127,6 +2128,19 @@ class ViralService:
         except Exception as exc:
             self.log(f"viral: couldn't text the video: {exc}")
             return "made"
+
+
+def remove_files(rec: dict, log: Callable = print) -> None:
+    """Delete a posted video's mp4, its copy for texting and its work folder. The record stays, for titles and stats."""
+    from core import phone_alerts
+    video = Path(rec["path"])
+    for f in (video, phone_alerts.FILE_DIR / video.name):
+        if f.parent in (OUT, phone_alerts.FILE_DIR):
+            f.unlink(missing_ok=True)
+    job = Path(rec.get("job") or "")
+    if job.parent == WORK:
+        shutil.rmtree(job, ignore_errors=True)
+    log(f"viral: deleted the files of {video.name}")
 
 
 def _mark(path: str, **fields) -> None:
