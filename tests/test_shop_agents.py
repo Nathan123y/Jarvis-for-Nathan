@@ -81,6 +81,50 @@ class CycleTests(_Base):
         feed = sa.load(self.dir / "notebook.json")["feed"]
         self.assertIn("a spin-off of", feed[-1]["text"])
 
+    def test_a_winners_spin_off_keeps_its_look_products_and_season(self):
+        c = ThinkingClients(shops=[{"id": 9, "sales_channel": "etsy"}])
+        s = self.shop(c)
+        rec = s.make_design(season="christmas", style="sweater")
+        spin = s.make_design(spinoff=rec["id"])
+        self.assertEqual(spin["style"], "sweater")
+        self.assertEqual(spin["season"], "christmas")
+        self.assertEqual(spin["only"], ws.SWEATER_PRODUCTS)
+        self.assertTrue(spin["title"].startswith("Ugly Christmas Sweater"))
+        self.assertIn(rec["title"], c.notes)
+
+    def test_winner_focus_makes_every_daily_design_a_spin_off_without_using_a_holiday_slot(self):
+        c = ThinkingClients(shops=[{"id": 9, "sales_channel": "etsy"}])
+        s = self.shop(c)
+        svc = ws.ShopService(log=lambda m: None, notify=lambda k, t: self.sent.append((k, t)))
+        rec = s.make_design(season="christmas", style="sweater")
+        nb = sa.load(self.dir / "notebook.json")
+        nb["winners"] = [{"design": rec["id"], "slogan": "X", "sales": 1, "at": 1}]
+        sa.save(nb, self.dir / "notebook.json")
+        st = ws.load_state(self.dir / "s.json")
+        st["last_was_spinoff"] = True                                          # focus ignores the old take-turns rule
+        for d in st["designs"]:
+            d["made"] = 1_000_000_000                                          # the winner isn't one of today's designs
+        ws.save_state(st, self.dir / "s.json")
+        now = datetime(2026, 11, 20, 0, 5)                                     # Christmas only, no Thanksgiving turn
+        cfg = dict(ws.DEFAULTS, time="00:00", designs_per_day=1, holiday_per_day=0)
+        with patch.object(ws, "settings", lambda: cfg), patch.object(ws, "video_topics", lambda *a: []), \
+                patch("worker.storefront.publish", lambda *a, **k: ""):
+            s.clock = lambda: now.timestamp()
+            svc.run_once(s, now=now)
+        st = ws.load_state(self.dir / "s.json")
+        self.assertEqual(st["designs"][-1].get("spinoff_of"), rec["id"])
+        self.assertTrue(st["designs"][-1]["only"])
+        count = len(st["designs"])
+        with patch.object(ws, "settings", lambda: cfg), patch.object(ws, "video_topics", lambda *a: []), \
+                patch("worker.storefront.publish", lambda *a, **k: ""):
+            svc.run_once(s, now=now)                                           # today's daily design is done: no second one
+        self.assertEqual(len(ws.load_state(self.dir / "s.json")["designs"]), count)
+
+    def test_christmas_winners_stop_spinning_off_after_christmas_orders_close(self):
+        self.assertTrue(ws.season_running("christmas", datetime(2026, 12, 14)))
+        self.assertFalse(ws.season_running("christmas", datetime(2026, 12, 15)))
+        self.assertFalse(ws.season_running(None, datetime(2026, 12, 1)))
+
     def test_the_evening_review_runs_once_after_nine(self):
         c = ThinkingClients(answers=[{"lessons": ["Short slogans read better"], "double_down": [], "avoid": []}])
         s = self.shop(c)
