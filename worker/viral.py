@@ -1935,7 +1935,10 @@ def viral_news(stats: list[dict], seen: dict, now: float) -> tuple[list[str], di
     msgs = []
     for x in stats:
         r = seen.setdefault(x["id"], {"first": now, "told": [], "desc": x.get("desc", "")[:120], "url": x.get("url", "")})
-        r["views"] = parse_count(x["views"]) if isinstance(x["views"], str) else int(x["views"] or 0)
+        # A profile page links each video several times and only some links carry the count: a blank one mustn't wipe it
+        if str(x["views"] or "").strip():
+            r["views"] = parse_count(x["views"]) if isinstance(x["views"], str) else int(x["views"])
+        r.setdefault("views", 0)
     views = sorted(r["views"] for r in seen.values())
     usual = views[len(views) // 2] if views else 0
     for vid, r in seen.items():
@@ -2032,6 +2035,7 @@ class ViralService:
         try:
             now = now or datetime.now()
             today = now.date().isoformat()
+            self._recover_interrupted()
             st = load_state()
             done = st["slots"].get(today, [])
             due = due_slots(cfg["times"], done, now)
@@ -2039,11 +2043,27 @@ class ViralService:
                 return ""
             st["slots"] = {today: done + due}                  # several due at once (Mac was asleep) = one video
             save_state(st)
-            return self.produce(cfg)
+            return self.produce(cfg, slots=due)
         finally:
             self._busy.release()
 
-    def produce(self, cfg: dict, topic: str = "") -> str:
+    def _recover_interrupted(self) -> None:
+        """A video the last run was still making when the worker restarted: its idea goes back to the front of the
+        queue and its slot reopens, so a restart never costs a video or one of the user's ideas. Only called holding
+        _busy, so a "making" mark seen here can't belong to a video still being made."""
+        st = load_state()
+        making = st.pop("making", None)
+        if not making:
+            return
+        topic = making.get("topic") or ""
+        if topic:
+            st.setdefault("sequels" if topic.startswith("PART 2") else "topic_queue", []).insert(0, topic)
+        for day, done in st["slots"].items():
+            st["slots"][day] = [d for d in done if d not in (making.get("slots") or [])]
+        save_state(st)
+        self.log(f"viral: a restart interrupted a video; retrying it ({topic[:60] or 'my own idea'})")
+
+    def produce(self, cfg: dict, topic: str = "", slots: Optional[list] = None) -> str:
         st = load_state()
         queued = [v for v in st.get("queue") or [] if Path(v["path"]).exists()]
         if queued:                                         # a video made ahead (and sent to the user to look over)
@@ -2062,11 +2082,18 @@ class ViralService:
                 self.notify("viral", "🎬 " + (f"Only {left} of your video ideas left in the queue (about a day). "
                                               if left else "That was the last of your video ideas; I'm on my own ideas now. ")
                             + "Send me more like the Suárez / Rodman / Joey Chestnut ones whenever you have them.")
+        st = load_state()
+        st["making"] = {"topic": topic, "slots": slots or []}
+        save_state(st)
         try:
             rec = make(topic, log=self.log)
+            st = load_state()
+            st.pop("making", None)
+            save_state(st)
         except ClaudeBusy as exc:
             self.log(f"viral: {exc}; trying this slot again in 20 minutes")
             st = load_state()
+            st.pop("making", None)
             st["claude_busy_until"] = time.time() + 20 * 60
             for day, done in st["slots"].items():           # un-mark the slot so a later pass retries it
                 st["slots"][day] = done[:-1] if done else done
@@ -2076,6 +2103,11 @@ class ViralService:
             return "waiting"
         except Exception as exc:
             self.log(f"viral: couldn't make a video: {exc}")
+            st = load_state()
+            st.pop("making", None)
+            if topic:                                       # no idea gets dropped: it waits at the back of the line
+                st.setdefault("sequels" if topic.startswith("PART 2") else "topic_queue", []).append(topic)
+            save_state(st)
             self.notify("viral", f"🎬 Couldn't make today's TikTok video: {str(exc)[:160]}")
             return "failed"
         return self.deliver(rec, cfg)
