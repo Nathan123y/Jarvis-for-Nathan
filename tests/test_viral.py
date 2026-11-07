@@ -249,5 +249,35 @@ class AudioTests(unittest.TestCase):
             self.assertTrue(np.isfinite(wv.sfx(k, 1)).all(), k)
 
 
+class InterruptedVideoTests(unittest.TestCase):
+    def _service(self, state):
+        svc = wv.ViralService(lambda *_: None, notify=lambda *_: None)
+        self.addCleanup(patch.stopall)
+        patch.object(wv, "load_state", lambda *a: state).start()
+        patch.object(wv, "save_state", lambda st, *a: None).start()
+        return svc
+
+    def test_a_restart_mid_video_gives_back_the_idea_and_the_slot(self):
+        st = {"slots": {"2026-11-06": ["12:00", "18:00"]}, "topic_queue": ["next"],
+              "making": {"topic": "Could Darwin stop it?", "slots": ["12:00"]}}
+        self._service(st)._recover_interrupted()
+        self.assertEqual(st["topic_queue"], ["Could Darwin stop it?", "next"])
+        self.assertEqual(st["slots"]["2026-11-06"], ["18:00"])
+        self.assertNotIn("making", st)
+
+    def test_a_failed_video_keeps_its_idea_at_the_back(self):
+        st = {"slots": {}, "topic_queue": ["idea", "other"], "queue": []}
+        svc = self._service(st)
+        with patch.object(wv, "make", side_effect=RuntimeError("render broke")):
+            self.assertEqual(svc.produce({"post": False}), "failed")
+        self.assertEqual(st["topic_queue"], ["other", "idea"])
+        self.assertNotIn("making", st)
+
+    def test_a_blank_link_does_not_wipe_a_view_count(self):
+        stats = [{"id": "1", "views": "433", "desc": "", "url": ""}, {"id": "1", "views": "", "desc": "", "url": ""}]
+        _, seen = wv.viral_news(stats, {}, 1.0)
+        self.assertEqual(seen["1"]["views"], 433)
+
+
 if __name__ == "__main__":
     unittest.main()
