@@ -106,3 +106,6 @@ memory/instagram_profile/
 # the sound library (public-domain clips from Wikimedia Commons; rebuilt by worker/viral.py)
 memory/viral_sfx/
 memory/kokoro/
+
+# Present while the user has paused background Claude use (core/gemini.py)
+config/claude_paused

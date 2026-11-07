@@ -425,11 +425,14 @@ def _config_value(config, name: str):
 def _claude_off() -> bool:
     """Off under a test runner (a test must never spend the membership's usage
     limit) and when JARVIS_NO_CLAUDE is set. `python -m unittest` sets argv[0]
-    to "python -m unittest"."""
+    to "python -m unittest". Also off while the file config/claude_paused exists,
+    so the user can free up their membership's usage without a restart: delete
+    the file and Claude is back on the next call."""
     import os
 
     argv0 = sys.argv[0] if sys.argv else ""
-    return bool(os.environ.get("JARVIS_NO_CLAUDE")) or "unittest" in argv0 or "pytest" in sys.modules
+    return (bool(os.environ.get("JARVIS_NO_CLAUDE")) or "unittest" in argv0 or "pytest" in sys.modules
+            or (_BASE / "config" / "claude_paused").exists())
 
 
 def _claude_call(contents, config, timeout_ms: int):
