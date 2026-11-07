@@ -352,6 +352,10 @@ def claude_run(prompt: str, images: Optional[list] = None, timeout_s: float = 90
     return result
 
 
+# Opus at high effort writing a 60-75 s narrated scene can pass 15 minutes (it did twice on 2026-11-06)
+SCENE_TIMEOUT_S = 1800
+
+
 class ClaudeBusy(RuntimeError):
     """Claude is at its usage limit; the video waits for it instead of being made worse."""
 
@@ -363,7 +367,7 @@ def ask_claude(prompt: str, timeout_s: float = 900, images: Optional[list] = Non
     if out:
         return out
     if not settings().get("gemini_fallback"):
-        raise ClaudeBusy("Claude is at its usage limit right now")
+        raise ClaudeBusy("Claude didn't finish (usage limit or it timed out)")
     from core import gemini
     contents = prompt
     if images:
@@ -1461,7 +1465,7 @@ def make(topic: str = "", log: Callable = print, ask: Callable = ask_claude, his
     else:
         log(f"viral: {duration:.0f}s long; building the 3D scene")
         code = _code_from(ask(SCENE_PROMPT.format(api=api, duration=duration, title=script["title"],
-                                                  set=script["set"], beats=btxt), timeout_s=900))
+                                                  set=script["set"], beats=btxt), timeout_s=SCENE_TIMEOUT_S))
         sample = review_times(times, duration, n=12 if narrated else 8)
         frames = None
         for attempt in range(3):
@@ -1474,12 +1478,12 @@ def make(topic: str = "", log: Callable = print, ask: Callable = ask_claude, his
                 if attempt == 2:
                     raise RuntimeError(f"the 3D scene kept failing: {exc}")
                 code = _code_from(ask(FIX_PROMPT.format(api=api, error=str(exc)[:900], duration=duration, beats=btxt,
-                                                        code=code), timeout_s=900))
+                                                        code=code), timeout_s=SCENE_TIMEOUT_S))
         # one look at the frames, and a revision if something's off
         sheet = contact_sheet(frames, job / "review.jpg")
         try:
             reply = ask(REVIEW_PROMPT.format(api=api, n=len(sample), times=", ".join(f"{x:.1f}s" for x in sample), beats=btxt, code=code),
-                        timeout_s=900, images=[sheet])
+                        timeout_s=SCENE_TIMEOUT_S, images=[sheet])
             if reply.strip().upper() != "OK" and "```" in reply:
                 revised = _code_from(reply)
                 (job / "scene_v1.js").write_text(code)
@@ -2038,7 +2042,7 @@ class ViralService:
             self._recover_interrupted()
             st = load_state()
             done = st["slots"].get(today, [])
-            due = due_slots(cfg["times"], done, now)
+            due = due_slots(cfg["times"], done, now, late_ok_h=6)   # room for retries: a late video beats none
             if not due:
                 return ""
             st["slots"] = {today: done + due}                  # several due at once (Mac was asleep) = one video
