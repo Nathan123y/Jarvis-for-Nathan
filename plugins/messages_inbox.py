@@ -457,8 +457,8 @@ def _digest(held: list[dict], why: str) -> str:
              [f"{n} message{'s' if n > 1 else ''} in {_quote(who)}" for who, n in groups.most_common(4)] +
              [f"{n} email{'s' if n > 1 else ''} from {_quote(who)}" for who, n in mails.most_common(3)])
     return (f"[INCOMING_MESSAGE] While the user was in {why}, these came in: " + "; ".join(parts) +
-            ". Tell them in one or two sentences and ask if they want any read out or a group "
-            "summarized (messages_inbox conversation / summary). Do not call any tools now.")
+            ". Tell them in one or two sentences, as a statement; they can ask you to read any out or "
+            "summarize a group (messages_inbox conversation / summary). Do not call any tools now.")
 
 
 def _dnd() -> str:

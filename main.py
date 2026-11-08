@@ -94,6 +94,7 @@ from core.echo                 import EchoGuard
 from core.audio_streams        import KeptStream
 
 from core                      import unprompted
+from core                      import brain as jarvis_brain
 from core.playback_timing      import playback_idle, parse_output_latency
 from core.perf_trace          import (
     HeartbeatLag, log_audio_in_status, log_audio_write, log_lag,
@@ -671,6 +672,12 @@ class JarvisLive:
         self._proactive        = ProactiveEngine()
         self._last_user_speech = time.monotonic()  # updated on every user utterance
         self._session_log: list[str] = []          # conversation turns for end-of-session summary
+        # Jarvis's own brain (core/brain.py): thinks in the background and
+        # brings up what it notices. Started once in run(), outlives reconnects.
+        self._brain = jarvis_brain.Brain()
+        self._brain_stop = threading.Event()
+        self._brain_started = False
+        self._last_reply_done = 0.0                # monotonic: when Jarvis last finished a reply
 
         self._enhanced_live = True  # proactive audio; auto-disabled if the server rejects it
         self._tuned_live    = True  # turn-taking / media / thinking knobs; same fallback
@@ -1964,6 +1971,12 @@ class JarvisLive:
                                 self._last_out_logged = full_out
                                 self.ui.write_log(f"{self._asst_name}: {full_out}")
                                 self._session_log.append(f"{self._asst_name}: {full_out}")
+                                self._last_reply_done = time.monotonic()
+                                self._brain.heard_reply(full_out)
+                                if jarvis_brain.ends_with_check_in(full_out):
+                                    asyncio.create_task(self._private_note(jarvis_brain.STYLE_NUDGE))
+                            if full_in:
+                                self._brain.heard(self._session_log[-14:])
                                 if self._dashboard:
                                     asyncio.create_task(self._dashboard.broadcast({
                                         "type": "log", "speaker": "jarvis",
@@ -2515,6 +2528,12 @@ class JarvisLive:
 
             self._proactive.mark_triggered()
 
+            # Something Jarvis noticed on its own beats a generic check-in.
+            thought = next(iter(self._brain.pending(min_urgency=2)), None)
+            if thought:
+                await self._voice_thought(thought)
+                continue
+
             try:
                 memory       = await asyncio.to_thread(load_memory)
                 monitors     = await asyncio.to_thread(list_monitors)
@@ -2531,6 +2550,61 @@ class JarvisLive:
                 print("[JARVIS] Proactive check-in.")
             except Exception as e:
                 print(f"[Proactive] ⚠️ {e}")
+
+    # ── The brain (core/brain.py) ───────────────────────────────────────────────
+
+    async def _private_note(self, text: str) -> None:
+        """Add context to the live session without asking for a reply."""
+        try:
+            if self.session:
+                await self.session.send_client_content(
+                    turns={"role": "user", "parts": [{"text": text}]},
+                    turn_complete=False,
+                )
+        except Exception as e:
+            print(f"[Brain] could not add a note: {e!r}")
+
+    async def _voice_thought(self, thought: dict) -> None:
+        """Say one thought out loud, unprompted."""
+        try:
+            self._brain.mark(thought["id"], "shared")
+            await self.session.send_client_content(
+                turns={"role": "user", "parts": [{"text": jarvis_brain.speak_text(thought)}]},
+                turn_complete=True,
+            )
+            print(f"[Brain] said: {thought['topic']}")
+        except Exception as e:
+            print(f"[Brain] could not speak: {e!r}")
+
+    async def _run_brain(self) -> None:
+        """Deliver what the brain thinks.
+
+        In conversation: shortly after Jarvis finishes a reply, the freshest
+        thoughts go into the session as private context, so its next answer can
+        carry a 'by the way'. On its own: a real heads-up (urgency 4+) is spoken
+        once the room has been quiet for a minute. Lesser thoughts wait for the
+        long-silence check-in in _run_proactive_mode.
+        """
+        while True:
+            await asyncio.sleep(5)
+            if not self.session:
+                continue
+            now = time.monotonic()
+            with self._speaking_lock:
+                speaking = self._is_speaking
+            quiet_for = now - max(self._last_user_speech, self._last_reply_done)
+
+            fresh = self._brain.unprimed()
+            if fresh and not speaking and self._last_reply_done and quiet_for >= 3:
+                for t in fresh[:2]:
+                    self._brain.mark(t["id"], "primed")
+                await self._private_note(jarvis_brain.priming_text(fresh[:2], self._brain.thinking))
+                continue
+
+            urgent = next(iter(self._brain.pending(min_urgency=4)), None)
+            if urgent and self._may_speak_unprompted() and quiet_for >= 60:
+                await self._voice_thought(urgent)
+                await asyncio.sleep(120)       # one unprompted remark at a time
 
     # ── Phone audio relay ────────────────────────────────────────────────────────
 
@@ -2604,6 +2678,17 @@ class JarvisLive:
             notify = self.plugin_say,
         )
         set_trim_notifier(self.ui.write_log)
+
+        if not self._brain_started:
+            self._brain_started = True
+            try:
+                _c = json.loads(open(API_CONFIG_PATH, encoding="utf-8").read())
+                self._brain.name = (_c.get("assistant_name") or "Jarvis").strip()
+                self._brain.user = (_c.get("user_name") or "Nathan").strip()
+            except Exception:
+                pass
+            threading.Thread(target=self._brain.run_forever, args=(self._brain_stop,),
+                             name="jarvis-brain", daemon=True).start()
 
         # Tell the device picker the exact rates the streams open at, from the
         # constants that actually open them — so it can never list a device that
@@ -2700,6 +2785,7 @@ class JarvisLive:
                     tg.create_task(self._run_system_monitor())
                     tg.create_task(self._run_background_monitor())
                     tg.create_task(self._run_proactive_mode())
+                    tg.create_task(self._run_brain())
                     tg.create_task(self._run_sleep_watch())
                     tg.create_task(self._watch_mute())
                     if self._dashboard:

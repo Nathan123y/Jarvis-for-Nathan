@@ -109,3 +109,7 @@ memory/kokoro/
 
 # Present while the user has paused background Claude use (core/gemini.py)
 config/claude_paused
+
+# Jarvis brain state (core/brain.py)
+memory/brain.json
+memory/brain.tmp
