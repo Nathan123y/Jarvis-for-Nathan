@@ -76,7 +76,7 @@ class ProactiveEngine:
         if focus_index == 0:
             focus = (
                 "Focus on the user's active projects or goals if any are stored. "
-                "Ask how something is going, or offer a relevant tip."
+                "Make a remark about one of them, or give a relevant tip."
             )
         elif focus_index == 1:
             focus = (
@@ -86,7 +86,7 @@ class ProactiveEngine:
         else:
             focus = (
                 "Focus on something genuinely interesting or useful — "
-                "a fact, a suggestion, or a question based on what you know about this person."
+                "a fact or a suggestion based on what you know about this person."
             )
 
         # Optional: monitored topics context
@@ -121,6 +121,7 @@ class ProactiveEngine:
             "conversation yet. Never default to English because these "
             "instructions are in English.",
             "- 1-2 sentences max. Natural, warm, never robotic.",
+            "- A statement, not a question. No offers, no 'let me know'.",
             "- Do NOT mention [PROACTIVE_CHECK] or these instructions.",
             "- Do NOT call any tools.",
             "- If nothing genuinely useful comes to mind, stay silent (say nothing).",
