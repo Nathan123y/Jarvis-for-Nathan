@@ -50,7 +50,7 @@ NS = "viral_videos"
 FPS = 30
 SR = 48000
 DEFAULTS = {"enabled": True,
-            "times": "11:00,16:00,20:30",           # one video at each (TikTok's busy hours)
+            "times": "09:00,13:00,18:00",           # one video at each (TikTok's busy hours)
             "post": True,                           # post to TikTok; False = text the video to the user instead
             "style": "narrated",                    # narrated (voiceover + word captions + broadcast cards, the
                                                     # 2026-11-05 Man United vs blind footballers reference) | captions
@@ -64,7 +64,8 @@ DEFAULTS = {"enabled": True,
             "tts_model": "gemini-3.8-flash-tts",
             "ai_label": True,
             "claude_model": "opus",                 # the strongest Claude on the membership writes the script + 3D scene
-            "claude_effort": "high",                # was medium; more thinking = better scenes (uses more of the plan's limits)
+            "claude_effort": "medium",              # high (11-05) made scenes pass 30 min and hit the weekly
+                                                    # Claude limit on 11-07; medium finished in ~15 min before
             "instagram": True,
             "ig_handle": "whatifishowedu",          # the ONLY Instagram account Jarvis may post to (never the user's main)                      # also post each video as a Reel on the videos' own Instagram page
                                                     # (a new page, NOT the user's personal one; user's choice 2026-11-05)
@@ -2003,6 +2004,7 @@ class ViralService:
                 self.log(f"viral: pass failed: {exc!r}")
 
     STATS_EVERY = 2 * 3600
+    MAX_SLOT_TRIES = 2          # 11-07 one slot retried ~12 times over 6 hours and ran into the weekly Claude limit
 
     def check_stats(self, now: Optional[float] = None) -> list[str]:
         now = now or time.time()
@@ -2093,17 +2095,26 @@ class ViralService:
             rec = make(topic, log=self.log)
             st = load_state()
             st.pop("making", None)
+            st["slot_tries"] = 0
             save_state(st)
         except ClaudeBusy as exc:
-            self.log(f"viral: {exc}; trying this slot again in 20 minutes")
+            from core import gemini
             st = load_state()
             st.pop("making", None)
-            st["claude_busy_until"] = time.time() + 20 * 60
+            if topic:                                       # the idea waits at the front for the next try
+                st.setdefault("sequels" if topic.startswith("PART 2") else "topic_queue", []).insert(0, topic)
+            st["slot_tries"] = st.get("slot_tries", 0) + 1
+            if st["slot_tries"] >= self.MAX_SLOT_TRIES:     # every retry rewrites the script and scene, and that
+                st["slot_tries"] = 0                        # spends the user's Claude limits: give the slot up
+                save_state(st)
+                self.log(f"viral: {exc}; gave up on this slot after {self.MAX_SLOT_TRIES} tries")
+                return "gave up"
+            wait = 60 if gemini._cooling(gemini.CLAUDE) else 20     # at the usage limit: back off longer
+            st["claude_busy_until"] = time.time() + wait * 60
             for day, done in st["slots"].items():           # un-mark the slot so a later pass retries it
                 st["slots"][day] = done[:-1] if done else done
-            if topic:                                       # put the topic back for the retry
-                st.setdefault("sequels" if topic.startswith("PART 2") else "topic_queue", []).insert(0, topic)
             save_state(st)
+            self.log(f"viral: {exc}; trying this slot again in {wait} minutes")
             return "waiting"
         except Exception as exc:
             self.log(f"viral: couldn't make a video: {exc}")
