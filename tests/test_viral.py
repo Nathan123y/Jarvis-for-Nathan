@@ -273,6 +273,17 @@ class InterruptedVideoTests(unittest.TestCase):
         self.assertEqual(st["topic_queue"], ["other", "idea"])
         self.assertNotIn("making", st)
 
+    def test_a_slot_is_given_up_after_two_busy_tries(self):
+        st = {"slots": {"2026-11-08": ["13:00"]}, "topic_queue": ["idea"], "queue": []}
+        svc = self._service(st)
+        with patch.object(wv, "make", side_effect=wv.ClaudeBusy("timed out")):
+            self.assertEqual(svc.produce({"post": False}, slots=["13:00"]), "waiting")
+            self.assertEqual(st["slots"]["2026-11-08"], [])
+            st["slots"]["2026-11-08"] = ["13:00"]
+            self.assertEqual(svc.produce({"post": False}, slots=["13:00"]), "gave up")
+        self.assertEqual(st["slots"]["2026-11-08"], ["13:00"])
+        self.assertEqual(st["topic_queue"], ["idea"])
+
     def test_a_blank_link_does_not_wipe_a_view_count(self):
         stats = [{"id": "1", "views": "433", "desc": "", "url": ""}, {"id": "1", "views": "", "desc": "", "url": ""}]
         _, seen = wv.viral_news(stats, {}, 1.0)
