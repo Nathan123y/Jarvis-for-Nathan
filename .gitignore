@@ -113,3 +113,8 @@ config/claude_paused
 # Jarvis brain state (core/brain.py)
 memory/brain.json
 memory/brain.tmp
+# Canvas: Chrome profile logged into the school account, and its last read
+memory/canvas_profile/
+memory/canvas_profile.lock
+memory/canvas_cache.json
+memory/canvas_cache.tmp

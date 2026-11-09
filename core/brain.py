@@ -170,6 +170,26 @@ def _missions(today: str) -> list[str]:
     return out[:10]
 
 
+def _canvas(now: float) -> list[str]:
+    """Canvas as of its last read (cached by the plugin; no network here)."""
+    try:
+        from plugins.canvas_school import DONE, last_known_status
+    except Exception:
+        return []
+    items, at = last_known_status()
+    if not items or now - at > 2 * 86400:
+        return []
+    age = (now - at) / 3600
+    out = [f"- (read {age:.0f}h ago)" if age >= 1 else "- (read within the hour)"]
+    todo = [i for i in items if i.get("status") not in DONE][:10]
+    done = [i for i in items if i.get("status") in DONE][-4:]
+    for i in todo:
+        out.append(f"- {i.get('status')}: {_short(i.get('name'), 70)} ({_short(i.get('course'), 30)}), due {i.get('due') or 'n/a'}")
+    for i in done:
+        out.append(f"- {i.get('status')}: {_short(i.get('name'), 70)}")
+    return out
+
+
 def _viral(now: float) -> list[str]:
     v = _read_json(BASE / "memory" / "viral.json", {}) or {}
     out = []
@@ -310,6 +330,7 @@ def gather(recent_turns: list[str], now: Optional[float] = None) -> str:
         sections.append("CONVERSATION JUST NOW (newest last):\n" +
                         "\n".join(_short(t, 300) for t in recent_turns[-14:]))
     add("OPEN MISSIONS:", lambda: _missions(today))
+    add("CANVAS SCHOOLWORK:", lambda: _canvas(now))
     add("NEEDS ATTENTION (background jobs):", lambda: _attention(now))
     add("VIRAL VIDEOS (TikTok + Instagram, goal 3 a day):", lambda: _viral(now))
     add("PRINT-ON-DEMAND SHOP:", lambda: _shop(now))

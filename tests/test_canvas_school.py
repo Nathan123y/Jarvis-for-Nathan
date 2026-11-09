@@ -115,5 +115,78 @@ class CanvasTests(unittest.TestCase):
         self.assertFalse(get.call_args.kwargs["allow_redirects"])
 
 
+class SubmissionStatusTests(unittest.TestCase):
+    TODAY = date.today()
+
+    def item(self, pid, name, days, subs=None, override=None):
+        due = (self.TODAY + timedelta(days=days)).isoformat() + "T12:00:00"
+        raw = {"plannable_id": pid, "plannable_type": "assignment", "course_id": 1,
+               "context_name": "EE98", "plannable": {"name": name, "due_at": due}}
+        if subs is not None:
+            raw["submissions"] = subs
+        if override:
+            raw["planner_override"] = override
+        return raw
+
+    def statuses(self, planner, missing=()):
+        pages = {"/api/v1/planner/items": list(planner),
+                 "/api/v1/users/self/missing_submissions": list(missing)}
+        items = canvas._status_from(lambda path, params: pages[path],
+                                    self.TODAY - timedelta(days=14), self.TODAY + timedelta(days=14))
+        return {i["name"]: i["status"] for i in items}
+
+    def test_reads_canvas_submission_flags(self):
+        got = self.statuses([
+            self.item(1, "HW3", -2, {"submitted": True, "late": False}),
+            self.item(2, "Lab 9", -1, {"submitted": True, "late": True}),
+            self.item(3, "Quiz", -3, {"submitted": True, "graded": True}),
+            self.item(4, "HW4", 3, {"submitted": False}),
+            self.item(5, "Lab 8", -4, {"missing": True}),
+            self.item(6, "Reading", -1, False),
+            self.item(7, "Excused one", -1, {"excused": True}),
+            self.item(8, "Self-marked", 2, False, {"marked_complete": True}),
+        ])
+        self.assertEqual(got, {"HW3": "submitted", "Lab 9": "submitted late", "Quiz": "submitted, graded",
+                               "HW4": "not submitted yet", "Lab 8": "missing",
+                               "Reading": "not submitted, past due", "Excused one": "excused",
+                               "Self-marked": "marked done"})
+
+    def test_missing_list_overrides_and_adds(self):
+        got = self.statuses([self.item(1, "HW3", -2, False)],
+                            [{"id": 1, "course_id": 1, "name": "HW3"},
+                             {"id": 9, "course_id": 1, "name": "Old essay", "due_at": "2026-09-01T00:00:00Z"}])
+        self.assertEqual(got, {"HW3": "missing", "Old essay": "missing"})
+
+    def test_fetch_assignments_leaves_out_handed_in_work(self):
+        items = [{"name": "HW3", "course": "EE", "due": self.TODAY.isoformat(), "status": "submitted", "overdue": False},
+                 {"name": "HW4", "course": "EE", "due": self.TODAY.isoformat(), "status": "not submitted yet", "overdue": False},
+                 {"name": "Old", "course": "EE", "due": "2026-01-01", "status": "missing", "overdue": True}]
+        with patch.object(canvas, "fetch_status", return_value=(items, None, "browser")):
+            todo, notice = canvas.fetch_assignments()
+        self.assertIsNone(notice)
+        self.assertEqual([i["name"] for i in todo], ["HW4", "Old"])
+
+    def test_run_lists_status_for_the_voice(self):
+        items = [{"name": "HW3", "course": "EE", "due": "2026-11-06", "status": "submitted", "overdue": False},
+                 {"name": "HW4", "course": "EE", "due": "2026-11-12", "status": "not submitted yet", "overdue": False}]
+        with patch.object(canvas, "fetch_status", return_value=(items, None, "browser")), \
+             patch.object(canvas, "get_plugin_config", return_value={}):
+            out = canvas.run({"action": "assignments"})
+        self.assertIn("1 to do, 1 handed in", out)
+        self.assertIn("submitted · 2026-11-06 · HW3", out)
+
+    def test_session_json_prefix_is_stripped(self):
+        class R:
+            def text(self):
+                return 'while(1);[{"id": 1}]'
+        self.assertEqual(canvas._json(R()), [{"id": 1}])
+
+    def test_browser_base_drops_a_path(self):
+        self.assertEqual(canvas._browser_base("https://sjsu.instructure.com/courses"),
+                         "https://sjsu.instructure.com")
+        with self.assertRaises(ValueError):
+            canvas._browser_base("http://127.0.0.1/x")
+
+
 if __name__ == "__main__":
     unittest.main()
