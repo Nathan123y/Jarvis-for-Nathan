@@ -367,6 +367,23 @@ class ListingTests(_Base):
         self.assertEqual((len(posts(9)), len(posts(5))), (2, 4))
         self.assertEqual(len([t for k, t in self.sent if "free limit" in t]), 1)
 
+    def test_tiktok_shop_gets_newest_clean_designs_up_to_its_daily_cap(self):
+        c = FakeClients(shops=[{"id": 4, "sales_channel": "tiktok"}])
+        s = self.shop(c, tiktok_per_day=4)
+        three = ["tee", "mug", "sticker"]
+        s.make_design(only=three)                         # oldest: past today's cap
+        s.make_design(only=three)
+        s.make_design(only=three)
+        st = ws.load_state(self.dir / "s.json")
+        st["designs"][2]["slogan"] = "WHAT THE F*CK, SHIT HAPPENS"   # swearing: never on TikTok
+        ws.save_state(st, self.dir / "s.json")
+        done = s.list_pending()
+        self.assertEqual(len(done), 4)
+        self.assertTrue(all("on TikTok Shop" in d for d in done))
+        designs = ws.load_state(self.dir / "s.json")["designs"]
+        self.assertEqual([len(d.get("channels", {}).get("tiktok", {})) for d in designs], [1, 3, 0])
+        self.assertEqual(s.list_pending(), [])            # the cap holds for the rest of the day
+
     def test_a_failing_channel_does_not_hold_up_the_other(self):
         c = FakeClients(shops=[{"id": 9, "sales_channel": "etsy"}, {"id": 5, "sales_channel": "ebay"}])
         s = self.shop(c)
