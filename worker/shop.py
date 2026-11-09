@@ -246,7 +246,9 @@ CHRISTMAS_ROTATION = NICHE_ROTATION + GIFT_ROTATION
 # Sales channels connected in Printify that designs are listed on. eBay titles stop at 80 characters. The
 # Printify Pop-Up Store charges nothing to list, so it gets every design and comes first on the site's buy links.
 CHANNELS = {"popup": {"name": "our shop", "title_max": 140}, "etsy": {"name": "Etsy", "title_max": 140},
-            "ebay": {"name": "eBay", "title_max": 80}}
+            "ebay": {"name": "eBay", "title_max": 80}, "tiktok": {"name": "TikTok Shop", "title_max": 140}}
+# TikTok Shop rejects listings that swear (2026-11-08), so designs whose words do stay off it
+PROFANE = re.compile(r"(?<![a-z])(f+u+c+k|sh[i1]t|b[i1]tch|ass(hole)?|damn|dick|cunt|piss|wtf|stfu|bastard)", re.I)
 # Printify renders dozens of product photos but sends Etsy one or two, and only says what they are when the
 # product is created; these are saved then, for the listing (once Jarvis can reach Etsy) and the storefront.
 # Left out: the folded shirt (it hides the design) and the mug scenes (they look at the side of the mug,
@@ -271,6 +273,9 @@ DEFAULTS = {"enabled": True, "designs_per_day": 1, "time": "06:00",  # live befo
             "etsy_per_design": 3,
             # eBay lists 250 a month free, and its listings renew monthly against that, so live listings stay under it
             "ebay_max": 250,
+            # TikTok Shop (2026-11-08, user: "lets do tik tok shop"): free to list, ~6-8% a sale. New shops get
+            # reviewed, so at most this many new listings a day, newest designs first
+            "tiktok_per_day": 25,
             # every daily design riffs on a design that sold, not one in two (2026-11-06, user: focus on what sold)
             "winner_focus": True,
             "video_times": ""}                 # e.g. "11:00,15:00,19:00", one video at each; empty = no videos (off: user prefers the photos)
@@ -417,7 +422,7 @@ def settings() -> dict:
         out["holiday_per_day"] = max(0, min(3, int(out["holiday_per_day"])))
     except (TypeError, ValueError):
         out["holiday_per_day"] = DEFAULTS["holiday_per_day"]
-    for key in ("etsy_per_day", "etsy_per_design", "ebay_max"):
+    for key in ("etsy_per_day", "etsy_per_design", "ebay_max", "tiktok_per_day"):
         try:
             out[key] = max(0, int(out[key]))
         except (TypeError, ValueError):
@@ -772,6 +777,8 @@ class Shop:
             channel = str(shop.get("sales_channel") or "")
             if channel == "storefront" or "pop" in channel.lower():   # the Pop-Up Store ("storefront" in the API)
                 channel = "popup"
+            if "tiktok" in channel.lower():
+                channel = "tiktok"
             if channel in CHANNELS:
                 out.setdefault(channel, shop)
         return out
@@ -1124,10 +1131,29 @@ class Shop:
         cfg = self.cfg()
         done = []
         on_ebay = sum(len(d.get("channels", {}).get("ebay", {})) for d in st["designs"])
-        for rec in st["designs"]:
+        today = datetime.fromtimestamp(self.clock()).date()
+        tiktok_today = sum(1 for d in st["designs"] for p in d.get("channels", {}).get("tiktok", {}).values()
+                           if p.get("listed_at") and datetime.fromtimestamp(p["listed_at"]).date() == today)
+        # TikTok's daily budget goes to the newest clean designs first (the holiday ones that matter now)
+        budget, tiktok_ok = cfg.get("tiktok_per_day", 25) - tiktok_today, {}     # list position -> new listings it may make
+        for pos in reversed(range(len(st["designs"]))) if "tiktok" in stores else []:
+            rec = st["designs"][pos]
+            if budget <= 0:
+                break
+            if rec.get("failed") or PROFANE.search(f"{rec.get('slogan', '')} {rec.get('title', '')}"):
+                continue
+            listed = products_in(rec, "tiktok")
+            missing = sum(1 for k in rec.get("only") or cfg["products"]
+                          if k in PRODUCTS and not (listed.get(k) or {}).get("published"))
+            if missing:
+                tiktok_ok[pos] = min(missing, budget)
+                budget -= missing
+        for pos, rec in enumerate(st["designs"]):
             if rec.get("failed"):
                 continue
             for channel, shop in stores.items():
+                if channel == "tiktok" and pos not in tiktok_ok:
+                    continue
                 retry = rec.setdefault("retry_at_by", {})
                 if self.clock() < retry.get(channel, rec.get("retry_at", 0) if channel == "etsy" else 0):
                     continue
@@ -1151,6 +1177,10 @@ class Shop:
                                                     "now go only on the free Pop-Up Store (and Etsy's daily pick).")
                             continue
                         on_ebay += 1
+                    if channel == "tiktok" and not (prod or {}).get("published"):
+                        if tiktok_ok.get(pos, 0) <= 0:
+                            continue
+                        tiktok_ok[pos] -= 1
                     try:
                         if prod is None or prod.get("shop") != shop["id"]:
                             rec["upload_id"] = self.upload(rec)
