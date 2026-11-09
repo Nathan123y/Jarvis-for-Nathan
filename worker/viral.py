@@ -2152,7 +2152,14 @@ class ViralService:
     def _deliver_tiktok(self, rec: dict, cfg: dict) -> str:
         if cfg["post"]:
             try:
-                tiktok_post(Path(rec["path"]), rec["caption"], cfg["ai_label"], self.log)
+                try:
+                    tiktok_post(Path(rec["path"]), rec["caption"], cfg["ai_label"], self.log)
+                except NotLoggedIn:
+                    raise
+                except Exception as exc:                   # one more go: on 11-08 the Mac napped mid-upload and
+                    self.log(f"viral: TikTok upload failed ({str(exc)[:80]}); trying once more")   # Studio never loaded
+                    time.sleep(90)
+                    tiktok_post(Path(rec["path"]), rec["caption"], cfg["ai_label"], self.log)
                 _mark(rec["path"], posted=True)
                 try:                                       # the user asked for a text every time one goes up
                     from core import phone_alerts
