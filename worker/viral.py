@@ -224,6 +224,8 @@ This is the reference video that went viral; copy its writing EXACTLY in style, 
 Why it works, and what every script must do the same way:
 - HOOK (sentence 0 = the title): a yes/no question about an absurd but specific matchup, with a real team/person, a
   number and a stake ("Could X win their fifth straight game against ten blind footballers?"). No intro, no "hey".
+  At most 14 words: it is also printed big over the first shot, and TikTok's numbers show most viewers decide in the
+  first second, so the absurd part must be readable at a glance.
 - SETUP in 2-3 sentences: "In this hypothetical, ..." + the stakes + who the opponent is ("Their opponents?" as a
   one-line tease, then the reveal).
 - THE RULE: one real fact about the scenario that sets up the joke ("In blind football, players track a rattling
@@ -270,6 +272,10 @@ TikTok rules: no sexual content, no gore, nothing dangerous, no hate.
 Rules:
 - 26-36 sentences, 160-210 words in all (about 60-75 seconds spoken). Each beat is ONE sentence (or one short tease
   like "Their opponents?"). Write numbers the way they're spoken ("seventy-eight percent", "ninetieth minute").
+  (This length works: viewers who get past the first second watch about 28 s and 12-16% finish, better than our
+  shorter videos did. What loses them is the first second.)
+- "highlight": the 1-3 words of the title that make it absurd (e.g. ["pregnant women"], ["ten blind footballers"]);
+  they're shown in yellow in the big title.
 - "say": the sentence, exactly as the narrator reads it.
 - "card": null, or a broadcast graphic shown during that beat (about 5-8 beats get one; "hold": how many beats it
   stays up, 1-4):
@@ -296,11 +302,13 @@ Rules:
 - "music": "drive" (a low, tense rhythmic bed under the whole video, like the reference), "tension", or "none".
 - "set": stadium (football), court (basketball arena), ring (boxing), or street, city, backyard, ocean, plain,
   space, room for other ideas.
-- "caption": the TikTok caption, at most 150 characters, ending in a question that baits comments.
+- "caption": the TikTok caption, at most 150 characters, ending in a question that baits comments. Keep the caption
+  and hashtags free of war / weapon / attack words (war, missile, bomb, raid, invade, kill, dead...): an automated
+  filter can quietly stop showing a post for those, and our "World War 3" post got zero views. Say it sideways.
 - "hashtags": 4-6, lowercase, without the # (mix big ones like fyp with topic ones).
 
 Reply with only this JSON:
-{{"format": "versus", "topic": "...", "title": "<sentence 0, the hook question>", "set": "stadium", "music": "drive",
+{{"format": "versus", "topic": "...", "title": "<sentence 0, the hook question>", "highlight": ["..."], "set": "stadium", "music": "drive",
   "beats": [{{"say": "...", "card": null, "score": null, "ambience": "keep", "level": 1, "sfx": "none", "sfx2": [],
              "scene": "..."}}],
   "caption": "...", "hashtags": ["..."]}}"""
@@ -1150,8 +1158,12 @@ Places (each one sets the sky and lighting too; call exactly one, first):
   K.sets.room({env})      bedroom x,z in -4..4, y 0..3: bed at (-2.2,-2.6), desk at (2.6,-3.3), window on the back wall
   K.sets.street({people}) busy daytime sidewalk along -z: walk the camera down x=6 at eye height 1.75 (y=.16 pavement);
                           road x<3, shopfronts x=10; returns {people (walking crowd), birds (pigeons near 5.5,-7)}
-  K.sets.court({fans})    basketball arena: court x -7.5..7.5, z -14..14, hoops at z=±13 (rim y 3.05); returns {ball, fans}
-                          fans.cheer(true/false)
+  K.sets.court({home, alt, name, screen, fans}) -> an NBA arena: glossy court x -7.5..7.5, z -14..14 (keys and apron
+                          in the `home` colour, `name` printed on it), hoops at z=±13 (rim y 3.05), a lower + upper bowl of
+                          fans on all four sides (real people in the front rows: courtside at |x| 9.2, then rows up to
+                          |x| 13.5 and |z| 19; instanced fans behind), LED ribbon boards, big screens high on both end
+                          walls showing `screen` (screen.setText('...')), rafters at y 26-28 (keep cameras below y 20).
+                          Returns {ball, fans (the front-row people; fans.cheer(true/false)), screen, crowdAt(x, z)}
   K.sets.ring()           boxing ring in a dark arena: ring floor y=1.25, x,z -3.5..3.5; returns {fans, spot}
   env names: day golden dusk overcast night space underwater hell. K.envInfo = {sun, hemi, sky?, sunDir}
 Pieces (all return the object; pos is [x,y,z]):
@@ -1226,8 +1238,27 @@ Make it look like a polished viral simulation video:
 
 NARRATED_RULES = """
 THIS VIDEO IS THE NARRATED STYLE (like a viral "hypothetical" football short): a narrator reads one sentence per beat;
-the kit draws the small yellow word-by-word captions (at 62-68% of the height), the broadcast cards and the scorebug
+the kit draws the yellow word-by-word captions (at 62-68% of the height), the broadcast cards and the scorebug
 (top 10-30% of the frame) itself. Keep the important action in the middle band (25-60% of the height).
+- THE FIRST SECOND DECIDES EVERYTHING: TikTok's analytics show most viewers leave at 0:01. During beat 0 the kit
+  prints the title question big across the top (12-35% of the height), and the first frame is the video's cover.
+  So beat 0's shot is the most striking image of the premise, framed under the title: BOTH sides of the matchup
+  together in one medium shot (the star and the absurd opponent face to face, e.g. Josh Jacobs in his stance staring
+  down a line of pregnant women), large in the middle band (40-65% of the height), lit, already moving from frame 0
+  (a slow push-in, players shifting, the crowd buzzing). Never open on a wide empty pitch / ocean / landscape, tiny
+  far-away figures, a sign or scoreboard, the sky, or black.
+- People carry these videos (the realistic K.person humans are the best-looking thing in the kit): every shot shows
+  at least one person at a readable size (a player at least a quarter of the frame tall), apart from at most two
+  short (< 1.5 s) establishing wides. Medium shots: camera 4-7 m away with fov 35-45 (a TV lens, no distortion).
+- Never a frame that is mostly one flat colour (plain sky, white fog, black, an empty sea or floor), never a close-up
+  of feet or a body part filling the frame.
+- No explainer graphics in the world: no floating words or arrows ("HEAT", "ERROR", "PASS"), no glowing text on a dark
+  background, no maps or diagrams. The narrator and the kit's cards explain; the world just shows it happening.
+  In-world text is only real signage (banners, boards, a scoreboard, a street sign, a ship's name).
+- Things the kit can't build convincingly (ships, castles, monsters, vehicles, buildings up close) stay small, far,
+  in silhouette, or half-hidden by smoke / fire / crowds, or off screen while the camera shows people reacting.
+  Never build a prop from a few plain boxes and put it in a close-up.
+- K.rings at most twice in the whole video, small (size <= 2.5), short (<= 1.5 s), never over a face.
 - EDIT LIKE THE REFERENCE: K.shots with a hard cut at EVERY beat start, and a second cut inside any beat longer than
   2 s (every 1-2 s overall). Vary the shot every time: wide aerial of the whole pitch, TV broadcast angle from the
   side stand (pos about [-20..20, 8-14, 30-45] looking at the play), low close-up at boot height of the ball, medium
@@ -1277,6 +1308,7 @@ Fix it. Reply with only the full corrected module in one ```js block."""
 REVIEW_PROMPT = """{api}
 
 These are {n} sample frames (left to right, top to bottom) of a short 3D video, at these times: {times}.
+The first one is the very first frame: the video's cover, and the moment viewers decide to stay or swipe.
 The video, beat by beat:
 {beats}
 
@@ -1284,10 +1316,17 @@ Here is the module that drew them:
 ```js
 {code}
 ```
-Judge it like a viewer scrolling TikTok: is the action readable and on time? Look for empty or black frames,
-the subject off-screen, behind the camera or hidden under the captions, objects at absurd scale, the camera
-inside geometry, nothing happening, or anything that looks broken. If it's good, reply with exactly: OK
-Otherwise reply with the full improved module in one ```js block (keep what works)."""
+Judge it like a viewer scrolling TikTok. Check every frame against this list:
+- the first frame: the premise itself (both sides of the matchup together, large and lit in the middle of the
+  frame, below the title), not an empty wide shot, a sign, the sky or black
+- every frame: a person at a readable size; the subject in front of the camera and not hidden under the captions
+  (62-68% of the height) or the title / cards (top third); no frame mostly one flat colour, black or empty; no camera
+  inside geometry or a body part filling the frame; no tiny far-away subject; no floating explainer text, arrows or
+  diagrams; no prop made of a few plain boxes in close-up; no objects at absurd scale; no glowing lines or light
+  blobs the story doesn't need
+- the action readable and on time for its sentence
+If every frame passes, reply with exactly: OK
+Otherwise reply with the full improved module in one ```js block (keep what works, fix every point that failed)."""
 
 
 def review_times(times: list, duration: float, n: int = 8) -> list[float]:
@@ -1477,7 +1516,8 @@ def make(topic: str = "", log: Callable = print, ask: Callable = ask_claude, his
         log(f"viral: {duration:.0f}s long; building the 3D scene")
         code = _code_from(ask(SCENE_PROMPT.format(api=api, duration=duration, title=script["title"],
                                                   set=script["set"], beats=btxt), timeout_s=SCENE_TIMEOUT_S))
-        sample = review_times(times, duration, n=12 if narrated else 8)
+        # the very first frame (the cover, and where most viewers decided to swipe) plus moments across the video
+        sample = sorted({0.0} | set(review_times(times, duration, n=11 if narrated else 7)))
         frames = None
         for attempt in range(3):
             (job / "scene.js").write_text(code)
@@ -1548,11 +1588,12 @@ Report only real, noticeable mistakes a viewer would catch:
   overlapping other text, or unreadable
 - visual: black or blank frames, frozen picture, flicker, broken or stretched models, objects clipping through people,
   camera inside an object, a shot where the subject is missing, glowing lines or other render glitches
+- opening: the first frame black or empty, or the big title question at the top unreadable
 - ending: the video ends abruptly or mid-sentence
 
 Severity "major" = a typical viewer would notice and it makes the video look cheap or broken. "minor" = only a
 careful editor would notice. Reply with JSON only:
-{{"ok": true/false, "problems": [{{"t": seconds, "kind": "voice|audio|captions|visual|ending", "severity": "major|minor",
+{{"ok": true/false, "problems": [{{"t": seconds, "kind": "voice|audio|captions|visual|opening|ending", "severity": "major|minor",
 "what": "short description"}}]}}
 "ok" is false when there is at least one major problem."""
 
