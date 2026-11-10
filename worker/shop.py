@@ -276,6 +276,13 @@ DEFAULTS = {"enabled": True, "designs_per_day": 1, "time": "06:00",  # live befo
             # TikTok Shop (2026-11-08, user: "lets do tik tok shop"): free to list, ~6-8% a sale. New shops get
             # reviewed, so at most this many new listings a day, newest designs first
             "tiktok_per_day": 25,
+            # sell-what-sold mix (2026-11-10, user: "whatever is gonna get me more sales"): daily designs alternate a close
+            # variant of the winner (same core slogan, slight twist) and a new joke in its style; the extra breed/job
+            # designs and the shirts for viral videos are off (never sold)
+            "winner_variants": True, "line_series": False, "video_shirts": False,
+            # eBay full: end the oldest unsold listing to make room for a winner's spin-off. Off until it's confirmed that
+            # deleting the Printify product really ends the eBay listing (else each new one costs ~$0.35)
+            "ebay_rotate": False,
             # every daily design riffs on a design that sold, not one in two (2026-11-06, user: focus on what sold)
             "winner_focus": True,
             "video_times": ""}                 # e.g. "11:00,15:00,19:00", one video at each; empty = no videos (off: user prefers the photos)
@@ -856,7 +863,8 @@ class Shop:
 
     # one design, start to finish
     def make_design(self, only: Optional[list] = None, spinoff: Optional[str] = None, season: Optional[str] = None,
-                    style: Optional[str] = None, series: bool = False, video: Optional[str] = None) -> dict:
+                    style: Optional[str] = None, series: bool = False, video: Optional[str] = None,
+                    variant: bool = False) -> dict:
         """only: the product kinds this design goes on (e.g. ["tee"]); None means the usual set. spinoff: the id of a winning
         design to riff on instead of today's trends. series: one of the extra breeds/jobs a line design brings with it
         (it doesn't bring more, and never goes on Etsy). video: a viral video's topic to make a shirt of (no real
@@ -870,7 +878,8 @@ class Shop:
             season = season or parent.get("season")
         trending = "" if parent else self.trending(st)
         nb = shop_agents.load(self.nb_path)
-        notes = shop_agents.designer_notes(nb, parent)
+        taken = [d.get("slogan", "") for d in st["designs"] if parent and d.get("spinoff_of") == parent["id"]]
+        notes = shop_agents.designer_notes(nb, parent, variant=variant and bool(parent), taken=taken)
         if season:
             notes = SEASON_NOTE.format(name=season.title(), note=SEASONS[season]["note"]) + "\n\n" + notes
         if style == "sweater":
@@ -934,6 +943,8 @@ class Shop:
             rec["only"] = list(only)
         if parent:
             rec["spinoff_of"] = parent["id"]
+            if variant:
+                rec["variant"] = True
         if season:
             rec["season"] = season
         if style:
@@ -948,7 +959,7 @@ class Shop:
         if series:
             rec["series"] = True
             rec["etsy"] = False                               # extra breeds/jobs stay on the free channels
-        elif line and line.get("series") and not parent:
+        elif line and line.get("series") and not parent and self.cfg().get("line_series", True):
             st["line_queue"] = (st.get("line_queue") or []) + [style] * int(line["series"])
         st["designs"].append(rec)
         save_state(st, self.state_path)
@@ -1121,6 +1132,25 @@ class Shop:
                          "keyFeatures": True, "shipping_template": True})
         product["published"] = True
 
+    def end_oldest_ebay(self, st: dict, shop: dict, sold: set) -> bool:
+        """Delete the oldest eBay product of a design that never sold and isn't a winner's spin-off (Printify takes
+        the listing down with it). True when one was ended."""
+        for d in st["designs"]:
+            if d.get("id") in sold or d.get("spinoff_of"):
+                continue
+            ebay = d.get("channels", {}).get("ebay", {})
+            for kind, prod in list(ebay.items()):
+                try:
+                    self.c.printify("DELETE", f"shops/{shop['id']}/products/{prod['id']}.json")
+                except Exception as exc:
+                    self.log(f"shop: couldn't end eBay {kind} of {d['id']}: {exc}")
+                    return False
+                del ebay[kind]
+                d.setdefault("ebay_ended", []).append(kind)
+                self.log(f"shop: ended eBay {kind} of '{d.get('slogan')}' to make room")
+                return True
+        return False
+
     def list_pending(self) -> list:
         """Put every queued design on the products it's still missing in each connected channel, and publish
         them. A channel that fails waits an hour without holding up the others."""
@@ -1136,7 +1166,11 @@ class Shop:
                            if p.get("listed_at") and datetime.fromtimestamp(p["listed_at"]).date() == today)
         # TikTok's daily budget goes to the newest clean designs first (the holiday ones that matter now)
         budget, tiktok_ok = cfg.get("tiktok_per_day", 25) - tiktok_today, {}     # list position -> new listings it may make
-        for pos in reversed(range(len(st["designs"]))) if "tiktok" in stores else []:
+        sold = {i for x in st.get("sales_log") or [] for i in x.get("designs") or []}
+        winning = lambda d: d.get("id") in sold or bool(d.get("spinoff_of"))
+        # the winner and its spin-offs/variants first, then newest
+        order = sorted(range(len(st["designs"])), key=lambda i: (not winning(st["designs"][i]), -i))
+        for pos in order if "tiktok" in stores else []:
             rec = st["designs"][pos]
             if budget <= 0:
                 break
@@ -1170,6 +1204,11 @@ class Shop:
                         continue
                     prod = listed.get(kind)
                     if channel == "ebay" and prod is None:
+                        if kind in rec.get("ebay_ended", []):
+                            continue                       # taken down to make room: stays off eBay
+                        if on_ebay >= cfg.get("ebay_max", 250) and cfg.get("ebay_rotate") and winning(rec) \
+                                and self.end_oldest_ebay(st, shop, sold):
+                            on_ebay -= 1                   # a slot freed for the winner's spin-off
                         if on_ebay >= cfg.get("ebay_max", 250):
                             if st.get("ebay_full_texted") != datetime.fromtimestamp(self.clock()).strftime("%Y-%m"):
                                 st["ebay_full_texted"] = datetime.fromtimestamp(self.clock()).strftime("%Y-%m")
@@ -1300,9 +1339,10 @@ class ShopService:
             now.hour * 60 + now.minute >= h * 60 + m + 30 + holiday_today * 240
         queued = int(st.get("make_now") or 0)              # "make N new products now", from the plugin; one per pass
         spin_q = list(st.get("make_spinoff") or [])        # spin-offs of a design that just sold, queued by the Analyst
-        line_q = list(st.get("line_queue") or [])          # more breeds/jobs for a line design just made (2026-11-03)
+        line_q = list(st.get("line_queue") or []) if cfg["line_series"] else []   # more breeds/jobs for a line design
         done_v = {t.lower() for t in st.get("video_shirts") or []}
-        video_q = [t for t in video_topics(self.viral_state) if t.lower() not in done_v]   # posted videos without a shirt
+        video_q = [t for t in video_topics(self.viral_state) if t.lower() not in done_v] \
+            if cfg["video_shirts"] else []                  # posted videos without a shirt
         cooling = time.time() - st.get("last_fail_at", 0) < 3600
         # N designs a day are spread from the start time to midnight (4 a day at 06:00: 06:00, 10:30, 15:00, 19:30)
         n = cfg["designs_per_day"]
@@ -1346,7 +1386,8 @@ class ShopService:
                     parent = next((d for d in st["designs"] if d.get("id") == win), None)
                     if parent and parent.get("season") and not season_running(parent["season"], now.date()):
                         win = None                         # no Christmas spin-offs once Christmas orders have closed
-                    shop.make_design(spinoff=win)
+                    made = int(st.get("spinoffs_made") or 0)
+                    shop.make_design(spinoff=win, variant=bool(win) and cfg["winner_variants"] and made % 2 == 0)
                     st = load_state(shop.state_path)
                     st["last_was_spinoff"] = bool(win)
                     if win:

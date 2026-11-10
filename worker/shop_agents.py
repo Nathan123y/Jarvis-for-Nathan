@@ -123,9 +123,16 @@ def scout(nb: dict, feeds: str, ask: Optional[Callable[[str], Optional[dict]]], 
 
 
 # ── Designer's brief ───────────────────────────────────────────────────────────────────────────────────────────────────────────
-def designer_notes(nb: dict, spinoff: Optional[dict]) -> str:
+def designer_notes(nb: dict, spinoff: Optional[dict], variant: bool = False, taken: Optional[list] = None) -> str:
     out = ["Notes the shop's agents wrote for themselves from past results (follow them):", lessons_text(nb)]
-    if spinoff:
+    if spinoff and variant:
+        out.append(f"THIS DESIGN IS A CLOSE VARIANT OF A WINNER: \"{spinoff.get('slogan')}\" ({spinoff.get('niche')}) sold, so buyers "
+                   "already said yes to that exact joke. Keep its core words and change it SLIGHTLY, one of: a matching group "
+                   "version (e.g. \"WE'RE ALL LOSING OUR TINSEL\" for families/friends/coworkers), a version for one kind of buyer "
+                   "(a job, a pet owner, a mom/dad/grandma: e.g. \"LOSING MY TINSEL ON NIGHT SHIFT\"), or a small wording or tense "
+                   "change. Pick a variation not already made" + (": " + "; ".join(taken[-30:]) if taken else "") + ". "
+                   f"Its listing was titled \"{spinoff.get('title')}\": keep those search words, plus the new buyer's words.")
+    elif spinoff:
         out.append(f"THIS DESIGN IS A SPIN-OFF OF A WINNER: \"{spinoff.get('slogan')}\" ({spinoff.get('niche')}) sold. Make a NEW joke "
                    "on the same theme, for the same buyers, in the same style; not the same slogan, and don't use the trend list. "
                    f"Its listing was titled \"{spinoff.get('title')}\": keep the search words a buyer would type for this theme.")
