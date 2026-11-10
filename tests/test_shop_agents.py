@@ -138,3 +138,14 @@ class CycleTests(_Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VariantNotesTests(unittest.TestCase):
+    def test_a_close_variant_keeps_the_winning_words_and_skips_ones_made(self):
+        nb = sa.load(Path(tempfile.mkdtemp()) / "nb.json")
+        win = {"slogan": "I'M LOSING MY TINSEL", "niche": "holiday stress", "title": "Ugly Christmas Sweater Tee"}
+        notes = sa.designer_notes(nb, win, variant=True, taken=["WE'RE ALL LOSING OUR TINSEL"])
+        self.assertIn("CLOSE VARIANT", notes)
+        self.assertIn("I'M LOSING MY TINSEL", notes)
+        self.assertIn("WE'RE ALL LOSING OUR TINSEL", notes)              # already made: pick another
+        self.assertIn("NEW joke", sa.designer_notes(nb, win))            # a plain spin-off is still a new joke

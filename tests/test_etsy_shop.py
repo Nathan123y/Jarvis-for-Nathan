@@ -244,7 +244,7 @@ class ListingTests(_Base):
 
     def test_a_pet_design_brings_more_breeds_that_stay_off_etsy(self):
         c = FakeClients(shops=[])
-        s = self.shop(c)
+        s = self.shop(c, line_series=True)
         first = s.make_design(style="pet", season="christmas")
         st = ws.load_state(s.state_path)
         self.assertEqual(st["line_queue"], ["pet", "pet"])
@@ -306,7 +306,7 @@ class ListingTests(_Base):
             {"topic": "a black hole Sun", "made": 3, "posted": False}]}))           # not posted yet
         self.assertEqual(ws.video_topics(viral), ["falling into Jupiter"])
         c = FakeClients(shops=[])
-        s = self.shop(c, designs_per_day=0, holiday_per_day=0)
+        s = self.shop(c, designs_per_day=0, holiday_per_day=0, video_shirts=True)
         svc = ws.ShopService(log=lambda m: None, notify=lambda k, t: None)
         svc.viral_state = viral
         with patch.object(ws, "settings", return_value=dict(s.cfg(), enabled=True)), \
@@ -383,6 +383,38 @@ class ListingTests(_Base):
         designs = ws.load_state(self.dir / "s.json")["designs"]
         self.assertEqual([len(d.get("channels", {}).get("tiktok", {})) for d in designs], [1, 3, 0])
         self.assertEqual(s.list_pending(), [])            # the cap holds for the rest of the day
+
+    def test_ebay_rotation_ends_the_oldest_unsold_listing_for_a_winners_spin_off(self):
+        c = FakeClients(shops=[{"id": 5, "sales_channel": "ebay"}])
+        s = self.shop(c, ebay_max=2, ebay_rotate=True)
+        s.make_design(only=["tee", "mug"])                # fills eBay
+        s.list_pending()
+        st = ws.load_state(self.dir / "s.json")
+        st["designs"][0]["id"] = "old"
+        ws.save_state(st, self.dir / "s.json")
+        s.make_design(only=["tee"])
+        st = ws.load_state(self.dir / "s.json")
+        st["designs"][1]["spinoff_of"] = "w"
+        ws.save_state(st, self.dir / "s.json")
+        s.list_pending()
+        designs = ws.load_state(self.dir / "s.json")["designs"]
+        self.assertEqual(list(designs[1]["channels"]["ebay"]), ["tee"])
+        self.assertEqual(designs[0]["ebay_ended"], ["tee"])
+        self.assertEqual(len([1 for m, p, b in c.calls if m == "DELETE"]), 1)
+        s.list_pending()                                  # the ended one isn't put back
+        self.assertEqual(len([1 for m, p, b in c.calls if m == "DELETE"]), 1)
+        self.assertNotIn("tee", ws.load_state(self.dir / "s.json")["designs"][0]["channels"]["ebay"])
+
+    def test_without_rotation_a_full_ebay_takes_nothing_down(self):
+        c = FakeClients(shops=[{"id": 5, "sales_channel": "ebay"}])
+        s = self.shop(c, ebay_max=1)
+        s.make_design(only=["tee"])
+        s.make_design(only=["tee"])
+        st = ws.load_state(self.dir / "s.json")
+        st["designs"][1]["spinoff_of"] = "w"
+        ws.save_state(st, self.dir / "s.json")
+        s.list_pending()
+        self.assertFalse([1 for m, p, b in c.calls if m == "DELETE"])
 
     def test_a_failing_channel_does_not_hold_up_the_other(self):
         c = FakeClients(shops=[{"id": 9, "sales_channel": "etsy"}, {"id": 5, "sales_channel": "ebay"}])
