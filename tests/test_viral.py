@@ -321,5 +321,39 @@ class InterruptedVideoTests(unittest.TestCase):
         self.assertEqual(seen["1"]["views"], 433)
 
 
+class KitRenderTests(unittest.TestCase):
+    """The kit in headless Chrome: the first frame is the video's TikTok cover and where viewers decide to stay."""
+
+    def test_first_frame_shows_the_picture_and_the_big_title(self):
+        try:
+            from playwright.sync_api import sync_playwright  # noqa: F401
+        except ImportError:
+            self.skipTest("playwright isn't installed")
+        from PIL import Image
+        import io
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp)
+            (job / "scene.js").write_text("""export default function (K) {
+  K.sets.plain({ env: 'day', ground: 'sand' });
+  K.box([0, 1, 0], [2, 2, 2], 0xd03030);
+  K.shots([{ t: 0, pos: [0, 1.6, 6], look: [0, 1, 0], fov: 45 }]);
+  return { update() {} };
+}""")
+            say = "Could ten grandmas on scooters stop Prime Shaq?"
+            data = {"seed": 3, "fps": 30, "duration": 4.0, "title": say, "highlight": ["ten grandmas"], "end_fact": "",
+                    "end_card": 0, "style": "narrated",
+                    "beats": [{"start": .1, "end": 3.0, "say": say, "emph": [], "hud": None, "scene": "", "card": None,
+                               "score": None, "chunks": wv.caption_chunks(say, .1, 2.6, 3.0, first=True)},
+                              {"start": 3.0, "end": 4.0, "say": "Kickoff.", "emph": [], "hud": None, "scene": "",
+                               "card": None, "score": None, "chunks": wv.caption_chunks("Kickoff.", 3.0, .6, 4.0)}]}
+            try:
+                frame = wv.preview(job, data, [0.0])[0]
+            except Exception as exc:                        # no browser on this machine
+                self.skipTest(f"can't render here: {exc}")
+            img = np.asarray(Image.open(io.BytesIO(frame.read_bytes())).convert("L"), dtype=np.float32)
+        self.assertGreater(img[800:1500].mean(), 40)                  # the 3D picture, not the old black first frame
+        self.assertGreater((img[150:700] > 235).mean(), .01)          # white title type across the top
+
+
 if __name__ == "__main__":
     unittest.main()

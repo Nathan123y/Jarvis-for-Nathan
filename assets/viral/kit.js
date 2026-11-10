@@ -9,6 +9,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { ImprovedNoise } from 'three/addons/math/ImprovedNoise.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { loadHumans, humanKit } from './humans.js';
 import { loadDinos, dinoKit } from './dinos.js';
 
@@ -573,6 +574,63 @@ export async function boot(data, sceneUrl) {
     return K.add(g, pos, false);
   };
 
+  // ── instanced fans: thousands of blocky people for the stands ─────────────
+  const SKINS = [0xf1c9a5, 0xe0ac7e, 0xc68642, 0x8d5524, 0x5c3a1e, 0xf5d0b0];
+  /** seats [{x, y, z, rot, col}] -> fans (body, head, arms) facing `rot` that bob, and jump with their arms up while
+   *  K.cheer is on (arms fold away when they're calm) */
+  function blockCrowd(seats) {
+    if (!seats.length) return [];
+    const U = { uTime: { value: 0 }, uCheer: { value: 0 } };
+    const mat = (arms) => { const m = new THREE.MeshLambertMaterial({ color: 0xffffff });
+      m.onBeforeCompile = sh => { Object.assign(sh.uniforms, U);
+        sh.vertexShader = 'uniform float uTime; uniform float uCheer;\n' + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+          vec4 ip = instanceMatrix[3];
+          float ph = fract(sin(dot(ip.xz, vec2(12.9898, 78.233))) * 43758.5453);
+          ${arms ? 'transformed.y = .6 + (transformed.y - .6) * clamp(uCheer * 1.5 - ph * .5, 0.0, 1.0) * step(.22, ph);' : ''}
+          transformed.y += uCheer * max(0.0, sin(uTime * (8.0 + ph * 5.0) + ph * 6.283)) * 0.28 + sin(uTime * 1.4 + ph * 6.283) * 0.015;`); };
+      return m; };
+    // rounded shapes (a torso capsule, a head, arms): plain boxes looked like bricks in any shot nearer than the far stand
+    const bodyG = new THREE.CapsuleGeometry(.19, .3, 3, 10).scale(1.08, 1, .78).translate(0, .38, 0);
+    const headG = new THREE.SphereGeometry(.115, 10, 8).scale(1, 1.12, 1).translate(0, .77, 0);
+    const armG = mergeGeometries([new THREE.CapsuleGeometry(.045, .44, 2, 6).translate(-.235, .86, 0), new THREE.CapsuleGeometry(.045, .44, 2, 6).translate(.235, .86, 0)]);
+    const n = seats.length;
+    const meshes = [new THREE.InstancedMesh(bodyG, mat(false), n), new THREE.InstancedMesh(headG, mat(false), n), new THREE.InstancedMesh(armG, mat(true), n)];
+    const mtx = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0), p = new THREE.Vector3();
+    seats.forEach((s, i) => {
+      q.setFromAxisAngle(up, s.rot); sc.set(1, .92 + Math.random() * .16, 1);
+      mtx.compose(p.set(s.x, s.y, s.z), q, sc); for (const m of meshes) m.setMatrixAt(i, mtx);
+      const skin = new THREE.Color(SKINS[i % SKINS.length]);
+      meshes[0].setColorAt(i, s.col.clone().offsetHSL(0, 0, (Math.random() - .5) * .08)); meshes[1].setColorAt(i, skin); meshes[2].setColorAt(i, skin);
+    });
+    for (const m of meshes) { m.instanceMatrix.needsUpdate = true; m.instanceColor.needsUpdate = true; m.frustumCulled = false; scene.add(m); }
+    updaters.push(t => { U.uTime.value = t; U.uCheer.value = K.cheerLevel ? K.cheerLevel(t) : 0; });
+    return meshes;
+  }
+  /** a crowd colour: mostly the team's, some white / black / other shirts */
+  const fanColour = (home, alt) => { const q = Math.random();
+    return q < .55 ? home : q < .75 ? alt : q < .85 ? new THREE.Color(0xf2f2f2) : q < .93 ? new THREE.Color(0x24262c)
+      : new THREE.Color([0x3a6ea5, 0xc0392b, 0x2e8b57, 0x7f8c8d, 0xe67e22][Math.floor(Math.random() * 5)]); };
+  /** stepped rows of an indoor bowl on four sides of a rectangle: rows [{off, y}], side fronts at |x| = fx (rows run
+   *  along z, half-length hz + off * .9) and end fronts at |z| = fz (along x, half-length hx + off * .9). Returns the seats
+   *  ({x, y, z, rot, row, side}) and draws the terraces. */
+  function bowl(rows, fx, fz, hx, hz, seatColor, spacing = .6) {
+    const seats = [], terr = K.mat(seatColor, { roughness: .9 });
+    for (const sd of [{ ax: 'x', s: -1 }, { ax: 'x', s: 1 }, { ax: 'z', s: -1 }, { ax: 'z', s: 1 }]) {
+      rows.forEach((r, ri) => {
+        const front = (sd.ax === 'x' ? fx : fz) + r.off, half = (sd.ax === 'x' ? hz : hx) + r.off * .9, depth = r.dep || .85;
+        const box = new THREE.Mesh(new THREE.BoxGeometry(sd.ax === 'x' ? depth : half * 2, r.y + .3, sd.ax === 'x' ? half * 2 : depth), terr);
+        box.position.set(sd.ax === 'x' ? sd.s * (front + depth / 2) : 0, (r.y + .3) / 2 - .3, sd.ax === 'x' ? 0 : sd.s * (front + depth / 2));
+        box.receiveShadow = true; scene.add(box);
+        const n = Math.floor(half * 2 / spacing), rot = sd.ax === 'x' ? -sd.s * Math.PI / 2 : (sd.s > 0 ? Math.PI : 0);
+        for (let k = 0; k < n; k++) {
+          const along = -half + (k + .5) * spacing + (Math.random() - .5) * .08, d = front + depth * .55;
+          seats.push({ x: sd.ax === 'x' ? sd.s * d : along, y: r.y, z: sd.ax === 'x' ? along : sd.s * d, rot, row: ri, side: sd });
+        }
+      });
+    }
+    return seats;
+  }
+
   // ── ready-made sets: a full place in one call ──────────────────────────────
   K.sets = {
     /** a suburban backyard at dusk (or o.env): house behind a fence, neighbours, trees, grass, chairs */
@@ -648,34 +706,121 @@ export async function boot(data, sceneUrl) {
       people.forEach(p => p.position.y = .16);
       return { env, birds, people };
     },
-    /** an indoor basketball arena: court x -7.5..7.5, z -14..14 (hoops at z = ±13), packed stands, bright lights */
+    /** an NBA-style indoor arena: court x -7.5..7.5, z -14..14 (hoops at z = ±13, rim y 3.05), a lower and an upper
+     *  bowl of fans on all four sides (the front rows are real people), LED ribbon boards, a centre-hung scoreboard high
+     *  over the court (y 18-22), a bright glossy court under dark rafters. o: home / alt (team colours: painted keys,
+     *  seats, boards), name (printed on the court and the boards), screen (scoreboard text), fans: false (empty).
+     *  Returns {env, ball, fans (the front-row people; fans.cheer(on, t0)), screen (screen.setText('...')),
+     *  crowdAt(x, z) -> the nearest front-row seat} */
     court(o = {}) {
-      const env = K.env('overcast', { bg: 0x101218, fog: [0x101218, 60, 220], hemi: [0xffffff, 0x5a4a3a, 1.2], sun: .9, exp: .95 }); scene.fog.color.set(0x101218);
-      const floor = new THREE.Mesh(new THREE.PlaneGeometry(17, 30), new THREE.MeshStandardMaterial({ roughness: .35,
-        map: canvasTex(512, 900, (c, w, h) => { c.fillStyle = '#c8955a'; c.fillRect(0, 0, w, h);
-          for (let x = 0; x < w; x += 18) { c.fillStyle = `rgba(90,50,20,${.05 + Math.random() * .08})`; c.fillRect(x, 0, 2, h); }
-          c.strokeStyle = '#fff'; c.lineWidth = 6; c.strokeRect(20, 20, w - 40, h - 40);
-          c.beginPath(); c.moveTo(20, h / 2); c.lineTo(w - 20, h / 2); c.stroke(); c.beginPath(); c.arc(w / 2, h / 2, 60, 0, 6.3); c.stroke();
-          for (const y of [20, h - 20]) { const d = y < h / 2 ? 1 : -1; c.strokeRect(w / 2 - 80, y, 160, d * 190);
-            c.beginPath(); c.arc(w / 2, y + d * 50, 220, d > 0 ? 0 : Math.PI, d > 0 ? Math.PI : 2 * Math.PI); c.stroke(); } }) }));
-      floor.rotation.x = -Math.PI / 2; floor.position.y = .02; K.add(floor);
-      K.ground('concrete', 400);
-      for (const z of [-13.2, 13.2]) {
-        const d = Math.sign(z);
-        K.add(new THREE.Mesh(new THREE.CylinderGeometry(.12, .12, 3.4, 8), K.mat(0x333333)), [0, 1.7, z + d * .9]);
-        K.add(new THREE.Mesh(new THREE.BoxGeometry(1.8, 1.05, .05), K.mat(0xffffff, { transparent: true, opacity: .55 })), [0, 3.4, z]);
-        const rim = new THREE.Mesh(new THREE.TorusGeometry(.23, .02, 8, 24), K.mat(0xff5a1f)); rim.rotation.x = Math.PI / 2; K.add(rim, [0, 3.05, z - d * .3]);
+      const HOME = new THREE.Color(o.home ?? 0x1d428a), ALT = new THREE.Color(o.alt ?? 0xffc72c), hex = c => '#' + new THREE.Color(c).getHexString();
+      const name = String(o.name || 'HOME COURT').toUpperCase();
+      const env = K.env('overcast', { bg: 0x07080d, fog: [0x07080d, 90, 300], hemi: [0xfff1de, 0x2a2630, 1.15], sun: 1.7, sunC: 0xfff4e4, exp: 1.0 });
+      env.sun.position.set(-10, 60, 14);
+      // the court: glossy maple, team-colour apron, keys and centre circle, every line in place
+      const px = 60, CW = 17, CL = 30;
+      const tex = canvasTex(CW * px, CL * px, (c, w, h) => {
+        const X = x => (x + CW / 2) * px, Z = z => (z + CL / 2) * px, M = v => v * px;
+        c.fillStyle = '#d6a266'; c.fillRect(0, 0, w, h);
+        for (let x = 0; x < w; x += 14) { c.fillStyle = `rgba(${130 + Math.random() * 40},${70 + Math.random() * 30},25,${.05 + Math.random() * .08})`; c.fillRect(x, 0, 13, h); }
+        for (let i = 0; i < 1400; i++) { c.fillStyle = 'rgba(80,45,15,.10)'; c.fillRect(Math.floor(Math.random() * w / 14) * 14, Math.random() * h, 13, 2); }
+        c.fillStyle = hex(HOME.clone().multiplyScalar(.9));
+        c.fillRect(0, 0, w, Z(-14)); c.fillRect(0, Z(14), w, h - Z(14)); c.fillRect(0, 0, X(-7.5), h); c.fillRect(X(7.5), 0, w - X(7.5), h);
+        for (const s of [-1, 1]) c.fillRect(X(-2.45), Math.min(Z(14 * s), Z(8.2 * s)), M(4.9), M(5.8));
+        c.beginPath(); c.arc(X(0), Z(0), M(1.8), 0, 7); c.fill();
+        c.strokeStyle = '#ffffff'; c.lineWidth = 7;
+        c.strokeRect(X(-7.5), Z(-14), M(15), M(28));
+        c.beginPath(); c.moveTo(X(-7.5), Z(0)); c.lineTo(X(7.5), Z(0)); c.stroke();
+        c.beginPath(); c.arc(X(0), Z(0), M(1.8), 0, 7); c.stroke();
+        for (const s of [-1, 1]) {
+          const zb = 14 * s, hz = 12.9 * s, zf = 8.2 * s, dz = Math.sqrt(6.75 ** 2 - 6.6 ** 2), zc = hz - s * dz;
+          c.strokeRect(X(-2.45), Math.min(Z(zb), Z(zf)), M(4.9), M(5.8));
+          c.beginPath(); c.arc(X(0), Z(zf), M(1.8), 0, 7); c.stroke();
+          for (const x of [-6.6, 6.6]) { c.beginPath(); c.moveTo(X(x), Z(zb)); c.lineTo(X(x), Z(zc)); c.stroke(); }
+          const aL = Math.atan2(Z(zc) - Z(hz), X(-6.6) - X(0)), aR = Math.atan2(Z(zc) - Z(hz), X(6.6) - X(0));
+          c.beginPath(); c.arc(X(0), Z(hz), M(6.75), Math.min(aL, aR), Math.max(aL, aR)); c.stroke();
+          c.beginPath(); c.arc(X(0), Z(hz), M(1.25), s > 0 ? Math.PI : 0, s > 0 ? 2 * Math.PI : Math.PI); c.stroke();
+        }
+        c.fillStyle = hex(ALT); c.textAlign = 'center'; c.textBaseline = 'middle'; c.font = `900 ${M(.62)}px ${SANS}`;
+        c.fillText(name, X(0), Z(-14.5)); c.save(); c.translate(X(0), Z(14.5)); c.rotate(Math.PI); c.fillText(name, 0, 0); c.restore();
+        for (const s of [-1, 1]) { c.save(); c.translate(X(8 * s), Z(0)); c.rotate(s * Math.PI / 2); c.fillText(name, 0, 0); c.restore(); }
+      });
+      tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping; tex.repeat.set(1, 1);
+      const floor = new THREE.Mesh(new THREE.PlaneGeometry(CW, CL), new THREE.MeshStandardMaterial({ map: tex, roughness: .28, metalness: .05 }));
+      floor.rotation.x = -Math.PI / 2; floor.position.y = .02; floor.receiveShadow = true; scene.add(floor);
+      const deck = new THREE.Mesh(new THREE.PlaneGeometry(120, 120), K.mat(0x17191f, { roughness: .8 })); deck.rotation.x = -Math.PI / 2; deck.receiveShadow = true; scene.add(deck);
+      // the hoops: padded stanchion, arm, glass board with a white frame and target square, rim and net
+      const netTex = canvasTex(128, 64, (c, w, h) => { c.clearRect(0, 0, w, h); c.strokeStyle = 'rgba(255,255,255,.95)'; c.lineWidth = 3;
+        for (let k = -h; k <= w; k += 16) { c.beginPath(); c.moveTo(k, 0); c.lineTo(k + h, h); c.stroke(); c.beginPath(); c.moveTo(k + h, 0); c.lineTo(k, h); c.stroke(); } });
+      for (const s of [-1, 1]) {
+        K.box([0, .9, 15.7 * s], [1.5, 1.8, 1.3], HOME.getHex(), { roughness: .7 });
+        K.box([0, 2.9, 15.5 * s], [.32, 2.4, .32], 0x2a2d34, { metalness: .4, roughness: .4 });
+        K.box([0, 3.95, 14.4 * s], [.26, .26, 2.3], 0x2a2d34, { metalness: .4, roughness: .4 });
+        K.add(new THREE.Mesh(new THREE.BoxGeometry(1.83, 1.07, .03), new THREE.MeshStandardMaterial({ color: 0xe6eef5, transparent: true, opacity: .25, roughness: .05, metalness: .2 })), [0, 3.5, 13.2 * s], false);
+        const wm = K.mat(0xffffff, { roughness: .4 }), fr = (w, hh, x, y) => K.add(new THREE.Mesh(new THREE.BoxGeometry(w, hh, .04), wm), [x, y, 13.2 * s - .01 * s], false);
+        fr(1.87, .05, 0, 4.03); fr(1.87, .05, 0, 2.97); fr(.05, 1.1, -.92, 3.5); fr(.05, 1.1, .92, 3.5);
+        fr(.6, .04, 0, 3.43); fr(.6, .04, 0, 3.08); fr(.04, .39, -.29, 3.25); fr(.04, .39, .29, 3.25);
+        const rim = new THREE.Mesh(new THREE.TorusGeometry(.23, .018, 8, 32), K.mat(0xff5a1f, { roughness: .4, metalness: .3 })); rim.rotation.x = Math.PI / 2; K.add(rim, [0, 3.05, 12.9 * s]);
+        K.box([0, 3.03, 13.12 * s], [.12, .04, .2], 0xff5a1f);
+        const net = new THREE.Mesh(new THREE.CylinderGeometry(.23, .14, .42, 20, 1, true), new THREE.MeshStandardMaterial({ map: netTex, transparent: true, alphaTest: .3, side: THREE.DoubleSide }));
+        K.add(net, [0, 2.84, 12.9 * s], false);
       }
+      // the bowl: 13 lower rows, a ribbon board, 11 upper rows; the front rows are real people, the rest instanced fans
+      const rows = [];
+      for (let r = 0; r < 13; r++) rows.push({ off: r * .85, y: .45 + r * .42 });
+      for (let r = 0; r < 11; r++) rows.push({ off: 13 * .85 + 2.6 + r * .85, y: 9.0 + r * .6 });
+      const seats = bowl(rows, 10.4, 17.4, 9, 15, HOME.clone().multiplyScalar(.32));
+      // real people in the rows a reaction shot sees up close (4 rows along the sides, 2 behind each basket)
+      const REAL_SIDE = 4, REAL_END = 2;
+      const real = s => o.fans !== false && s.row < (s.side.ax === 'x' ? REAL_SIDE : REAL_END);
+      blockCrowd(seats.filter(s => !real(s) && o.fans !== false && Math.random() > .02).map(s => Object.assign(s, { col: fanColour(HOME, ALT) })));
       const fans = [];
-      for (const side of [-1, 1]) for (let r = 0; r < 8; r++) {
-        const x = side * (10 + r * 1.3), y = .6 + r * .9;
-        K.add(new THREE.Mesh(new THREE.BoxGeometry(1.3, .5, 34), K.mat(0x23262e)), [x, y - .4, 0]);
-        if (o.fans !== false) fans.push(...K.crowd([x - .2, -16], [x + .2, 16], 26, { walk: false, face: [0, 0], s: .9 }).map(p => (p.position.y = y - .15, p)));
+      if (o.fans !== false) {
+        const shirts = [HOME.getHex(), ALT.getHex(), 0xf2f2f2, 0x111111, HOME.getHex(), 0x3a6ea5, 0xc0392b, ALT.getHex()];
+        const place = (a, b, n, y) => fans.push(...K.crowd(a, b, n, { walk: false, face: [0, 0], shirts, s: .95 }).map(p => (p.position.y = y, p)));
+        for (const s of [-1, 1]) {
+          place([s * 9.15 - .1, -13], [s * 9.15 + .1, 13], 14, 0);                          // courtside, on the floor
+          for (let r = 0; r < REAL_SIDE; r++) place([s * (10.4 + rows[r].off + .45) - .1, -14.5], [s * (10.4 + rows[r].off + .45) + .1, 14.5], 20, rows[r].y);
+          for (let r = 0; r < REAL_END; r++) place([-8.5, s * (17.4 + rows[r].off + .45) - .1], [8.5, s * (17.4 + rows[r].off + .45) + .1], 13, rows[r].y);
+        }
       }
-      for (let i = -2; i <= 2; i++) { const l = new THREE.PointLight(0xfff4e0, 60, 40, 2); l.position.set(0, 14, i * 7); scene.add(l); }
-      const ball = K.ball([0, .12, 0], .12, 0xd35400);
+      // ribbon boards round the front of the upper bowl, suites and walls behind, rafters with light rigs, big screens
+      const ribbon = [name, 'DEFENSE', o.screen ? String(o.screen).toUpperCase() : name, 'LET\'S GO'];
+      const upFront = rows[13].off;
+      const suiteTex = canvasTex(1024, 64, (c, w, h) => { c.fillStyle = '#0e1016'; c.fillRect(0, 0, w, h);
+        for (let x = 4; x < w; x += 32) { c.fillStyle = Math.random() < .8 ? `rgba(255,${190 + Math.random() * 40},${120 + Math.random() * 50},${.55 + Math.random() * .4})` : '#1a1d26'; c.fillRect(x, 10, 26, 44); } });
+      for (const sd of [{ ax: 'x', s: -1 }, { ax: 'x', s: 1 }, { ax: 'z', s: -1 }, { ax: 'z', s: 1 }]) {
+        const front = (sd.ax === 'x' ? 10.4 : 17.4) + upFront - .2, half = (sd.ax === 'x' ? 15 : 9) + upFront * .9;
+        const n = Math.max(2, Math.round(half * 2 / 12)), rot = sd.ax === 'x' ? -sd.s * Math.PI / 2 : (sd.s > 0 ? Math.PI : 0);
+        for (let k = 0; k < n; k++) {
+          const along = -half + (k + .5) * half * 2 / n;
+          K.sign(ribbon[(k + (sd.ax === 'x' ? 0 : 1)) % ribbon.length], sd.ax === 'x' ? [sd.s * front, 8.1, along] : [along, 8.1, sd.s * front],
+            { w: half * 2 / n - .15, h: 1.5, rot, bg: k % 2 ? hex(HOME) : '#0d0f16', fg: k % 2 ? '#ffffff' : hex(ALT), size: .6, glow: true });
+        }
+        const back = (sd.ax === 'x' ? 10.4 : 17.4) + rows[rows.length - 1].off + 1.6, bh = (sd.ax === 'x' ? 15 : 9) + back * .95;
+        const wall = new THREE.Mesh(new THREE.BoxGeometry(sd.ax === 'x' ? 1 : bh * 2, 30, sd.ax === 'x' ? bh * 2 : 1), K.mat(0x12141b, { roughness: .9 }));
+        wall.position.set(sd.ax === 'x' ? sd.s * back : 0, 14, sd.ax === 'x' ? 0 : sd.s * back); scene.add(wall);
+        const st = suiteTex.clone(); st.repeat.set((bh * 2 - 4) / 16, 1); st.needsUpdate = true;
+        const suites = new THREE.Mesh(new THREE.PlaneGeometry(bh * 2 - 4, 1.8), new THREE.MeshBasicMaterial({ map: st, toneMapped: false }));
+        suites.rotation.y = rot; suites.position.set(sd.ax === 'x' ? sd.s * (back - .55) : 0, 16.6, sd.ax === 'x' ? 0 : sd.s * (back - .55)); scene.add(suites);
+      }
+      const roof = new THREE.Mesh(new THREE.PlaneGeometry(140, 140), K.mat(0x0c0d12, { roughness: 1 })); roof.rotation.x = Math.PI / 2; roof.position.y = 28; scene.add(roof);
+      const lamp = K.glowMat(0xfff4e0, 3.2), truss = K.mat(0x3a3e47, { metalness: .5, roughness: .5 });
+      for (const x of [-9, -3, 3, 9]) { K.add(new THREE.Mesh(new THREE.BoxGeometry(.4, .4, 46), truss), [x, 26.4, 0], false);
+        for (let z = -18; z <= 18; z += 6) K.add(new THREE.Mesh(new THREE.BoxGeometry(1.5, .25, .8), lamp), [x, 26.1, z], false); }
+      // a big screen high on each end wall (no centre-hung board: it blocked every overhead shot)
+      const endBack = 17.4 + rows[rows.length - 1].off + 1.6, faces = [];
+      for (const s of [-1, 1]) {
+        faces.push(K.sign(o.screen || name, [0, 21.5, s * (endBack - .6)], { w: 17, h: 6.2, rot: s > 0 ? Math.PI : 0, bg: '#0a1230', fg: '#ffffff', size: .4, glow: true, border: hex(HOME) }));
+      }
+      const screen = { setText: (txt) => { for (const f of faces) f.setText(txt); return screen; }, faces };
+      const ball = K.ball([0, .12, 0], .12, 0xd35400, { roughness: .6 });
       fans.cheer = (on = true, t0 = 0) => K.cheer(on, t0);
-      return { env, ball, fans };
+      const crowdAt = (x, z) => { let best = null, d = 1e9;
+        for (const p of fans) { const e = (p.position.x - x) ** 2 + (p.position.z - z) ** 2; if (e < d) { d = e; best = p.position; } }
+        for (const s of seats) { const e = (s.x - x) ** 2 + (s.z - z) ** 2; if (e < d) { d = e; best = new THREE.Vector3(s.x, s.y, s.z); } }
+        return best ? best.clone() : null; };
+      return { env, ball, fans, screen, crowdAt };
     },
     /** a boxing ring under spotlights in a dark arena: ring floor y = 1.2, x and z in -3.5..3.5 */
     ring(o = {}) {
@@ -948,28 +1093,7 @@ export async function boot(data, sceneUrl) {
         seats.push({ x, y, z, rot: sd.axis === 'x' ? -sd.s * Math.PI / 2 : (sd.s > 0 ? Math.PI : 0), col, empty: o.fans === false || Math.random() < .015 });
       }
     }
-    const U = { uTime: { value: 0 }, uCheer: { value: 0 } };
-    const crowdMat = () => { const m = new THREE.MeshLambertMaterial({ color: 0xffffff });
-      m.onBeforeCompile = sh => { Object.assign(sh.uniforms, U);
-        sh.vertexShader = 'uniform float uTime; uniform float uCheer;\n' + sh.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
-          vec4 ip = instanceMatrix[3];
-          float ph = fract(sin(dot(ip.xz, vec2(12.9898, 78.233))) * 43758.5453);
-          transformed.y += uCheer * max(0.0, sin(uTime * (8.0 + ph * 5.0) + ph * 6.283)) * 0.28 + sin(uTime * 1.4 + ph * 6.283) * 0.015;`); };
-      return m; };
-    const live = seats.filter(s => !s.empty);
-    const bodyG = new THREE.BoxGeometry(.44, .62, .3); bodyG.translate(0, .31, 0);
-    const headG = new THREE.BoxGeometry(.22, .24, .22); headG.translate(0, .76, 0);
-    const armG = new THREE.BoxGeometry(.56, .1, .1); armG.translate(0, .62, 0);
-    const bodies = new THREE.InstancedMesh(bodyG, crowdMat(), live.length), heads = new THREE.InstancedMesh(headG, crowdMat(), live.length);
-    const SKINS = [0xf1c9a5, 0xe0ac7e, 0xc68642, 0x8d5524, 0x5c3a1e, 0xf5d0b0];
-    const mtx = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(1, 1, 1), up = new THREE.Vector3(0, 1, 0);
-    live.forEach((s, i) => {
-      q.setFromAxisAngle(up, s.rot); sc.set(1, .92 + Math.random() * .16, 1);
-      mtx.compose(new THREE.Vector3(s.x, s.y, s.z), q, sc); bodies.setMatrixAt(i, mtx); heads.setMatrixAt(i, mtx);
-      bodies.setColorAt(i, s.col.clone().offsetHSL(0, 0, (Math.random() - .5) * .08)); heads.setColorAt(i, new THREE.Color(SKINS[i % SKINS.length]));
-    });
-    for (const m of [bodies, heads]) { m.instanceMatrix.needsUpdate = true; m.instanceColor.needsUpdate = true; m.frustumCulled = false; scene.add(m); }
-    updaters.push(t => { U.uTime.value = t; U.uCheer.value = K.cheerLevel ? K.cheerLevel(t) : 0; });
+    blockCrowd(seats.filter(s => !s.empty));
     // tunnel and dugouts on the -x side, halfway
     const tunnel = K.tunnel([-38.2, 0, 0], Math.PI / 2, { color: hex(HOME) });
     const bench = [];
@@ -1099,15 +1223,57 @@ export async function boot(data, sceneUrl) {
   const NARR = data.style === 'narrated';
   if (NARR) { vignette = false; handheld = .2; bloom.strength = .12; }
   function rr(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); }
-  function caption(text, y) {
-    ctx.save(); ctx.font = `800 50px ${SANS}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+  /** words ({w, em}) in lines no wider than maxW at the current font */
+  function wrapWords(ws, maxW) {
+    const space = ctx.measureText(' ').width, lines = [[]]; let lw = 0;
+    for (const x of ws) { x.width = ctx.measureText(x.w).width;
+      if (lw > 0 && lw + space + x.width > maxW) { lines.push([]); lw = 0; }
+      lines[lines.length - 1].push(x); lw += (lw > 0 ? space : 0) + x.width; }
+    return lines;
+  }
+  // the yellow word-by-word captions: big enough to read on a phone at a glance (they were 50 px: too small), each
+  // chunk popping in as it's spoken
+  function caption(text, y, age = 1) {
+    const pop = 1 + .14 * (1 - ease.out(clamp01(age / .12)));
+    ctx.save(); ctx.translate(520, y); ctx.scale(pop, pop);
+    ctx.font = `900 70px ${SANS}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
     const lines = []; let cur = '';
-    for (const w of String(text).toLowerCase().split(/\s+/)) { const tryL = cur ? cur + ' ' + w : w; if (cur && ctx.measureText(tryL).width > 820) { lines.push(cur); cur = w; } else cur = tryL; }
+    for (const w of String(text).toLowerCase().split(/\s+/)) { const tryL = cur ? cur + ' ' + w : w; if (cur && ctx.measureText(tryL).width > 860) { lines.push(cur); cur = w; } else cur = tryL; }
     if (cur) lines.push(cur);
-    lines.forEach((l, i) => { const yy = y + i * 60;
-      ctx.shadowColor = 'rgba(0,0,0,.55)'; ctx.shadowBlur = 10; ctx.lineWidth = 9; ctx.strokeStyle = '#111'; ctx.strokeText(l, 520, yy);
-      ctx.shadowBlur = 0; ctx.fillStyle = '#ffe11a'; ctx.fillText(l, 520, yy); });
+    lines.forEach((l, i) => { const yy = i * 82;
+      ctx.shadowColor = 'rgba(0,0,0,.6)'; ctx.shadowBlur = 14; ctx.lineWidth = 15; ctx.strokeStyle = '#0b0b0b'; ctx.strokeText(l, 0, yy);
+      ctx.shadowBlur = 0; ctx.fillStyle = '#ffe11a'; ctx.fillText(l, 0, yy); });
     ctx.restore();
+  }
+  // the hook: the question in big type at the top from the very first frame (that frame is the video's cover) until
+  // the narrator has finished asking it; data.highlight words in yellow. Most viewers used to swipe away at 0:01.
+  function hookTitle(t) {
+    const b0 = beats[0];
+    if (!b0 || !data.title || K.hideText) return false;
+    const a = 1 - clamp01((t - b0.end + .12) / .22);
+    if (a <= 0) return false;
+    ctx.save(); ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+    const ws = words(data.title, data.highlight);
+    let size = 90, lines;
+    for (; size > 58; size -= 4) { ctx.font = `900 ${size}px ${SANS}`; lines = wrapWords(ws, 900); if (lines.length <= 4) break; }
+    const lh = size * 1.13, top = 255, h = lines.length * lh;
+    const g = ctx.createLinearGradient(0, top - 140, 0, top + h + 140);         // a soft dark band so it reads anywhere
+    g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(.3, 'rgba(0,0,0,.4)'); g.addColorStop(.7, 'rgba(0,0,0,.4)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.globalAlpha = a; ctx.fillStyle = g; ctx.fillRect(0, top - 140, W, h + 280);
+    const pop = 1 + .06 * (1 - ease.out(clamp01(t / .35)));
+    ctx.translate(520, top + h / 2); ctx.scale(pop, pop);
+    const space = ctx.measureText(' ').width;
+    lines.forEach((ln, i) => {
+      const tot = ln.reduce((s, x) => s + x.width, 0) + space * (ln.length - 1); let x = -tot / 2;
+      const y = (i - (lines.length - 1) / 2) * lh;
+      for (const wd of ln) {
+        ctx.shadowColor = 'rgba(0,0,0,.65)'; ctx.shadowBlur = 18; ctx.lineWidth = size * .2; ctx.strokeStyle = '#0b0b0b'; ctx.strokeText(wd.w, x, y);
+        ctx.shadowBlur = 0; ctx.fillStyle = wd.em ? '#ffe11a' : '#ffffff'; ctx.fillText(wd.w, x, y);
+        x += wd.width + space;
+      }
+    });
+    ctx.restore();
+    return true;
   }
   const CHIP = { W: ['#2fb84f', '#fff'], L: ['#d62d2d', '#fff'], D: ['#8a8f98', '#fff'], '?': ['#ffd21a', '#1a1a1a'] };
   function card(c, t, t0, t1) {
@@ -1179,21 +1345,25 @@ export async function boot(data, sceneUrl) {
   }
   function narratedText(t) {
     if (K.hideText) return;
+    const hook = hookTitle(t);            // while the big question is up, it is the caption (and no card covers it)
     // the scorebug: set by a beat's "score", kept until another beat changes or hides it
     let sc = null, scFrom = 0;
     for (const b of beats) if (b.start <= t && b.score !== undefined && b.score !== null) { sc = b.score === 'hide' ? null : b.score; scFrom = b.start; }
     let cardOn = false;
-    for (let i = 0; i < beats.length; i++) {
+    for (let i = 0; i < beats.length && !hook; i++) {
       const b = beats[i], c = b.card || b.hud; if (!c) continue;
       const t1 = beats[Math.min(beats.length - 1, i + Math.max(1, c.hold || 1) - 1)].end;
       if (t >= b.start && t < t1) { card(c, t, b.start, t1); cardOn = cardOn || c.kind !== 'count'; }
     }
-    if (sc && !cardOn) scorebug(sc, clamp01((t - scFrom) / .25));
-    for (const b of beats) for (const ch of b.chunks || []) if (t >= ch.t0 && t < ch.t1) caption(ch.text, 1240);
+    if (sc && !cardOn && !hook) scorebug(sc, clamp01((t - scFrom) / .25));
+    beats.forEach((b, i) => { if (i === 0 && hook) return;
+      for (const ch of b.chunks || []) if (t >= ch.t0 && t < ch.t1) caption(ch.text, 1240, t - ch.t0); });
   }
   function overlay(t) {
     ctx.clearRect(0, 0, W, H);
+    ctx.filter = NARR ? 'contrast(1.08) saturate(1.16)' : 'none';     // a punchier broadcast grade
     ctx.drawImage(renderer.domElement, 0, 0);
+    ctx.filter = 'none';
     if (vignette) { ctx.fillStyle = vigGrad; ctx.fillRect(0, 0, W, H); }
     const endStart = data.end_card ? data.duration - data.end_card : 1e9;
     const show = K.hideText ? 0 : 1;
@@ -1260,8 +1430,10 @@ export async function boot(data, sceneUrl) {
                  noise.noise(t * 9, 3.1, 0) * amp * .5);
     camera.position.add(shakeOff);
     camera.updateMatrixWorld();
-    overlay(t);
+    // draw this frame's 3D first, then the text over it (the other way round, every frame showed the previous
+    // frame's picture and the very first frame of each video, its TikTok cover, came out black)
     composer.render();
+    overlay(t);
     camera.position.sub(shakeOff);
   };
   return true;
