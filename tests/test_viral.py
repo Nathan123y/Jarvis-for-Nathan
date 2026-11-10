@@ -111,7 +111,7 @@ class CleanupTests(unittest.TestCase):
             (job / "script.json").write_text("{}")
             video, copy = out / "v.mp4", texts / "v.mp4"
             video.write_bytes(b"x"), copy.write_bytes(b"x")
-            rec = {"title": "t", "caption": "c", "path": str(video), "job": str(job)}
+            rec = {"title": "t", "caption": "c", "path": str(video), "job": str(job), "qa_ok": True}
             svc = wv.ViralService.__new__(wv.ViralService)
             svc.log = lambda m: None
             with patch.object(wv, "OUT", out), patch.object(wv, "WORK", work), \
@@ -133,6 +133,24 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(self.run_deliver("posted", "failed"), (True, True, True))
         self.assertEqual(self.run_deliver("texted", "posted"), (True, True, True))
 
+
+    def test_a_video_with_mistakes_is_never_posted(self):
+        svc = wv.ViralService.__new__(wv.ViralService)
+        svc.log = lambda m: None
+        rec = {"title": "t", "caption": "c", "path": "/nope.mp4", "job": "/nope"}
+        with patch.object(wv, "quality_check", return_value=("bad", ["voice at 12s: line cut off"])), \
+                patch.object(wv, "_mark"), patch.object(wv, "tiktok_post") as tt, patch.object(wv, "ig_post") as ig:
+            with self.assertRaises(wv.QualityHold):
+                svc.deliver(rec, {"post": True, "instagram": True})
+        tt.assert_not_called(), ig.assert_not_called()
+
+    def test_narrated_videos_never_use_a_robot_voice(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(wv, "gemini_tts", side_effect=RuntimeError("quota")), patch.object(wv, "edge_tts") as edge:
+            with self.assertRaises(wv.VoiceBusy):
+                wv.voice_lines(["hello there"], Path(tmp), {"tts_model": "gemini-3.8-flash-tts", "voice": "Fenrir",
+                                                            "style": "narrated"}, log=lambda m: None)
+            edge.assert_not_called()
 
     def test_one_text_names_both_apps(self):
         rec = {"title": "Robben vs Columbus", "caption": "c", "path": "/nope.mp4"}

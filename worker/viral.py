@@ -361,6 +361,14 @@ class ClaudeBusy(RuntimeError):
     """Claude is at its usage limit; the video waits for it instead of being made worse."""
 
 
+class QualityHold(RuntimeError):
+    """The finished video had a noticeable mistake; it isn't posted."""
+
+
+class VoiceBusy(ClaudeBusy):
+    """The narrator voice isn't available; the video waits instead of going out in a worse voice."""
+
+
 def ask_claude(prompt: str, timeout_s: float = 900, images: Optional[list] = None) -> str:
     """Claude on the membership. The Gemini fallback made poor videos (dark, empty scenes), so by default a video
     waits for Claude instead (setting gemini_fallback = True brings the fallback back)."""
@@ -702,6 +710,8 @@ def voice_lines(lines: list[str], job: Path, cfg: dict, log: Callable = print) -
             return paths
         except Exception as exc:
             log(f"viral: {model} voice failed ({str(exc)[:90]})")
+    if cfg.get("style") == "narrated":       # a robotic stand-in voice is an obvious quality mistake: wait for Gemini's
+        raise VoiceBusy("the narrator voice (Gemini TTS) isn't available right now")
     try:
         speed = float(cfg.get("voice_speed") or 1)
         for text, p in zip(lines, paths):
@@ -1523,6 +1533,104 @@ def make(topic: str = "", log: Callable = print, ask: Callable = ask_claude, his
     return rec
 
 
+QA_PROMPT = """You are the strict final quality checker for a short narrated 3D "what if" video before it is posted to
+TikTok and Instagram, where it competes with very polished videos. Watch AND listen to the whole attached video.
+
+The narrator should say exactly these lines, in this order:
+{lines}
+
+Report only real, noticeable mistakes a viewer would catch:
+- voice: a line skipped, cut off, repeated, garbled, mispronounced, or extra words read aloud (e.g. stage directions,
+  [tags], "beat 3"), a glitch, click, pop, robotic stretch, or a different voice; long dead air in the middle
+- audio: distortion or clipping, music or effects drowning out the voice, a sudden volume jump, an effect that clearly
+  does not match the moment
+- captions: misspelled, not matching what is said, out of sync by more than about half a second, cut off the screen,
+  overlapping other text, or unreadable
+- visual: black or blank frames, frozen picture, flicker, broken or stretched models, objects clipping through people,
+  camera inside an object, a shot where the subject is missing, glowing lines or other render glitches
+- ending: the video ends abruptly or mid-sentence
+
+Severity "major" = a typical viewer would notice and it makes the video look cheap or broken. "minor" = only a
+careful editor would notice. Reply with JSON only:
+{{"ok": true/false, "problems": [{{"t": seconds, "kind": "voice|audio|captions|visual|ending", "severity": "major|minor",
+"what": "short description"}}]}}
+"ok" is false when there is at least one major problem."""
+
+
+def _media_stats(video: Path) -> list[str]:
+    """Measured problems in the finished file: clipping, dead air, black frames. [] when it's clean."""
+    out = subprocess.run([ffmpeg(), "-hide_banner", "-nostats", "-i", str(video), "-af",
+                          "silencedetect=noise=-45dB:d=1.6,volumedetect", "-vf", "blackdetect=d=0.25:pix_th=0.06",
+                          "-f", "null", "-"], capture_output=True, text=True, timeout=900).stderr
+    problems = []
+    peak = re.search(r"max_volume:\s*(-?[\d.]+) dB", out)
+    if peak and float(peak.group(1)) >= -0.05:
+        problems.append(f"audio clips (peak {peak.group(1)} dB)")
+    mean = re.search(r"mean_volume:\s*(-?[\d.]+) dB", out)
+    if mean and float(mean.group(1)) < -32:
+        problems.append(f"audio is too quiet (mean {mean.group(1)} dB)")
+    dur = re.search(r"Duration: (\d+):(\d+):([\d.]+)", out)
+    total = int(dur.group(1)) * 3600 + int(dur.group(2)) * 60 + float(dur.group(3)) if dur else 0
+    for a, b in re.findall(r"silence_start: ([\d.]+)[\s\S]*?silence_end: ([\d.]+)", out):
+        if float(a) > 0.5 and float(b) < total - 3.5:           # quiet at the very start / under the end card is fine
+            problems.append(f"{float(b) - float(a):.1f}s of dead air at {float(a):.1f}s")
+    for a, b in re.findall(r"black_start:([\d.]+) black_end:([\d.]+)", out):
+        if float(a) > 0.2:
+            problems.append(f"black frames at {float(a):.1f}-{float(b):.1f}s")
+    return problems
+
+
+def _gemini_qa(video: Path, lines: list[str], log: Callable = print) -> Optional[dict]:
+    """Gemini watches and listens to a small copy of the video. None when it can't be reached."""
+    from core import gemini
+    from google.genai import types
+    small = video.with_suffix(".qa.mp4")
+    subprocess.run([ffmpeg(), "-loglevel", "quiet", "-y", "-i", str(video), "-vf", "scale=540:-2", "-r", "24",
+                    "-c:v", "libx264", "-crf", "30", "-preset", "veryfast", "-c:a", "aac", "-b:a", "96k", str(small)],
+                   check=True, timeout=600)
+    try:
+        prompt = QA_PROMPT.format(lines="\n".join(f"{i + 1}. {l}" for i, l in enumerate(lines)))
+        c = gemini.client(timeout_ms=300000)
+        for model in ("gemini-3.5-flash", "gemini-3.5-flash-lite"):
+            try:
+                r = c.models.generate_content(model=model, contents=[types.Part.from_bytes(data=small.read_bytes(),
+                                              mime_type="video/mp4"), prompt],
+                                              config=types.GenerateContentConfig(response_mime_type="application/json"))
+                return _json_from(r.text)
+            except Exception as exc:
+                log(f"viral: quality check on {model} failed ({str(exc)[:80]})")
+        return None
+    finally:
+        small.unlink(missing_ok=True)
+
+
+def quality_check(rec: dict, log: Callable = print) -> tuple[str, list[str]]:
+    """The last gate before posting. ("ok", []) | ("bad", problems) | ("unavailable", []). A major problem must be
+    seen on two separate looks before a video is held, so one odd answer can't throw a good video away."""
+    video = Path(rec["path"])
+    try:
+        script = json.loads((Path(rec["job"]) / "script.json").read_text())
+        lines = [b["say"] for b in script["beats"]]
+    except Exception:
+        lines = []
+    try:
+        problems = _media_stats(video)
+    except Exception as exc:
+        log(f"viral: couldn't measure the file ({exc})")
+        problems = []
+    first = _gemini_qa(video, lines, log)
+    if first is None:
+        return ("bad", problems) if problems else ("unavailable", [])
+    major = [p for p in first.get("problems") or [] if isinstance(p, dict) and p.get("severity") == "major"]
+    if major:
+        second = _gemini_qa(video, lines, log) or {}
+        again = [p for p in second.get("problems") or [] if isinstance(p, dict) and p.get("severity") == "major"]
+        if not again:
+            major = []                                  # not seen twice: let it through
+    problems += [f"{p.get('kind', '?')} at {float(p.get('t') or 0):.0f}s: {str(p.get('what', ''))[:120]}" for p in major]
+    return ("bad", problems) if problems else ("ok", [])
+
+
 SOUND_CHECK = """You are the sound editor of a short viral 3D video. Listen to the attached soundtrack (ignore any
 narrator's voice; judge the background sounds and effects) and compare it, beat by beat, with what is on screen:
 {beats}
@@ -2076,7 +2184,10 @@ class ViralService:
             rec = queued[0]
             st["queue"] = queued[1:]
             save_state(st)
-            return self.deliver(rec, cfg)
+            try:
+                return self.deliver(rec, cfg)
+            except QualityHold as exc:
+                return self._retry_slot(rec.get("topic", ""), f"\"{rec['title']}\" had mistakes ({str(exc)[:160]}), so I didn't post it")
         if not topic and st.get("sequels"):             # a sequel to a video that took off goes first
             topic = st["sequels"].pop(0)
             save_state(st)
@@ -2125,9 +2236,53 @@ class ViralService:
             save_state(st)
             self.notify("viral", f"🎬 Couldn't make today's TikTok video: {str(exc)[:160]}")
             return "failed"
-        return self.deliver(rec, cfg)
+        try:
+            return self.deliver(rec, cfg)
+        except QualityHold as exc:
+            return self._retry_slot(topic, f"\"{rec['title']}\" had mistakes ({str(exc)[:160]}), so I didn't post it")
+
+    def _retry_slot(self, topic: str, why: str) -> str:
+        """Make this slot's video again (same idea, fresh take), at most MAX_SLOT_TRIES times."""
+        st = load_state()
+        if topic:
+            st.setdefault("sequels" if topic.startswith("PART 2") else "topic_queue", []).insert(0, topic)
+        st["slot_tries"] = st.get("slot_tries", 0) + 1
+        if st["slot_tries"] >= self.MAX_SLOT_TRIES:
+            st["slot_tries"] = 0
+            save_state(st)
+            self.log(f"viral: {why}; gave up on this slot")
+            self.notify("viral", f"🎬 {why}. I'll try again at the next time slot.")
+            return "gave up"
+        for day, done in st["slots"].items():
+            st["slots"][day] = done[:-1] if done else done
+        save_state(st)
+        self.log(f"viral: {why}; making it again")
+        return "retry"
+
+    QA_WAIT_MIN = 10            # the checker couldn't be reached: wait, then look again before posting
+    QA_MAX_WAITS = 6            # ...for up to an hour; never post a video nobody looked at
 
     def deliver(self, rec: dict, cfg: dict) -> str:
+        if cfg["post"] and not rec.get("qa_ok"):
+            verdict, problems = quality_check(rec, self.log)
+            if verdict == "unavailable":
+                rec["qa_waits"] = rec.get("qa_waits", 0) + 1
+                if rec["qa_waits"] <= self.QA_MAX_WAITS:
+                    st = load_state()
+                    st["queue"] = [rec] + [v for v in st.get("queue") or [] if v.get("path") != rec["path"]]
+                    st["claude_busy_until"] = time.time() + self.QA_WAIT_MIN * 60
+                    for day, done in st["slots"].items():   # reopen the slot: the queued video goes at the next pass
+                        st["slots"][day] = done[:-1] if done else done
+                    save_state(st)
+                    self.log(f"viral: the quality check couldn't run; looking again in {self.QA_WAIT_MIN} minutes")
+                    return "waiting"
+                problems = ["the quality check couldn't run for an hour"]
+            if verdict != "ok":
+                _mark(rec["path"], held=True, qa=problems)
+                self.log("viral: held back, quality problems: " + "; ".join(problems)[:400])
+                raise QualityHold("; ".join(problems))
+            rec["qa_ok"] = True
+            self.log("viral: quality check passed")
         tt = self._deliver_tiktok(rec, cfg)
         ig = self.post_instagram(rec, cfg) if cfg["post"] and cfg.get("instagram") else "off"
         self._text_result(rec, cfg, tt, ig)                 # ONE text per video, both apps (user, 11-10)
