@@ -117,8 +117,10 @@ class CleanupTests(unittest.TestCase):
             with patch.object(wv, "OUT", out), patch.object(wv, "WORK", work), \
                     patch("core.phone_alerts.FILE_DIR", texts), \
                     patch.object(svc, "_deliver_tiktok", return_value=tiktok, create=True), \
-                    patch.object(svc, "post_instagram", return_value=instagram, create=True):
+                    patch.object(svc, "post_instagram", return_value=instagram, create=True), \
+                    patch("core.phone_alerts.send_text") as text, patch("core.phone_alerts.send_file") as file:
                 svc.deliver(rec, {"post": True, "instagram": instagram is not None})
+            self.assertEqual(text.call_count + file.call_count, 1)        # one text per video, never two
             return video.exists(), copy.exists(), job.exists()
 
     def test_posted_everywhere_deletes_all_files(self):
@@ -131,6 +133,17 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(self.run_deliver("posted", "failed"), (True, True, True))
         self.assertEqual(self.run_deliver("texted", "posted"), (True, True, True))
 
+
+    def test_one_text_names_both_apps(self):
+        rec = {"title": "Robben vs Columbus", "caption": "c", "path": "/nope.mp4"}
+        svc = wv.ViralService.__new__(wv.ViralService)
+        svc.log = lambda m: None
+        with patch("core.phone_alerts.send_text") as text:
+            svc._text_result(rec, {"post": True, "instagram": True}, "posted", "posted")
+        msg = text.call_args[0][0]
+        self.assertIn("TikTok: ✅", msg)
+        self.assertIn("Instagram: ✅", msg)
+        self.assertIn("Robben vs Columbus", msg)
 
 class StatsTests(unittest.TestCase):
     def test_counts_parse(self):
