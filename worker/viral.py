@@ -2128,11 +2128,32 @@ class ViralService:
         return self.deliver(rec, cfg)
 
     def deliver(self, rec: dict, cfg: dict) -> str:
-        out = self._deliver_tiktok(rec, cfg)
+        tt = self._deliver_tiktok(rec, cfg)
         ig = self.post_instagram(rec, cfg) if cfg["post"] and cfg.get("instagram") else "off"
-        if out == "posted" and ig in ("posted", "off"):     # up everywhere: no need to keep it (a failed post keeps its file)
+        self._text_result(rec, cfg, tt, ig)                 # ONE text per video, both apps (user, 11-10)
+        if tt == "posted" and ig in ("posted", "off"):      # up everywhere: no need to keep it (a failed post keeps its file)
             remove_files(rec, self.log)
-        return out
+        return tt
+
+    def _text_result(self, rec: dict, cfg: dict, tt: str, ig: str) -> None:
+        handle = cfg.get("handle") or "whatifishowedu"
+        ig_handle = cfg.get("ig_handle") or "whatifishowedu"
+        why = rec.get("_why", {})
+        lines = [f"TikTok: ✅ https://www.tiktok.com/@{handle}" if tt == "posted"
+                 else f"TikTok: ❌ {why.get('tiktok', tt)}" if cfg["post"] else "TikTok: not posted (posting is off)"]
+        if ig != "off":
+            lines.append(f"Instagram: ✅ https://www.instagram.com/{ig_handle}/reels/" if ig == "posted"
+                         else f"Instagram: ❌ {why.get('instagram', ig)}")
+        head = "🎬 Just posted" if tt == "posted" or ig == "posted" else "🎬 Made but not posted"
+        body = f"{head}: \"{rec['title']}\"\n" + "\n".join(lines)
+        try:
+            from core import phone_alerts
+            if tt == "posted":
+                phone_alerts.send_text(body)
+            else:                                          # TikTok missed it: send the video so it can go up by hand
+                phone_alerts.send_file(rec["path"], body + f"\n\n{rec['caption']}")
+        except Exception as exc:
+            self.log(f"viral: couldn't text the post note: {exc}")
 
     def post_instagram(self, rec: dict, cfg: dict) -> str:
         """The same video as a Reel on the videos' Instagram page (a failure there never stops TikTok)."""
@@ -2143,45 +2164,34 @@ class ViralService:
             return "posted"
         except NotLoggedIn:
             self.log("viral: Instagram isn't logged in yet (python3 -m worker.viral iglogin)")
+            rec.setdefault("_why", {})["instagram"] = "not logged in (python3 -m worker.viral iglogin)"
             return "not logged in"
         except Exception as exc:
             self.log(f"viral: Instagram post failed: {exc}")
-            self.notify("viral", f"🎬 Couldn't post \"{rec['title']}\" to Instagram ({str(exc)[:100]}). TikTok is unaffected.")
+            rec.setdefault("_why", {})["instagram"] = f"failed ({str(exc)[:100]})"
             return "failed"
 
     def _deliver_tiktok(self, rec: dict, cfg: dict) -> str:
-        if cfg["post"]:
-            try:
-                try:
-                    tiktok_post(Path(rec["path"]), rec["caption"], cfg["ai_label"], self.log)
-                except NotLoggedIn:
-                    raise
-                except Exception as exc:                   # one more go: on 11-08 the Mac napped mid-upload and
-                    self.log(f"viral: TikTok upload failed ({str(exc)[:80]}); trying once more")   # Studio never loaded
-                    time.sleep(90)
-                    tiktok_post(Path(rec["path"]), rec["caption"], cfg["ai_label"], self.log)
-                _mark(rec["path"], posted=True)
-                try:                                       # the user asked for a text every time one goes up
-                    from core import phone_alerts
-                    phone_alerts.send_text(f"🎬 Just posted to TikTok: \"{rec['title']}\"\n"
-                                           f"https://www.tiktok.com/@{cfg.get('handle') or 'whatifishowedu'}")
-                except Exception as exc:
-                    self.log(f"viral: couldn't text the post note: {exc}")
-                return "posted"
-            except NotLoggedIn:
-                note = "TikTok isn't logged in yet, so here it is. Log in once: python3 -m worker.viral login"
-            except Exception as exc:
-                self.log(f"viral: posting failed: {exc}")
-                note = f"Couldn't post it to TikTok ({str(exc)[:100]}), so here it is"
-        else:
-            note = "Ready to post"
+        if not cfg["post"]:
+            return "off"
         try:
-            from core import phone_alerts
-            phone_alerts.send_file(rec["path"], f"🎬 \"{rec['title']}\" — {note}\n\n{rec['caption']}")
-            return "texted"
+            try:
+                tiktok_post(Path(rec["path"]), rec["caption"], cfg["ai_label"], self.log)
+            except NotLoggedIn:
+                raise
+            except Exception as exc:                       # one more go: on 11-08 the Mac napped mid-upload and
+                self.log(f"viral: TikTok upload failed ({str(exc)[:80]}); trying once more")   # Studio never loaded
+                time.sleep(90)
+                tiktok_post(Path(rec["path"]), rec["caption"], cfg["ai_label"], self.log)
+            _mark(rec["path"], posted=True)
+            return "posted"
+        except NotLoggedIn:
+            rec.setdefault("_why", {})["tiktok"] = "not logged in (python3 -m worker.viral login)"
+            return "not logged in"
         except Exception as exc:
-            self.log(f"viral: couldn't text the video: {exc}")
-            return "made"
+            self.log(f"viral: posting failed: {exc}")
+            rec.setdefault("_why", {})["tiktok"] = f"failed ({str(exc)[:100]})"
+            return "failed"
 
 
 def remove_files(rec: dict, log: Callable = print) -> None:
