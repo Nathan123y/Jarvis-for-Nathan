@@ -4,8 +4,9 @@ Once a day (and on request) it:
   1. invents one design for a gift niche (Gemini, free): an illustration prompt, a short slogan, a title,
      a description and 13 Etsy tags. Brands, characters, celebrities, teams and lyrics are refused twice:
      in the prompt and by BLOCKED below, because copyright complaints are how print-on-demand shops get closed;
-  2. draws it (Cloudflare Workers AI, flux-1-schnell, free tier), cuts away the white background and sets the
-     slogan under it at print size;
+  2. draws it (Cloudflare Workers AI, flux-1-schnell, free tier), has the drawing looked over and redrawn if it
+     has a mistake a shopper would notice, cuts away the white background and sets the slogan with it in big
+     capitals (worker/lettering.py), in the shape each product's print area wants;
   3. puts it on a T-shirt, a mug and a sticker in Printify, priced so each sale clears `profit` after
      Printify's cost and Etsy's fees, and publishes them to the Etsy shop connected in Printify.
 
@@ -41,9 +42,11 @@ PRODUCTS = {
     "tee": {"name": "T-Shirt", "blueprint": 12, "provider": 99, "profit": 8.0,      # Bella+Canvas 3001
             "colors": ("White", "Natural", "Ash", "Athletic Heather", "Soft Cream", "Heather Peach"),
             "sizes": ("S", "M", "L", "XL", "2XL"), "fill": 0.9},
+    # a hoodie's print area stops above the pocket (about 3:2), so it takes the design's wide layout: a tall one
+    # was shrunk to half the width to fit
     "hoodie": {"name": "Hoodie", "blueprint": 77, "provider": 99, "profit": 10.0,  # Gildan 18500
                "colors": ("White", "Sport Grey", "Ash", "Sand", "Light Pink", "Light Blue"),
-               "sizes": ("S", "M", "L", "XL", "2XL"), "fill": 0.95},
+               "sizes": ("S", "M", "L", "XL", "2XL"), "fill": 0.95, "layout": "wide"},
     "tank": {"name": "Tank Top", "blueprint": 39, "provider": 99, "profit": 7.0,    # Bella+Canvas 3480
              "colors": ("White", "Athletic Heather"), "sizes": ("S", "M", "L", "XL", "2XL"), "fill": 0.9},
     "shorts": {"name": "Sweat Shorts", "blueprint": 1574, "provider": 39, "profit": 7.0,   # Comfort Colors, printed on the left leg
@@ -66,18 +69,23 @@ PRODUCTS = {
               "sizes": ("iPhone 13", "iPhone 14", "iPhone 15", "iPhone 15 Pro", "iPhone 15 Pro Max", "iPhone 16",
                         "iPhone 16 Pro", "iPhone 16 Pro Max", "iPhone 17"), "fill": 0.8},
     "tote": {"name": "Tote Bag", "blueprint": 1313, "provider": 99, "profit": 6.0, "fill": 0.85},  # Liberty Bags canvas
-    "ornament": {"name": "Christmas Ornament", "blueprint": 1599, "provider": 99, "profit": 6.0,    # ceramic, 4 shapes
-                 "fill": 0.92},
+    # ceramic. Sold round and oval only: the star and the heart cut the slogan off (the star was the listing's
+    # main photo), and the design is sized to sit inside the curve, a little low to clear the hole for the cord.
+    # The round one's face is smaller than its print area says (measured on Printify's photo: about 84% of it).
+    "ornament": {"name": "Christmas Ornament", "blueprint": 1599, "provider": 99, "profit": 6.0,
+                 "fill": 0.9, "fills": {1.0: 0.76}, "y": 0.53, "shape": "ellipse",
+                 "options": {"shape": ("Circle", "Oval")}},
     "tumbler": {"name": "Tumbler", "blueprint": 353, "provider": 1, "profit": 7.0, "fill": 0.8},   # 20oz
     # the ugly-sweater line (2026-10-26, from the user's "GET LIT" photo): its art is light on dark, so dark garments
-    "sweater_tee": {"name": "T-Shirt", "blueprint": 12, "provider": 99, "profit": 8.0,
-                    "colors": ("Black", "Canvas Red", "Forest"), "sizes": ("S", "M", "L", "XL", "2XL"), "fill": 0.9},
-    "sweater_hoodie": {"name": "Hoodie", "blueprint": 77, "provider": 99, "profit": 10.0,
-                       "colors": ("Black", "Red", "Navy", "Forest Green"), "sizes": ("S", "M", "L", "XL", "2XL"), "fill": 0.9},
+    "sweater_tee": {"name": "T-Shirt", "blueprint": 12, "provider": 99, "profit": 8.0, "ground": "dark",
+                    "colors": ("Black", "Canvas Red", "Forest"), "sizes": ("S", "M", "L", "XL", "2XL"), "fill": 0.92},
+    "sweater_hoodie": {"name": "Hoodie", "blueprint": 77, "provider": 99, "profit": 10.0, "ground": "dark",
+                       "colors": ("Black", "Red", "Navy", "Forest Green"), "sizes": ("S", "M", "L", "XL", "2XL"),
+                       "fill": 0.95, "layout": "wide"},
     # printed all over (sleeves, cuffs, waistband); Printify photographs it on a person, unlike the knit sweater
     # (blueprint 1748), whose only photo is the flat printing template
     "ugly_sweater": {"name": "Ugly Christmas Sweater", "blueprint": 1023, "provider": 90, "profit": 12.0,
-                     "art": "sweater", "sizes": ("S", "M", "L", "XL", "2XL")},
+                     "art": "sweater", "ground": "dark", "sizes": ("S", "M", "L", "XL", "2XL")},
     # added 2026-10-30, for the family, pet and couple lines (all Printify Choice)
     "youth_tee": {"name": "Youth T-Shirt", "blueprint": 420, "provider": 99, "profit": 7.0,    # Bella+Canvas 3001Y
                   "colors": ("White", "Natural", "Ash", "Athletic Heather"), "sizes": ("S", "M", "L", "XL"), "fill": 0.9},
@@ -85,7 +93,9 @@ PRODUCTS = {
                     "colors": ("White", "Natural", "Athletic Heather"), "sizes": ("2T", "3T", "4T", "5T"), "fill": 1.0},
     "baby_bodysuit": {"name": "Baby Bodysuit", "blueprint": 33, "provider": 99, "profit": 7.0,   # Rabbit Skins 4424
                       "colors": ("White", "Ash", "Heather"), "sizes": ("NB (0-3M)", "6M", "12M", "18M", "24M"), "fill": 1.0},
-    "pet_bandana": {"name": "Dog Bandana", "blueprint": 562, "provider": 99, "profit": 5.0, "fill": 0.75, "y": 0.38},
+    # a triangle, point down, its top edge rolled at the collar: words on top, where it's widest, the pet below
+    "pet_bandana": {"name": "Dog Bandana", "blueprint": 562, "provider": 99, "profit": 5.0, "fill": 0.97,
+                    "shape": "triangle", "layout": "over"},
     # not in the pet line: about $54 at our margin, against ~$30 dog hoodies elsewhere
     "pet_hoodie": {"name": "Dog Hoodie", "blueprint": 10741, "provider": 99, "profit": 8.0, "position": "back_dtg",
                    "colors": ("Grey", "Pink"), "sizes": ("XS", "S", "M", "L", "XL", "2XL"), "fill": 0.85},
@@ -96,7 +106,10 @@ PRODUCTS = {
     "emb_beanie": {"name": "Embroidered Beanie", "blueprint": 1691, "provider": 99, "profit": 8.0, "art": "slogan",
                    "ink": (245, 238, 222, 255), "colors": ("Black", "Navy", "Red", "Spruce", "Dark Grey"),
                    "sizes": ("One size",), "fill": 0.9},
-    "stocking": {"name": "Christmas Stocking", "blueprint": 734, "provider": 99, "profit": 7.0, "fill": 0.7},
+    # the print area is the whole boot's bounding box: the design sits on the leg (left of centre, the foot sticks
+    # out to the right), below the cuff, and no wider than the leg
+    "stocking": {"name": "Christmas Stocking", "blueprint": 734, "provider": 99, "profit": 7.0, "fill": 0.55,
+                 "x": 0.4, "y": 0.56},
     "blanket": {"name": "Sherpa Fleece Blanket", "blueprint": 238, "provider": 99, "profit": 12.0,
                 "sizes": ('50" \u00d7 60"', '60" \u00d7 80"'), "fill": 0.75},
     "wrap": {"name": "Wrapping Paper", "blueprint": 1367, "provider": 99, "profit": 5.0, "art": "tile", "fill": 1.0,
@@ -117,10 +130,14 @@ PRODUCTS = {
                    "positions": ("front", "back"), "fill": 0.9},
 }
 SWEATER_PRODUCTS = ["ugly_sweater", "sweater_tee", "sweater_hoodie"]
-SWEATER_NOTE = """This one is an UGLY CHRISTMAS SWEATER design: the picture is always a Christmas tree with glowing
-lights (drawn for you), so only the words matter. The slogan is a short, punchy pun of 2-4 words (never a sentence) that plays on
-lights, trees, being lit, ornaments, tinsel, Santa or the season, in the spirit of "GET LIT" but your own. Put
-"ugly christmas sweater" in the title and tags; image_prompt can just be "christmas tree"."""
+SWEATER_NOTE = """This one is an UGLY CHRISTMAS SWEATER design: the words are knitted in chunky sweater letters over a
+knitted picture we draw for you. Pick the picture that fits your pun and add it to your JSON as "motif", one of:
+tree (a Christmas tree strung with glowing lights and tinsel), reindeer, snowman, gingerbread (a gingerbread man),
+ornament (a bauble), lights (a string of coloured bulbs), candy_canes, santa_hat, snowflake, present, elf, wreath.
+The slogan is a short, punchy pun of 2-4 words (never a sentence) that plays on that picture or on lights, trees, being
+lit, ornaments, tinsel, Santa or the season, in the spirit of "GET LIT" but your own. Keep every word to 11 letters or
+fewer: a long word has to be knitted small. Put "ugly christmas sweater" in the title and tags; image_prompt can just
+name the motif."""
 # Holiday lines: while a season runs, one extra design a day is made for it, on the products that sell for it.
 # (start, end) are (month, day); the end leaves time to ship before the holiday. Two lines running at once
 # take turns, a day each. Halloween is left out this
@@ -323,12 +340,17 @@ Rules, all required:
 - No brands, trademarks, logos, characters, celebrities, sports teams, movies, TV, games, songs, quotes or
   slogans someone else owns, and no famous meme images or meme characters (Pepe, Doge, This Is Fine dog,
   Wojak, etc.) - the joke and the drawing must be original.
-- The illustration: one funny, weird or deadpan character or object (e.g. a raccoon in a hoodie, a burnt-out
-  coffee cup, a smug cat, a skeleton at a laptop), bold streetwear-style vector art, thick dark outlines,
-  a few punchy colours, centred, isolated on a plain pure white background, no text, letters or numbers.
-- The slogan is printed under the picture by us: 2 to 7 words (never more), ALL CAPS, plain ASCII, punchy and quotable.
-- Title: what buyers type into Etsy search (e.g. "funny sarcastic shirt", "meme shirt", "gen z humor"),
-  60-120 characters, no product type (we add "T-Shirt" etc.).
+- The illustration: ONE funny, weird or deadpan character or object (e.g. a raccoon in a hoodie, a burnt-out
+  coffee cup, a smug cat, a skeleton at a laptop), whole and centred, bold streetwear-style vector art, thick dark
+  outlines, a few punchy colours, isolated on a plain pure white background: no scene, no ground or shadow under it,
+  and no text, letters, numbers, signs or speech bubbles anywhere in it (an AI draws it and spells badly). Start
+  image_prompt with exactly what it is; if the design is for an animal breed or a job, that breed or job's own
+  character IS the subject, drawn so its owner or holder recognises it at a glance. Cute and funny, never creepy.
+- The slogan is printed with the picture by us, in big capitals: 2 to 7 words (never more), ALL CAPS, plain ASCII,
+  punchy and quotable. Shorter prints bigger and sells better: cut every word the joke doesn't need.
+- Title: the slogan first, in Title Case, then what buyers type into Etsy search (e.g. "funny sarcastic shirt",
+  "meme shirt", "gen z humor"); if the notes above say what the title must lead with, lead with that and put the
+  slogan right after. 60-120 characters, no product type (we add "T-Shirt" etc.).
 - Exactly 13 tags, each 20 characters or fewer, lowercase, what buyers search for.
 - Don't repeat the theme or joke of these recent designs; pick a different topic: {recent}
 - "niche" names the meme or trend you riffed on, or the topic if none fit.
@@ -349,6 +371,8 @@ use a meme or slang phrase that's been big online in the last few months instead
 # Printify's catalog answers "Too Many Attempts" when every pass asks again; a product's variants don't change
 _VARIANTS: dict = {}
 _AREAS: dict = {}                    # kind -> {print position: (w, h)}, for the all-over-print sweater
+_GROUPS: dict = {}                   # kind -> [(variant ids, (w, h))], one per shape of print area (a round ornament, an oval one)
+_FACTS: dict = {}                    # blueprint -> the maker's own facts about it (fabric, fit, care), for the listing
 
 
 def season_for(day) -> Optional[str]:
@@ -481,16 +505,23 @@ def clean_idea(idea: dict) -> dict:
         raise ValueError(f"the idea used a protected name ({hit.group(0)})")
     tags, seen = [], set()
     for t in idea.get("tags") or []:
-        t = re.sub(r"[^a-z0-9 '&-]", "", str(t).lower()).strip()[:20].strip()
-        if t and t not in seen:
+        t = " ".join(re.sub(r"[^a-z0-9 '&-]", "", str(t).lower()).split())
+        while len(t) > 20 and " " in t:                    # too long for Etsy: drop whole words, never half of one
+            t = t.rsplit(" ", 1)[0]                        # ("funny christmas shir" was a wasted tag)
+        if t and len(t) <= 20 and t not in seen:
             seen.add(t)
             tags.append(t)
     slogan = re.sub(r"[^A-Z0-9 '!?&.,*-]", "", str(idea.get("slogan") or "").upper()).strip()
     if len(slogan.split()) > 8:
         raise ValueError("the slogan is too long to print")
-    return {"niche": str(idea.get("niche") or "")[:80], "image_prompt": str(idea["image_prompt"])[:900],
-            "slogan": " ".join(slogan.split()), "title": " ".join(str(idea["title"]).split())[:110],
-            "description": " ".join(str(idea.get("description") or "").split())[:600], "tags": tags[:13]}
+    out = {"niche": str(idea.get("niche") or "")[:80], "image_prompt": str(idea["image_prompt"])[:900],
+           "slogan": " ".join(slogan.split()), "title": " ".join(str(idea["title"]).split())[:110],
+           "description": " ".join(str(idea.get("description") or "").split())[:600], "tags": tags[:13]}
+    from worker import sweater
+    motif = re.sub(r"[^a-z]+", "_", str(idea.get("motif") or "").lower()).strip("_")
+    if motif in sweater.MOTIFS:                            # the sweater line's knitted picture
+        out["motif"] = motif
+    return out
 
 
 # ── artwork ──────────────────────────────────────────────────────────────────
@@ -544,31 +575,98 @@ def drop_specks(img, share: float = 0.004):
     return Image.fromarray(out, "RGBA")
 
 
-def compose(art, slogan: str, width: int = DESIGN_W):
-    """The illustration enlarged to `width`, the slogan set under it; a transparent PNG for printing."""
-    from PIL import Image, ImageDraw, ImageFilter, ImageFont
-    art = art.resize((width, round(art.height * width / art.width)), Image.LANCZOS).filter(
-        ImageFilter.UnsharpMask(radius=2, percent=60, threshold=2))
-    if not slogan:
-        return art
-    draw = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-    size = 420
-    while size > 120:
-        font = ImageFont.truetype(FONT, size)
-        lines = _wrap(slogan, font, draw, width)
-        if len(lines) <= 2:
-            break
-        size -= 30
-    line_h = round(size * 1.15)
-    canvas = Image.new("RGBA", (width, art.height + 80 + line_h * len(lines)), (0, 0, 0, 0))
-    canvas.paste(art, (0, 0), art)
-    d = ImageDraw.Draw(canvas)
-    y = art.height + 80
-    for line in lines:
-        w = d.textlength(line, font=font)
-        d.text(((width - w) / 2, y), line, font=font, fill=(34, 30, 38, 255))
-        y += line_h
-    return canvas
+def compose(art, slogan: str, width: int = DESIGN_W, layout: str = "tall", look: str = "plain", seed: int = 0):
+    """The print: the drawing with the slogan set big beside or under it (worker/lettering.py); a transparent PNG."""
+    from worker import lettering
+    return lettering.compose(art, slogan, layout=layout, look=look, seed=seed, width=width)
+
+
+# What a drawing is checked for before it's printed (2026-11-10). The AI that draws can't spell, sometimes draws the
+# wrong animal for a breed's owner, and now and then a creature with red eyes or a spare leg: each of those went
+# live before this.
+ART_STYLE = (" Bold flat vector sticker illustration, thick clean dark outlines, a few flat punchy colours, one centred "
+             "subject shown whole, friendly eyes, plain pure white background, no shadow, no ground, no scenery, "
+             "no text, no letters, no numbers, no watermark.")
+ART_CHECK = """You check a drawing before it is printed on T-shirts and gifts and sold. An AI image model drew it for
+this design:
+- the slogan (we print it ourselves beside the picture; it must NOT be in the picture): "{slogan}"
+- what the picture should show: {prompt}
+- who buys it: {audience}
+
+Look at the attached picture. Report only what a shopper would notice in a listing photo:
+- text: any letters, words, numbers, signature or watermark drawn in the picture
+- subject: it doesn't show what it should (the wrong animal, or a breed its owner wouldn't recognise as theirs; a
+  person where an animal was asked for; the main thing missing)
+- glitch: an extra, missing or deformed limb, eye or face; melted or doubled parts; red, blank or creepy eyes on
+  something meant to be cute; gibberish symbols
+- cropped: the subject is cut off by the edge of the picture
+- background: a scene, box or coloured backdrop behind it instead of plain white, or a large shadow or puddle
+  under it
+
+Severity "major" = a shopper would notice and it makes the product look cheap, wrong or broken. "minor" = only a
+careful designer would notice. Reply with JSON only:
+{{"ok": true/false, "problems": [{{"kind": "text|subject|glitch|cropped|background", "severity": "major|minor",
+"what": "short description"}}]}}
+"ok" is false when there is at least one major problem."""
+
+
+def art_problems(look: Callable, raw: bytes, idea: dict, audience: Optional[str]) -> Optional[list]:
+    """The major problems one look finds in a drawing ([] = it's fine); None when nobody could look."""
+    from PIL import Image
+    try:
+        im = Image.open(io.BytesIO(raw)).convert("RGB")
+        im.thumbnail((768, 768))
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=85)
+        out = look(buf.getvalue(), ART_CHECK.format(slogan=idea.get("slogan") or "(none)", prompt=idea["image_prompt"][:500],
+                                                    audience=audience or "anyone who finds it funny"))
+    except Exception:
+        return None
+    if not isinstance(out, dict) or not ("ok" in out or "problems" in out):
+        return None
+    return [f"{p.get('kind', '?')}: {str(p.get('what', ''))[:100]}" for p in out.get("problems") or []
+            if isinstance(p, dict) and p.get("severity") == "major"]
+
+
+def slogan_case(slogan: str) -> str:
+    """I'M LOSING MY TINSEL -> I'm Losing My Tinsel (str.title() makes it "I'M")."""
+    return " ".join(w.capitalize() for w in slogan.split())
+
+
+FACT_WORDS = re.compile(r"material|fabric|cotton|polyester|ceramic|\d ?%|\boz\b|\bfit\b|dishwasher|microwave|"
+                        r"lead|bpa|label|one-sided|hanging|machine wash|sherpa|fleece|canvas|rubber|neoprene", re.I)
+NOT_FACTS = re.compile(r"available in|shapes|sourced|customi[sz]|personali[sz]|your (design|print)|automatically|"
+                       r"disclaimer|providers?\b|assembled|blank product", re.I)
+
+
+def product_facts(description: str, limit: int = 5) -> list:
+    """The maker's facts worth telling a buyer (what it's made of, how it fits, how to wash it), from the catalog's
+    description of a blank: its ".:" bullet lines, minus the ones written for sellers or about sizes we don't stock."""
+    text = re.sub(r"<br\s*/?>|</div>|</p>|</li>", "\n", description or "", flags=re.I)
+    text = re.sub(r"<[^>]+>", "", text).replace("&nbsp;", " ").replace("&amp;", "&").replace("\u00a0", " ")
+    out = []
+    for line in text.split("\n"):
+        line = " ".join(line.split())
+        if not line.startswith(".:"):
+            continue
+        line = line[2:].strip()
+        if 8 <= len(line) <= 260 and FACT_WORDS.search(line) and not NOT_FACTS.search(line) and line not in out:
+            out.append(line if line.endswith((".", "!")) else line + ".")
+    return out[:limit]
+
+
+AI_NOTE = ("Designed in our studio with the help of AI image tools, then printed on demand and shipped by our "
+           "production partner. Each item is made for you after you order.")
+
+
+def listing_text(rec: dict, facts: list, closing: str = AI_NOTE) -> str:
+    """A listing's description: the pitch, what the design says, what the product is made of, how it's made."""
+    parts = [rec["description"]]
+    if rec.get("slogan"):
+        parts.append(f"It reads: \"{slogan_case(rec['slogan'])}\".")
+    if facts:
+        parts.append("Details:\n" + "\n".join(f"- {f}" for f in facts))
+    return "\n\n".join(parts + [closing])
 
 
 def slogan_art(slogan: str, size: tuple = (3300, 1500), ink: tuple = (34, 30, 38, 255)):
@@ -634,9 +732,10 @@ def _wrap(text: str, font, draw, width: int) -> list:
     return lines + ([cur] if cur else [])
 
 
-def design_closeup(design: Path, dest: Path, size: int = 2000, detail: bool = False) -> None:
+def design_closeup(design: Path, dest: Path, size: int = 2000, detail: bool = False, dark: bool = False) -> None:
     """The design on a soft square backdrop: a clear look at the artwork for the listing photos.
-    `detail` zooms in on the middle of the illustration, from the original drawing."""
+    `detail` zooms in on the middle of the illustration, from the original drawing. `dark`: a near-black backdrop,
+    for designs lettered in cream for dark garments (on the cream one their words vanished)."""
     from PIL import Image
     art = Image.open(design).convert("RGBA")
     raw = design.with_name(design.stem + "-raw.jpg")
@@ -648,7 +747,7 @@ def design_closeup(design: Path, dest: Path, size: int = 2000, detail: bool = Fa
         backdrop = (226, 236, 228, 255)
     else:
         art.thumbnail((int(size * 0.8), int(size * 0.8)), Image.LANCZOS)
-        backdrop = (244, 239, 230, 255)
+        backdrop = (26, 26, 30, 255) if dark else (244, 239, 230, 255)
     canvas = Image.new("RGBA", (size, size), backdrop)
     canvas.paste(art, ((size - art.width) // 2, (size - art.height) // 2), art)
     canvas.convert("RGB").save(dest, "JPEG", quality=90)
@@ -714,11 +813,68 @@ def products_in(rec: dict, channel: str) -> dict:
 def placements(kind: str, image_id: str, size: tuple, area: tuple) -> list:
     """Where the design goes in the print area. Printify's scale is relative to the area's width.
     Centred, even on a mug: the photo Printify sends to Etsy looks straight at the middle of the wrap,
-    and a copy on each side of the handle (tried 2026-10-24) puts a seam right there."""
+    and a copy on each side of the handle (tried 2026-10-24) puts a seam right there.
+    A product that isn't the rectangle its print area claims gets the design sized to what's really there: an
+    "ellipse" (a round or oval ornament: the biggest box of the design's proportions inside the curve) or a
+    "triangle" (a bandana, point down). Measured on Printify's photos, a bandana's cloth shows from 15% of the
+    print area's height (above is hem) to its point at 90%, and on a dog the top quarter of that rolls under the
+    collar: the design hangs from 32%, its sides inside the slanting edges for most of its height (only the
+    picture's bottom corners, which are empty, pass them)."""
     (w, h), (pw, ph) = size, area
-    fill = PRODUCTS[kind]["fill"]
-    return [{"id": image_id, "x": 0.5, "y": PRODUCTS[kind].get("y", 0.5),
-             "scale": round(min(1.0, (ph / pw) * (w / h)) * fill, 3), "angle": 0}]
+    p = PRODUCTS[kind]
+    y = p.get("y", 0.5)
+    fill = (p.get("fills") or {}).get(round(pw / ph, 2), p["fill"])     # a shape of area with its own margin
+    if p.get("shape") == "ellipse":
+        scale = 2 / math.hypot(2 / pw, 2 * h / (w * ph)) / pw
+    elif p.get("shape") == "triangle":
+        edge, tip, top = 0.15, 0.90, 0.32
+        box_w = min(pw * (tip - top) * ph / ((tip - edge) * ph + 0.85 * pw * h / w), (tip - top) * 0.96 * ph * w / h)
+        scale = box_w / pw
+        y = top + box_w * h / w / ph / 2
+    else:
+        scale = min(1.0, (ph / pw) * (w / h))
+    return [{"id": image_id, "x": p.get("x", 0.5), "y": round(y, 3), "scale": round(scale * fill, 3), "angle": 0}]
+
+
+def native_ground(rec: dict) -> str:
+    """What a design's main artwork was drawn for: the sweater line is lettered in cream for dark garments, the rest
+    in dark ink for light ones."""
+    return "dark" if rec.get("style") == "sweater" else "light"
+
+
+def variant_key(rec: dict, kind: str) -> Optional[str]:
+    """Which rendering of a design a product kind takes, e.g. "wide-light"; None for the main artwork."""
+    p = PRODUCTS[kind]
+    layout, ground = p.get("layout", "tall"), p.get("ground", "light")
+    return None if (layout == "tall" and ground == native_ground(rec)) else f"{layout}-{ground}"
+
+
+def design_seed(rec: dict) -> int:
+    """The seed a design was drawn with (designs from before seeds were kept: one from its id, always the same)."""
+    return int(rec["seed"]) if rec.get("seed") is not None else int(re.sub(r"\D", "", str(rec.get("id"))) or 0) % 100000
+
+
+def render_variant(rec: dict, layout: str, ground: str):
+    """A design drawn again in another layout or for the other ground; None when it can't be (no slogan, the original
+    drawing is gone, or a dark-ink design asked for in light ink)."""
+    from PIL import Image
+    slogan = rec.get("slogan")
+    if not slogan:
+        return None
+    if rec.get("style") == "sweater":
+        from worker import sweater
+        return sweater.design(slogan, design_seed(rec), motif_name=rec.get("motif") or "tree", ground=ground, layout=layout)
+    if ground != "light":
+        return None
+    base = Path(rec.get("file", ""))
+    cut, raw = Path(rec.get("art") or base.with_name(f"{rec.get('id')}-art.png")), base.with_name(f"{rec.get('id')}-raw.jpg")
+    if cut.is_file():
+        art = Image.open(cut).convert("RGBA")
+    elif raw.is_file():
+        art = cut_background(Image.open(raw))
+    else:
+        return None
+    return compose(art, slogan, layout=layout, look=rec.get("look") or "plain", seed=design_seed(rec))
 
 
 # ── the services ─────────────────────────────────────────────────────────────
@@ -748,11 +904,19 @@ class Clients:
     def draw(self, prompt: str) -> bytes:
         import requests
         r = requests.post(f"https://api.cloudflare.com/client/v4/accounts/{self.cf_account}/ai/run/{FLUX}",
-                          headers={"Authorization": f"Bearer {self.cf_token}"}, json={"prompt": prompt, "steps": 8},
-                          timeout=120)
+                          headers={"Authorization": f"Bearer {self.cf_token}"},
+                          json={"prompt": prompt.rstrip(". ") + "." + ART_STYLE, "steps": 8}, timeout=120)
         if r.status_code != 200:
             raise RuntimeError(f"Cloudflare image failed ({r.status_code}): {r.text[:160]}")
         return base64.b64decode(r.json()["result"]["image"])
+
+    def look(self, image: bytes, prompt: str) -> Optional[dict]:
+        """One look at a picture by the smart model (Claude on the membership, then Gemini): its JSON answer, None if
+        nobody answered."""
+        from core import gemini
+        from google.genai import types
+        return gemini.as_json([types.Part.from_bytes(data=image, mime_type="image/jpeg"), prompt], tier=gemini.SMART,
+                              timeout_ms=120_000)
 
     def printify(self, method: str, path: str, body=None):
         import requests
@@ -831,6 +995,8 @@ class Shop:
                 continue
             if any(opts.get(k) != want for k, want in (p.get("match") or {}).items()):
                 continue
+            if any(opts.get(k) not in allowed for k, allowed in (p.get("options") or {}).items()):
+                continue
             size = opts.get("size") or title.split(" / ")[-1]
             if "sizes" in p and size not in p["sizes"] and not any(title.startswith(s) for s in p["sizes"]):
                 continue
@@ -842,8 +1008,23 @@ class Shop:
             raise RuntimeError(f"no {p['name']} variants matched")
         front = next(ph for ph in chosen[0]["placeholders"] if ph["position"] == p.get("position", "front"))
         _AREAS[kind] = {ph["position"]: (ph["width"], ph["height"]) for ph in chosen[0]["placeholders"]}
+        groups: dict = {}                    # variants by the shape of their print area: each gets its own placement
+        for v in chosen[:100]:
+            ph = next((x for x in v["placeholders"] if x["position"] == front["position"]), front)
+            groups.setdefault(round(ph["width"] / ph["height"], 2), ((ph["width"], ph["height"]), []))[1].append(v["id"])
+        _GROUPS[kind] = [(ids, area) for area, ids in groups.values()]
         self._variants[kind] = ([v["id"] for v in chosen][:100], (front["width"], front["height"]))
         return self._variants[kind]
+
+    def facts(self, kind: str) -> list:
+        """What the product is made of and how it fits, in the maker's words, for the listing (asked once a blank)."""
+        bp = PRODUCTS[kind]["blueprint"]
+        if bp not in _FACTS:
+            try:
+                _FACTS[bp] = product_facts((self.c.printify("GET", f"catalog/blueprints/{bp}.json") or {}).get("description", ""))
+            except Exception:
+                return []                        # the catalog is busy: this listing goes without, the next asks again
+        return _FACTS[bp]
 
     def trending(self, st: dict) -> str:
         """The Trend Scout's picks from today's memes and internet talk (feeds fetched once a day, saved into st, which the
@@ -919,26 +1100,31 @@ class Shop:
             raise RuntimeError(f"no usable idea in three tries ({last_error})")
         if style == "sweater":
             idea["title"] = sweater_title(idea["title"])
+        else:
+            idea.pop("motif", None)
         from PIL import Image
         stamp = datetime.fromtimestamp(self.clock()).strftime("%Y%m%d-%H%M%S")
         self.art_dir.mkdir(parents=True, exist_ok=True)
         path = self.art_dir / f"{stamp}.png"
+        seed = int(self.clock()) if style == "sweater" else len(st["designs"])
+        extra = {}
         if style == "sweater":
             from worker import sweater
-            design = sweater.design(idea["slogan"] or idea["title"][:30], seed=int(self.clock()))
+            # a close variant of a winner keeps the winner's picture; otherwise the Designer's pick (a lit tree if none)
+            idea["motif"] = (parent.get("motif") or "tree") if (variant and parent) else idea.get("motif") or "tree"
+            design = sweater.design(idea["slogan"] or idea["title"][:30], seed=seed, motif_name=idea["motif"])
         else:
-            raw = self.c.draw(idea["image_prompt"])
+            raw, extra = self.draw_checked(idea, audience)
             art = cut_background(Image.open(io.BytesIO(raw)))
-            look = self.look_for(style, st["designs"])
-            if look == "retro" and idea["slogan"]:
-                from worker import retro
-                design = retro.design(art, idea["slogan"], seed=len(st["designs"]))
-            else:
-                look = "plain"
-                design = compose(art, idea["slogan"])
+            look = self.look_for(style, st["designs"]) if idea["slogan"] else "plain"
+            design = compose(art, idea["slogan"], look=look, seed=seed)
             (self.art_dir / f"{stamp}-raw.jpg").write_bytes(raw)
+            cut = self.art_dir / f"{stamp}-art.png"            # kept: other products get the design in other layouts
+            art.save(cut, "PNG", optimize=True)
+            extra = dict(extra, art=str(cut))
         design.save(path, "PNG", optimize=True)
-        rec = {"id": stamp, **idea, "file": str(path), "size": list(design.size), "made": self.clock(), "products": {}}
+        rec = {"id": stamp, **idea, "file": str(path), "size": list(design.size), "made": self.clock(), "products": {},
+               "v": 2, "seed": seed, **extra}
         if only:
             rec["only"] = list(only)
         if parent:
@@ -980,6 +1166,54 @@ class Shop:
             return "plain"
         same = [d for d in designs if (d.get("style") or "plain") == (style or "plain") and d.get("look")]
         return "plain" if same and same[-1]["look"] == "retro" else "retro"
+
+    ART_TRIES = 3
+
+    def draw_checked(self, idea: dict, audience: Optional[str]) -> tuple:
+        """(the drawing, what to note on the design). Each drawing is looked over (art_problems) and drawn again while
+        the look finds something a shopper would notice, up to ART_TRIES; if they're all flawed the design is put off
+        rather than sold with letters in the art or the wrong dog. With nobody to look, the drawing is used as it is."""
+        from worker import shop_agents
+        look = getattr(self.c, "look", None)
+        found = []
+        for n in range(self.ART_TRIES):
+            raw = self.c.draw(idea["image_prompt"])
+            problems = art_problems(look, raw, idea, audience) if look else None
+            if problems is None:
+                return raw, {}
+            if not problems:
+                return raw, {"art_checked": n + 1}             # which drawing passed
+            found.append(problems)
+            self.log(f"shop: drawing {n + 1} for \"{idea.get('slogan')}\" has a flaw ({'; '.join(problems)[:160]})")
+        nb = shop_agents.load(self.nb_path)
+        shop_agents.problem(nb, f"Designer's drawing for \"{idea.get('slogan')}\" failed its check {self.ART_TRIES} times: "
+                                f"{'; '.join(found[-1])[:120]}", self.clock)
+        shop_agents.save(nb, self.nb_path)
+        raise RuntimeError(f"the drawing kept coming out wrong ({'; '.join(found[-1])[:100]})")
+
+    def art_for(self, rec: dict, kind: str, main_id: str) -> tuple:
+        """(Printify image id, size) of the artwork a product kind takes: the main design, or the design drawn again
+        for it (wide for a hoodie, in dark ink when a cream-lettered sweater design goes on a white shirt), made and
+        uploaded once."""
+        key = variant_key(rec, kind)
+        if not key:
+            return main_id, rec["size"]
+        saved = rec.setdefault("variants", {}).get(key)
+        if not saved:
+            path = Path(rec["file"]).with_name(f"{rec['id']}-{key}.png")
+            if not path.exists():
+                img = render_variant(rec, *key.split("-"))
+                if img is None:
+                    return main_id, rec["size"]                # nothing to redraw it from: the main design, as before
+                path.parent.mkdir(parents=True, exist_ok=True)
+                img.save(path, "PNG", optimize=True)
+            from PIL import Image
+            with Image.open(path) as im:
+                size = list(im.size)
+            up = self.c.printify("POST", "uploads/images.json",
+                                 {"file_name": path.name, "contents": base64.b64encode(path.read_bytes()).decode()})
+            saved = rec["variants"][key] = {"upload_id": up["id"], "size": size}
+        return saved["upload_id"], saved["size"]
 
     def upload(self, rec: dict) -> str:
         if rec.get("upload_id"):
@@ -1035,16 +1269,11 @@ class Shop:
             image_id, art_size = self.upload_sheet(rec, p["art"], (pw, ph))
         if p.get("art") == "sweater":
             return self.create_sweater(rec, kind, shop_id, ids, title_max)
-        images = placements(kind, image_id, art_size, (pw, ph))
-        title = listing_title(rec["title"], p["name"], title_max)
-        desc = (f"{rec['description']}\n\n{rec['slogan'].title()}." if rec.get("slogan") else rec["description"]) + \
-            ("\n\nDesigned in our studio with the help of AI image tools, then printed on demand and shipped by our "
-             "production partner. Each item is made for you after you order.")
-        body = {"title": title, "description": desc, "tags": rec["tags"], "blueprint_id": p["blueprint"],
+        body = {"title": listing_title(rec["title"], p["name"], title_max),
+                "description": listing_text(rec, self.facts(kind)), "tags": rec["tags"], "blueprint_id": p["blueprint"],
                 "print_provider_id": p["provider"],
                 "variants": [{"id": i, "price": 2999, "is_enabled": True} for i in ids],
-                "print_areas": [{"variant_ids": ids, "placeholders": [
-                    {"position": pos, "images": images} for pos in p.get("positions") or (p.get("position", "front"),)]}]}
+                "print_areas": self.print_areas(rec, kind, image_id, art_size)}
         product = self.c.printify("POST", f"shops/{shop_id}/products.json", body)
         extra = self.save_photos(rec, kind, product.get("images") or [])
         priced = [{"id": v["id"], "price": price_for(int(v.get("cost") or 0), p["profit"]), "is_enabled": True}
@@ -1052,7 +1281,43 @@ class Shop:
         if priced and all(v.get("cost") for v in product["variants"] if v["id"] in ids):
             self.c.printify("PUT", f"shops/{shop_id}/products/{product['id']}.json", {"variants": priced})
         return {"id": product["id"], "shop": shop_id, "price": min((v["price"] for v in priced), default=2999),
-                "published": False, "extra_photos": extra}
+                "published": False, "extra_photos": extra, "art": variant_key(rec, kind) or "main"}
+
+    def print_areas(self, rec: dict, kind: str, image_id: str, art_size) -> list:
+        """A product's print areas: the design placed in each shape of area its variants have (one for most; a round
+        and an oval ornament each get their own). Kinds with made-up art (slogan only, tiled sheets) keep the one
+        placement over every variant."""
+        p = PRODUCTS[kind]
+        ids, area = self.variants(kind)
+        groups = [(ids, area)]
+        if not p.get("art"):
+            image_id, art_size = self.art_for(rec, kind, image_id)
+            groups = _GROUPS.get(kind) or groups
+        return [{"variant_ids": g_ids, "placeholders": [
+            {"position": pos, "images": placements(kind, image_id, art_size, g_area)}
+            for pos in p.get("positions") or (p.get("position", "front"),)]} for g_ids, g_area in groups]
+
+    def refresh_product(self, rec: dict, kind: str, prod: dict) -> None:
+        """Send one listed product its artwork again, as it would be made today (the rendering and placement for its
+        kind), and publish it again if it was live so the listing's photos follow."""
+        rec["upload_id"] = self.upload(rec)
+        self.c.printify("PUT", f"shops/{prod['shop']}/products/{prod['id']}.json",
+                        {"print_areas": self.print_areas(rec, kind, rec["upload_id"], rec["size"])})
+        if prod.get("published"):
+            self.publish(prod)
+        prod["art"] = variant_key(rec, kind) or "main"
+        prod.pop("photos", None)                   # the storefront fetches the new ones
+
+    def sweater_core(self, rec: dict):
+        """The art for the all-over sweater's chest: the design without the fair-isle bands a T-shirt print carries (the
+        sweater has its own, edge to edge). Designs from before the knitted look are used as they are."""
+        from PIL import Image
+        if rec.get("v", 1) >= 2:
+            from worker import sweater
+            return sweater.design(rec.get("slogan") or rec["title"][:30], design_seed(rec),
+                                  motif_name=rec.get("motif") or "tree", bands=False)
+        with Image.open(rec["file"]) as art:
+            return art.convert("RGBA")
 
     def create_sweater(self, rec: dict, kind: str, shop_id: int, ids: list, title_max: int) -> dict:
         """The all-over-print sweater: every panel (front, back, sleeves, cuffs, collar, waistband) is its own image."""
@@ -1060,9 +1325,8 @@ class Shop:
         from worker import sweater
         p = PRODUCTS[kind]
         ups = rec.setdefault("panel_uploads", {})
-        with Image.open(rec["file"]) as art:
-            panels = sweater.panels(art.convert("RGBA"), {k: v for k, v in _AREAS[kind].items() if k not in ups},
-                                    seed=int(re.sub(r"\D", "", rec["id"]) or 0))
+        todo = {k: v for k, v in _AREAS[kind].items() if k not in ups}
+        panels = sweater.panels(self.sweater_core(rec), todo, seed=int(re.sub(r"\D", "", rec["id"]) or 0)) if todo else {}
         for pos, img in panels.items():
             buf = io.BytesIO()
             img.save(buf, "JPEG", quality=92)
@@ -1071,11 +1335,11 @@ class Shop:
             ups[pos] = up["id"]
         holders = [{"position": pos, "images": [{"id": ups[pos], "x": 0.5, "y": 0.5, "scale": 1, "angle": 0}]}
                    for pos in _AREAS[kind]]
-        desc = f"{rec['description']}\n\n{rec['slogan'].title()}." + \
-            ("\n\nA lightweight crew neck sweatshirt printed all over, sleeves and cuffs included: the knit, the lights and "
-             "the stitches are printed, not real. "
-             "Designed in our studio, then printed on demand and shipped by our production partner. "
-             "Made for you after you order, so allow about two weeks.")
+        desc = listing_text(rec, self.facts(kind),
+                            "A lightweight crew neck sweatshirt printed all over, sleeves and cuffs included: the knit, the "
+                            "lights and the stitches are printed, not real. "
+                            "Designed in our studio, then printed on demand and shipped by our production partner. "
+                            "Made for you after you order, so allow about two weeks.")
         body = {"title": listing_title(rec["title"], p["name"], title_max), "description": desc, "tags": rec["tags"],
                 "blueprint_id": p["blueprint"], "print_provider_id": p["provider"],
                 "variants": [{"id": i, "price": 5999, "is_enabled": True} for i in ids],
@@ -1087,7 +1351,7 @@ class Shop:
         if priced and all(v.get("cost") for v in product["variants"] if v["id"] in ids):
             self.c.printify("PUT", f"shops/{shop_id}/products/{product['id']}.json", {"variants": priced})
         return {"id": product["id"], "shop": shop_id, "price": min((v["price"] for v in priced), default=5999),
-                "published": False, "extra_photos": extra}
+                "published": False, "extra_photos": extra, "art": "main"}
 
     def save_photos(self, rec: dict, kind: str, images: list) -> list:
         """Download the chosen extra photos (of the first variant) to memory/etsy_shop/photos/, plus the
@@ -1100,7 +1364,7 @@ class Shop:
             closeup = folder / f"{rec['id']}-{name}.jpg"
             if not closeup.exists() and Path(rec.get("file", "")).is_file():
                 folder.mkdir(parents=True, exist_ok=True)
-                design_closeup(Path(rec["file"]), closeup, detail=detail)
+                design_closeup(Path(rec["file"]), closeup, detail=detail, dark=rec.get("style") == "sweater")
             if closeup.exists():
                 saved.append(str(closeup))
         mine = [i for i in images if first is None or first in i.get("variant_ids", [])]
@@ -1414,12 +1678,36 @@ class ShopService:
         if listed:
             self.notify("shop", "🛍️ Just listed: " + "; ".join(listed[:6]) +
                         (f"; and {len(listed) - 6} more" if len(listed) > 6 else "") + ".")
+        self.repair_art(shop)
         for line in shop.new_orders():
             self.notify("shop", line)
         self.storefront(shop, today, force=bool(listed))
         self.etsy_photos(shop)
         self.video_slot(shop, now)
         self.evening_review(shop, now)
+
+    def repair_art(self, shop: "Shop", limit: int = 3) -> int:
+        """Listings made before a design came in more than one rendering, whose words can't be read on the product (the
+        sweater line is lettered in cream for dark garments, and its first winner was put on white shirts, hoodies and
+        mugs as it was), get the rendering made for them, a few a pass. Each is tried once."""
+        st = load_state(shop.state_path)
+        n = 0
+        for rec in st["designs"]:
+            for channel in CHANNELS:
+                for kind, prod in products_in(rec, channel).items():
+                    p = PRODUCTS.get(kind)
+                    if n >= limit or not p or p.get("art") or prod.get("art") or not prod.get("id") \
+                            or p.get("ground", "light") == native_ground(rec):
+                        continue
+                    n += 1
+                    try:
+                        shop.refresh_product(rec, kind, prod)
+                        self.log(f"shop: redrew '{rec.get('slogan')}' for its {p['name']} on {CHANNELS[channel]['name']}")
+                    except Exception as exc:
+                        prod["art"] = "unfixed"                # not every pass: it's looked at by hand
+                        self.log(f"shop: couldn't redraw {rec.get('id')} {kind} on {channel}: {exc}")
+                    save_state(st, shop.state_path)
+        return n
 
     REVIEW_HOUR = 21
 

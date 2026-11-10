@@ -64,6 +64,13 @@ class FakeClients:
                       ("collar", 2267, 228), ("waistband", 5818, 575))]
             return {"variants": [{"id": 1023 * 10 + i, "title": size, "options": {"size": size},
                                   "placeholders": areas} for i, size in enumerate(("M", "3XL"))]}
+        if path.startswith("catalog/blueprints/1599/"):
+            shapes = (("Circle", 886, 886), ("Heart", 945, 886), ("Oval", 720, 1004), ("Star", 961, 921))
+            return {"variants": [{"id": 15990 + i, "title": f"{shape} / One size", "options": {"shape": shape, "size": "One size"},
+                                  "placeholders": [{"position": "front", "width": w, "height": h}]}
+                                 for i, (shape, w, h) in enumerate(shapes)]}
+        if path == "catalog/blueprints/12.json":
+            return {"description": "<p>A classic tee.</p><div>.:Material: 100% cotton</div><br /><div>.:Blank product sourced from China</div>"}
         if path.startswith("catalog/blueprints/400/"):
             return {"variants": [{"id": 20, "title": '3" × 3" / White', "options": {"size": '3" × 3"'},
                                   "placeholders": [{"position": "front", "width": 559, "height": 559}]}]}
@@ -73,6 +80,7 @@ class FakeClients:
                                     (1588, "left_leg_front", 1048, 3130, {"color": "Ivory", "size": "XL"}),
                                     (1128, "front", 1650, 750, {"color": "Black", "size": "One size"}),
                                     (1691, "front", 1500, 525, {"color": "Black", "size": "One size"}),
+                                    (562, "front", 3150, 1691, {"size": '20" × 10"'}),
                                     (1367, "front", 9075, 10800, {"size": '30" x 36"'})):
             if path.startswith(f"catalog/blueprints/{bp}/"):
                 return {"variants": [{"id": bp * 10, "title": " / ".join(opts.values()), "options": opts,
@@ -496,6 +504,189 @@ class ListingTests(_Base):
         self.assertEqual(s.new_orders(), ["📦 Your Etsy order (Plant Lover T-Shirt) has shipped: USPS https://t.co/9400."])
         c.orders[0]["status"] = "canceled"                                              # baseline orders update too
         self.assertEqual(s.new_orders(), ["📦 Your Etsy order (Old order) was canceled."])
+
+
+class PrintQualityTests(_Base):
+    """2026-11-10, "for our products we post, make them even better": what the listings' own photos showed was wrong."""
+
+    def test_a_long_slogan_is_set_whole_and_big_and_the_print_keeps_a_shirts_shape(self):
+        from worker import lettering
+        slogan = "SCIENTISTS CONFIRM GRANDMA'S HOUSE ISN'T GROUNDED"      # ran off the bottom of its shirt before
+        rows = lettering.layout_lines(slogan, 3000)
+        self.assertEqual(" ".join(line for line, _ in rows), slogan)
+        self.assertLessEqual(len(rows), 3)
+        self.assertGreater(min(size for _, size in rows), 250)             # letters over 8% of the width tall
+        for line, size in rows:
+            self.assertLessEqual(lettering.font("block", size).getlength(line), 3000 + 1)
+        design = ws.compose(ws.cut_background(Image.open(io.BytesIO(_png()))), slogan)
+        self.assertEqual(design.width, ws.DESIGN_W)
+        self.assertGreater(design.width / design.height, 0.8)              # printed at full width, not shrunk to fit
+
+    def test_small_words_never_get_a_line_to_themselves(self):
+        from worker import lettering
+        for slogan in ("IT HEARD THE COOKIE TIN OPEN", "READING ALCOHOLICALLY TO AVOID FAMILY"):
+            rows = lettering.layout_lines(slogan, 1600, max_height=1600)   # the tall block a wide layout allows
+            self.assertFalse([line for line, _ in rows if line in ("THE", "TO", "IT")], slogan)
+
+    def test_the_retro_arch_ends_where_the_sentence_pauses(self):
+        from worker import retro
+        self.assertEqual(retro.split("WHAT AM I, THE GIFT SHREDDING FAIRY?"), ("WHAT AM I,", "THE GIFT SHREDDING FAIRY?"))
+        self.assertEqual(retro.split("COOKIES GO IN. CHAOS COMES OUT."), ("COOKIES GO IN.", "CHAOS COMES OUT."))
+        self.assertEqual(retro.split("100 AURA FOR MAKING IT TO LUNCH")[0], "100 AURA")       # not left hanging on "FOR"
+        self.assertEqual(retro.split("ORNAMENTALLY UNSTABLE"), ("ORNAMENTALLY", "UNSTABLE"))  # the arch stays readable
+
+    def test_sweater_designs_are_knitted_with_the_picture_the_designer_picked(self):
+        from worker import sweater
+        c = FakeClients(shops=[])
+        c.draw = lambda prompt: self.fail("the sweater art is drawn locally")
+        c.ideas = [dict(IDEA, slogan="SLEIGHING BY A THREAD", motif="Reindeer")]
+        s = self.shop(c)
+        rec = s.make_design(season="christmas", style="sweater")
+        self.assertEqual((rec["motif"], rec["v"]), ("reindeer", 2))
+        self.assertIn('"motif"', c.notes)                                  # the Designer is told to choose one
+        with Image.open(rec["file"]) as im:
+            self.assertEqual(im.width, sweater.ACROSS * sweater.STITCH)
+        c.ideas = [dict(IDEA, slogan="WE'RE ALL SLEIGHING BY A THREAD", motif="snowman")]
+        variant = s.make_design(spinoff=rec["id"], variant=True)
+        self.assertEqual(variant["motif"], "reindeer")                     # a close variant keeps the winner's picture
+        c.ideas = [dict(IDEA, slogan="GET LIT", motif="a dragon")]
+        self.assertEqual(s.make_design(season="christmas", style="sweater")["motif"], "tree")   # not one we knit
+        c.draw = lambda prompt: _png()
+        self.assertNotIn("motif", s.make_design())                         # only the sweater line has one
+        for name in sweater.MOTIFS:
+            chart, lights = sweater.motif(name, seed=3)
+            self.assertGreater(chart.getbbox()[2], 60, name)               # every picture draws something
+
+    def test_knitted_letters_go_bold_when_they_fit_and_never_past_the_edge(self):
+        from worker import sweater
+        lines, scale, bold = sweater.fit_lines("I'M LOSING MY TINSEL", 180)
+        self.assertEqual((lines, scale, bold), (["I'M LOSING", "MY TINSEL"], 3, True))
+        for slogan in ("ELF-DESTRUCTING SINCE NOVEMBER", "IMMINENT MENTAL BREAKDOWN AVALANCHE", "GET LIT", "HO"):
+            lines, scale, bold = sweater.fit_lines(slogan, 180)
+            self.assertEqual(" ".join(lines), slogan)
+            self.assertTrue(all(sweater.text_width(line, bold) * scale <= 180 for line in lines), slogan)
+        self.assertEqual(len(sweater._glyph("M", bold=True)[0]), 7)        # its own chart: thickened, an M fills in
+
+    def test_a_hoodie_takes_the_wide_layout_and_a_white_shirt_gets_dark_letters(self):
+        c = FakeClients(shops=[{"id": 9, "sales_channel": "etsy"}])
+        s = self.shop(c)
+        rec = s.make_design(season="christmas", style="sweater")
+        rec["upload_id"] = s.upload(rec)
+        s.create(rec, "sweater_tee", 9, rec["upload_id"])                  # what it was drawn for: a dark shirt
+        s.create(rec, "tee", 9, rec["upload_id"])                          # a white one
+        made = s.create(rec, "hoodie", 9, rec["upload_id"])
+        bodies = [b for m, p, b in c.calls if m == "POST" and p.endswith("/products.json")]
+        art = lambda b: b["print_areas"][0]["placeholders"][0]["images"][0]["id"]
+        self.assertEqual(art(bodies[0]), rec["upload_id"])
+        self.assertEqual(len({art(b) for b in bodies}), 3)                 # three renderings of the one design
+        self.assertEqual(set(rec["variants"]), {"tall-light", "wide-light"})
+        self.assertEqual(made["art"], "wide-light")
+        wide = rec["variants"]["wide-light"]["size"]
+        self.assertGreater(wide[0] / wide[1], 1.3)                         # for the short area above a hoodie's pocket
+
+        def ink(path):                                                     # the commonest colour where the words are
+            with Image.open(path) as im:
+                band = im.crop((0, 420, im.width, 700))
+                return max((n, c) for n, c in band.getcolors(1 << 22) if c[3] == 255)[1]
+        self.assertGreater(sum(ink(rec["file"])[:3]), 600)                 # cream on the dark shirt
+        self.assertLess(sum(ink(self.dir / "art" / f"{rec['id']}-tall-light.png")[:3]), 330)   # dark green on the white
+        s.create(rec, "tee", 9, rec["upload_id"])                          # drawn and uploaded once
+        self.assertEqual(len([1 for m, p, b in c.calls if p == "uploads/images.json"]), 3)
+
+    def test_an_ornament_is_sold_round_and_oval_with_the_design_inside_each(self):
+        c = FakeClients(shops=[{"id": 9, "sales_channel": "etsy"}])
+        s = self.shop(c)
+        rec = s.make_design()
+        s.create(rec, "ornament", 9, "main")
+        body = next(b for m, p, b in c.calls if m == "POST" and p.endswith("/products.json"))
+        self.assertEqual([v["id"] for v in body["variants"]], [15990, 15992])          # no heart, no star: they cut the words
+        areas = {tuple(a["variant_ids"]): a["placeholders"][0]["images"][0] for a in body["print_areas"]}
+        self.assertEqual(set(areas), {(15990,), (15992,)})
+        w, h = rec["size"]
+        for ids, (pw, ph) in (((15990,), (886, 886)), ((15992,), (720, 1004))):
+            box_w = areas[ids]["scale"] * pw
+            self.assertLess((box_w / pw) ** 2 + (box_w * h / w / ph) ** 2, 1.0)        # its corners are inside the curve
+            self.assertGreater(areas[ids]["y"], 0.5)                                   # low, clear of the cord's hole
+        self.assertLess(areas[(15990,)]["scale"], areas[(15992,)]["scale"])            # the round face is the smaller
+
+    def test_a_bandana_gets_the_words_on_top_hung_below_the_collar(self):
+        c = FakeClients(shops=[{"id": 9, "sales_channel": "etsy"}])
+        s = self.shop(c)
+        rec = s.make_design()
+        s.create(rec, "pet_bandana", 9, "main")
+        body = next(b for m, p, b in c.calls if m == "POST" and p.endswith("/products.json"))
+        img = body["print_areas"][0]["placeholders"][0]["images"][0]
+        self.assertNotEqual(img["id"], "main")
+        w, h = rec["variants"]["over-light"]["size"]
+        half = img["scale"] * 3150 * h / w / 1691 / 2                      # half the design's height, in print areas
+        self.assertGreater(img["y"] - half, 0.31)                          # under the part that rolls at the collar
+        self.assertLess(img["y"] + half, 0.9)                              # and done before the point
+        from worker import lettering
+        art = ws.cut_background(Image.open(io.BytesIO(_png())))
+        inked = lambda im: lettering.INK in {c for n, c in im.crop((0, 0, im.width, int(im.height * 0.4))).getcolors(1 << 22)}
+        self.assertTrue(inked(lettering.compose(art, "MERRY CORGMAS TO ME", layout="over")))    # the words lead on a bandana,
+        self.assertFalse(inked(lettering.compose(art, "MERRY CORGMAS TO ME", layout="tall")))   # the picture on a shirt
+
+    def test_a_flawed_drawing_is_redrawn_and_a_hopeless_one_is_put_off(self):
+        c = FakeClients(shops=[])
+        drawn = []
+        verdicts = [{"ok": False, "problems": [{"kind": "text", "severity": "major", "what": "the word FARMER"}]},
+                    {"ok": True, "problems": [{"kind": "glitch", "severity": "minor", "what": "a stray dot"}]}]
+        c.draw = lambda prompt: drawn.append(prompt) or _png()
+        c.look = lambda image, prompt: verdicts.pop(0)
+        s = self.shop(c)
+        rec = s.make_design()
+        self.assertEqual((len(drawn), rec["art_checked"]), (2, 2))         # the second drawing passed
+        self.assertTrue(Path(rec["art"]).is_file())                        # kept, for the other layouts
+        c.look = lambda image, prompt: {"ok": False, "problems": [{"kind": "glitch", "severity": "major", "what": "red eyes"}]}
+        with self.assertRaises(RuntimeError):
+            s.make_design()
+        self.assertEqual(len(ws.load_state(s.state_path)["designs"]), 1)   # nothing listed with a mistake in it
+        self.assertEqual(len(drawn), 2 + s.ART_TRIES)
+        c.look = lambda image, prompt: None                                # nobody to look: the drawing is used
+        self.assertNotIn("art_checked", s.make_design())
+
+    def test_listings_say_what_the_product_is_made_of_and_tags_keep_whole_words(self):
+        html = ('<p>A classic tee.</p><div>.:Made with 100% Airlume combed and ring-spun cotton, a lightweight fabric.</div>'
+                '<br /><div>.:Available in two sizes: 11oz and 15oz</div><br /><div>.:Blank product sourced from China</div>'
+                '<div>.:The tear-away label minimizes skin irritations.</div>')
+        facts = ws.product_facts(html)
+        self.assertEqual(facts, ["Made with 100% Airlume combed and ring-spun cotton, a lightweight fabric.",
+                                 "The tear-away label minimizes skin irritations."])
+        text = ws.listing_text({"description": "Pitch.", "slogan": "I'M LOSING MY TINSEL"}, facts)
+        self.assertIn('It reads: "I\'m Losing My Tinsel".', text)
+        self.assertIn("- Made with 100% Airlume", text)
+        self.assertTrue(text.endswith(ws.AI_NOTE))
+        c = FakeClients(shops=[{"id": 9, "sales_channel": "etsy"}])
+        s = self.shop(c, products=["tee"])
+        s.make_design()
+        s.list_pending()
+        tee = next(b for m, p, b in c.calls if m == "POST" and p.endswith("/products.json"))
+        self.assertIn("Details:\n- Material: 100% cotton.", tee["description"])      # from the catalog, sellers' notes dropped
+        self.assertNotIn("sourced", tee["description"])
+        tags = ws.clean_idea({**IDEA, "tags": ["funny christmas shirt gift", "supercalifragilisticexpialidocious"]})["tags"]
+        self.assertEqual(tags, ["funny christmas"])                        # was "funny christmas shir"
+
+    def test_a_sweater_design_already_on_a_white_shirt_is_redrawn_for_it_once(self):
+        c = FakeClients(shops=[{"id": 7, "sales_channel": "storefront"}])
+        s = self.shop(c)
+        s.make_design(season="christmas", style="sweater")
+        st = ws.load_state(s.state_path)
+        st["designs"][0].update(upload_id="main", channels={"popup": {
+            "tee": {"id": "old-tee", "shop": 7, "price": 2299, "published": True, "photos": ["stale"]},
+            "sweater_tee": {"id": "old-dark", "shop": 7, "price": 2299, "published": True},
+            "hat": {"id": "old-hat", "shop": 7, "price": 1999, "published": True}}})
+        ws.save_state(st, s.state_path)
+        svc = ws.ShopService(log=lambda m: None)
+        self.assertEqual(svc.repair_art(s), 1)
+        puts = [(p, b) for m, p, b in c.calls if m == "PUT"]
+        self.assertEqual([p for p, b in puts], ["shops/7/products/old-tee.json"])       # not the dark shirt, not the hat
+        self.assertNotEqual(puts[0][1]["print_areas"][0]["placeholders"][0]["images"][0]["id"], "main")
+        self.assertEqual(len([1 for m, p, b in c.calls if p == "shops/7/products/old-tee/publish.json"]), 1)
+        prod = ws.load_state(s.state_path)["designs"][0]["channels"]["popup"]["tee"]
+        self.assertEqual(prod["art"], "tall-light")
+        self.assertNotIn("photos", prod)                                   # the site fetches the new photos
+        self.assertEqual(svc.repair_art(s), 0)                             # once
 
 
 class ScheduleTests(_Base):
