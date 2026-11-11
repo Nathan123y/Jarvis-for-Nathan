@@ -678,14 +678,15 @@ class PrintQualityTests(_Base):
             "hat": {"id": "old-hat", "shop": 7, "price": 1999, "published": True}}})
         ws.save_state(st, s.state_path)
         real = c.printify
-        c.printify = lambda m, p, b=None: {"variants": [{"id": 1}, {"id": 2}, {"id": 3}]} \
+        c.printify = lambda m, p, b=None: {"variants": [{"id": 1}, {"id": 2}, {"id": 3}, {"id": 4}],     # 4: dropped by the printer
+                                           "print_areas": [{"variant_ids": [1, 2, 3]}]} \
             if (m, p) == ("GET", "shops/7/products/old-tee.json") else real(m, p, b)
         svc = ws.ShopService(log=lambda m: None)
         self.assertEqual(svc.repair_art(s), 1)
         puts = [(p, b) for m, p, b in c.calls if m == "PUT"]
         self.assertEqual([p for p, b in puts], ["shops/7/products/old-tee.json"])       # not the dark shirt, not the hat
         self.assertNotEqual(puts[0][1]["print_areas"][0]["placeholders"][0]["images"][0]["id"], "main")
-        self.assertEqual(puts[0][1]["print_areas"][0]["variant_ids"], [1, 2, 3])        # every variant it has: Printify insists
+        self.assertEqual(puts[0][1]["print_areas"][0]["variant_ids"], [1, 2, 3])        # every variant its areas cover: Printify insists
         self.assertEqual(len([1 for m, p, b in c.calls if p == "shops/7/products/old-tee/publish.json"]), 1)
         prod = ws.load_state(s.state_path)["designs"][0]["channels"]["popup"]["tee"]
         self.assertEqual(prod["art"], "tall-light")
