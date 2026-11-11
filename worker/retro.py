@@ -1,8 +1,11 @@
 """The shop's retro / vintage look (2026-11-03): the slogan arched over the illustration in a chunky 70s slab font,
-a striped sunset behind the drawing, the rest of the slogan straight underneath, and a worn, screen-printed
+a striped sunset behind the drawing, the rest of the slogan in heavy capitals underneath, and a worn, screen-printed
 texture over it all. It reads as a "real brand" design instead of a picture with a caption under it.
 
-design(art, slogan, seed) -> a transparent RGBA PNG, about 3000 px wide, for light-coloured garments and mugs."""
+2026-11-10: the arch only carries a short opening (it has to stay big enough to read on a thumbnail), the rest is
+stacked below at full width, and there are layouts for print areas that aren't shirt-shaped (see worker/lettering.py).
+
+design(art, slogan, seed, layout) -> a transparent RGBA PNG for light-coloured garments and mugs."""
 import math
 import random
 
@@ -18,18 +21,35 @@ SCHEMES = [
     ((40, 52, 44), [(186, 60, 50), (214, 168, 92), (82, 128, 98), (40, 82, 64)]),
     ((50, 30, 40), [(210, 62, 70), (240, 156, 150), (236, 210, 170), (196, 52, 46)]),
 ]
+# each scheme's colour for the slogan's loud line: one of its sunset's, dark enough to read on a white shirt
+ACCENTS = [(190, 48, 42), (182, 64, 46), (186, 60, 50), (196, 52, 60)]
 
 
 def _font(spec, size):
     return ImageFont.truetype(spec[0], size, index=spec[1])
 
 
+ARCH_MAX = 14                     # letters the arch can carry and still be read small
+DANGLERS = {"A", "AN", "THE", "TO", "OF", "AND", "OR", "IN", "ON", "AT", "FOR", "MY", "YOUR", "OUR", "WITH", "BY", "AS"}
+
+
 def split(slogan: str) -> tuple:
-    """(the arched top, the straight bottom): short slogans arch whole, longer ones split near the middle."""
+    """(the arched top, the rest underneath): a short slogan arches whole; a longer one arches its opening words, up
+    to ARCH_MAX letters and near to half of it, ending where the sentence pauses if it can (after a comma or a full
+    stop) and never on a dangling "the" or "for"."""
     words = slogan.split()
-    if len(words) <= 2 or len(slogan) <= 12:
+    if len(words) < 2 or len(slogan) <= ARCH_MAX:
         return slogan, ""
-    best = min(range(1, len(words)), key=lambda i: abs(len(" ".join(words[:i])) - len(" ".join(words[i:]))))
+    want = min(ARCH_MAX, len(slogan) * 0.45)
+
+    def cost(i: int) -> float:
+        top, last = " ".join(words[:i]), words[i - 1]
+        off = abs(len(top) - want)
+        if last[-1] in ".,!?:;":
+            return off - 6
+        return off + (6 if last.strip("'\"") in DANGLERS else 0)
+    cuts = [i for i in range(1, len(words)) if len(" ".join(words[:i])) <= ARCH_MAX] or [1]
+    best = min(cuts, key=cost)
     return " ".join(words[:best]), " ".join(words[best:])
 
 
@@ -106,49 +126,56 @@ def distress(img, seed: int, amount: float = 0.05):
     return img
 
 
-def design(art, slogan: str, seed: int = 0, width: int = WIDTH):
-    """The full retro design: arched words, the sunset with the drawing over it, straight words underneath."""
+def _scene(art, bands: list, ink, width: int):
+    """The drawing standing on a striped sunset with a ground line, `width` wide."""
+    sun = sunset(int(width * 0.78), [(*b, 255) for b in bands])
+    scale = min(width * 0.7 / art.width, sun.height * 1.55 / art.height)
+    art = art.resize((max(1, int(art.width * scale)), max(1, int(art.height * scale))), Image.LANCZOS)
+    h = max(art.height, sun.height)
+    canvas = Image.new("RGBA", (width, h + 10), (0, 0, 0, 0))
+    canvas.alpha_composite(sun, ((width - sun.width) // 2, h - sun.height))
+    ImageDraw.Draw(canvas).rectangle(((width - sun.width) // 2 - 40, h - 8, (width + sun.width) // 2 + 40, h + 8), fill=ink)
+    canvas.alpha_composite(art, ((width - art.width) // 2, h - art.height))
+    return canvas
+
+
+def design(art, slogan: str, seed: int = 0, width: int = WIDTH, layout: str = "tall"):
+    """The full retro design. "tall": arched words, the sunset with the drawing over it, the rest of the words stacked
+    underneath. "wide": the sunset scene with all the words stacked beside it. "over": all the words stacked on top,
+    the scene below (for a bandana, which narrows to a point)."""
+    from worker import lettering
     ink, bands = SCHEMES[seed % len(SCHEMES)]
     ink = (*ink, 255)
-    top, bottom = split(slogan.upper())
-    head = arch(top, ink, width, radius=int(width * 0.62))
-    sun = sunset(int(width * 0.78), [(*b, 255) for b in bands])
+    accent = (*ACCENTS[seed % len(ACCENTS)], 255)
     art = art.convert("RGBA")
     box = art.getbbox()
     art = art.crop(box) if box else art
-    scale = min(width * 0.7 / art.width, sun.height * 1.55 / art.height)
-    art = art.resize((max(1, int(art.width * scale)), max(1, int(art.height * scale))), Image.LANCZOS)
-    middle_h = max(art.height, sun.height)
-    foot = None
-    if bottom:
-        size = 330
-        while size > 120:
-            font = _font(CONDENSED, size)
-            if font.getlength(bottom) <= width * 0.9:
-                break
-            size -= 15
-        tw = font.getlength(bottom)
-        foot = Image.new("RGBA", (width, int(size * 1.3)), (0, 0, 0, 0))
-        fd = ImageDraw.Draw(foot)
-        fd.text(((width - tw) / 2, 0), bottom, font=font, fill=ink)
-        # a thin rule either side of the bottom line, if there's room
-        if tw < width * 0.7:
-            y = int(size * 0.62)
-            for x0, x1 in (((width - tw) / 2 - width * 0.12, (width - tw) / 2 - width * 0.03),
-                           ((width + tw) / 2 + width * 0.03, (width + tw) / 2 + width * 0.12)):
-                fd.rectangle((x0, y - 10, x1, y + 10), fill=ink)
-        fb = foot.getbbox()
-        foot = foot.crop((0, fb[1], width, fb[3])) if fb else foot
-    gap = int(width * 0.03)
-    total = head.height + gap + middle_h + (gap + foot.height if foot else 0) + 24
+    slogan = slogan.upper()
+    gap = int(width * 0.035)
+    if layout == "wide":
+        total = round(width * 1.5)
+        scene = _scene(art, bands, ink, round(total * 0.56))
+        scene = scene.crop(scene.getbbox())                      # the scene alone, without the room an arch needs
+        words = lettering.stack(slogan, total - scene.width - gap * 2, ink, accent, "block", max_height=scene.height * 1.05)
+        canvas = Image.new("RGBA", (total, max(scene.height, words.height)), (0, 0, 0, 0))
+        canvas.alpha_composite(scene, (0, (canvas.height - scene.height) // 2))
+        canvas.alpha_composite(words, (scene.width + gap * 2, (canvas.height - words.height) // 2))
+        return distress(canvas, seed)
+    scene = _scene(art, bands, ink, width)
+    if layout == "over":
+        words = lettering.stack(slogan, width, ink, accent, "block")
+        canvas = Image.new("RGBA", (width, words.height + gap + scene.height), (0, 0, 0, 0))
+        canvas.alpha_composite(words, (0, 0))
+        canvas.alpha_composite(scene, (0, words.height + gap))
+        return distress(canvas, seed)
+    top, bottom = split(slogan)
+    head = arch(top, ink, width, radius=int(width * 0.62))
+    foot = lettering.stack(bottom, int(width * 0.94), ink, accent, "block", max_height=width * 0.36, max_lines=2) if bottom else None
+    total = head.height + gap + scene.height + (gap + foot.height if foot else 0) + 24
     canvas = Image.new("RGBA", (width, total), (0, 0, 0, 0))
     canvas.alpha_composite(head, ((width - head.width) // 2, 0))
     y = head.height + gap
-    canvas.alpha_composite(sun, ((width - sun.width) // 2, y + middle_h - sun.height))
-    # a ground line under the sun, so the sun sits on a horizon
-    ImageDraw.Draw(canvas).rectangle(((width - sun.width) // 2 - 40, y + middle_h - 8,
-                                      (width + sun.width) // 2 + 40, y + middle_h + 8), fill=ink)
-    canvas.alpha_composite(art, ((width - art.width) // 2, y + middle_h - art.height))
+    canvas.alpha_composite(scene, (0, y))
     if foot:
-        canvas.alpha_composite(foot, (0, y + middle_h + gap))
+        canvas.alpha_composite(foot, ((width - foot.width) // 2, y + scene.height + gap))
     return distress(canvas, seed)
