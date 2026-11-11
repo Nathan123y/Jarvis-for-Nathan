@@ -1865,6 +1865,35 @@ def tiktok_post(video: Path, caption: str, ai_label: bool = True, log: Callable 
             ctx.close()
 
 
+def _caption_key(text: str) -> str:
+    """the start of a caption, spaces normalised (Studio prints narrow no-break spaces and trims the end)"""
+    return re.sub(r"\s+", " ", str(text or "")).strip()[:50]
+
+
+def tiktok_has_post(caption: str, wait_s: float = 30) -> bool:
+    """True when TikTok Studio's post list already shows this caption. Raises if the list can't be read, so a
+    caller never re-uploads on a guess."""
+    from playwright.sync_api import sync_playwright
+    key = _caption_key(caption)
+    with sync_playwright() as p:
+        ctx = _tiktok_context(p, visible=False)
+        pg = ctx.pages[0] if ctx.pages else ctx.new_page()
+        try:
+            pg.goto("https://www.tiktok.com/tiktokstudio/content", wait_until="domcontentloaded", timeout=60000)
+            end, listed = time.time() + wait_s, False
+            while time.time() < end:
+                pg.wait_for_timeout(2000)
+                text = re.sub(r"\s+", " ", pg.evaluate("() => document.body.innerText") or "")
+                if key and key in text:
+                    return True
+                listed = listed or bool(re.search(r"Posts \d+", text) and re.search(r"(AM|PM)", text))
+                if listed and time.time() > end - wait_s + 8:  # the list is up and it isn't there
+                    return False
+            raise RuntimeError("TikTok Studio's post list didn't load")
+        finally:
+            ctx.close()
+
+
 # ---------------- Instagram Reels (the same video, posted right after TikTok) ----------------
 
 IG_SWAP = {"#fyp": "#reels", "#foryou": "#explorepage", "#foryoupage": "#explorepage", "#fypシ": "#reels"}
@@ -2386,9 +2415,14 @@ class ViralService:
             except NotLoggedIn:
                 raise
             except Exception as exc:                       # one more go: on 11-08 the Mac napped mid-upload and
-                self.log(f"viral: TikTok upload failed ({str(exc)[:80]}); trying once more")   # Studio never loaded
-                time.sleep(90)
-                tiktok_post(Path(rec["path"]), rec["caption"], cfg["ai_label"], self.log)
+                time.sleep(90)                             # Studio never loaded. But on 11-10 TikTok took the post
+                # and stayed on the upload page, so the "failed" upload was live and the retry posted it twice:
+                # look at the account's posts first (if that look fails, don't risk a second copy)
+                if tiktok_has_post(rec["caption"]):
+                    self.log(f"viral: TikTok upload looked like it failed ({str(exc)[:80]}) but it's up; not posting it twice")
+                else:
+                    self.log(f"viral: TikTok upload failed ({str(exc)[:80]}); trying once more")
+                    tiktok_post(Path(rec["path"]), rec["caption"], cfg["ai_label"], self.log)
             _mark(rec["path"], posted=True)
             return "posted"
         except NotLoggedIn:
