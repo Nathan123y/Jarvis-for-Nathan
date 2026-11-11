@@ -1301,8 +1301,14 @@ class Shop:
         """Send one listed product its artwork again, as it would be made today (the rendering and placement for its
         kind), and publish it again if it was live so the listing's photos follow."""
         rec["upload_id"] = self.upload(rec)
-        self.c.printify("PUT", f"shops/{prod['shop']}/products/{prod['id']}.json",
-                        {"print_areas": self.print_areas(rec, kind, rec["upload_id"], rec["size"])})
+        areas = self.print_areas(rec, kind, rec["upload_id"], rec["size"])
+        # an update must name every variant the product has, sold or not (Printify fills them in itself when a product
+        # is created, and answers 400 "all product variants must be present" otherwise): the rest go with the first area
+        path = f"shops/{prod['shop']}/products/{prod['id']}.json"
+        named = {i for a in areas for i in a["variant_ids"]}
+        rest = [v["id"] for v in (self.c.printify("GET", path) or {}).get("variants") or [] if v["id"] not in named]
+        areas[0] = dict(areas[0], variant_ids=list(areas[0]["variant_ids"]) + rest)
+        self.c.printify("PUT", path, {"print_areas": areas})
         if prod.get("published"):
             self.publish(prod)
         prod["art"] = variant_key(rec, kind) or "main"
@@ -1686,26 +1692,32 @@ class ShopService:
         self.video_slot(shop, now)
         self.evening_review(shop, now)
 
+    REPAIR_RETRY = 6 * 3600
+
     def repair_art(self, shop: "Shop", limit: int = 3) -> int:
         """Listings made before a design came in more than one rendering, whose words can't be read on the product (the
         sweater line is lettered in cream for dark garments, and its first winner was put on white shirts, hoodies and
-        mugs as it was), get the rendering made for them, a few a pass. Each is tried once."""
+        mugs as it was), get the rendering made for them, a few a pass. One that fails is tried again in six hours,
+        not every pass."""
         st = load_state(shop.state_path)
         n = 0
         for rec in st["designs"]:
             for channel in CHANNELS:
                 for kind, prod in products_in(rec, channel).items():
                     p = PRODUCTS.get(kind)
-                    if n >= limit or not p or p.get("art") or prod.get("art") or not prod.get("id") \
-                            or p.get("ground", "light") == native_ground(rec):
+                    if n >= limit or not p or p.get("art") or not prod.get("id") \
+                            or prod.get("art") not in (None, "unfixed") \
+                            or p.get("ground", "light") == native_ground(rec) \
+                            or shop.clock() - prod.get("art_tried", 0) < self.REPAIR_RETRY:
                         continue
                     n += 1
+                    prod["art_tried"] = shop.clock()
                     try:
                         shop.refresh_product(rec, kind, prod)
                         self.log(f"shop: redrew '{rec.get('slogan')}' for its {p['name']} on {CHANNELS[channel]['name']}")
                     except Exception as exc:
-                        prod["art"] = "unfixed"                # not every pass: it's looked at by hand
-                        self.log(f"shop: couldn't redraw {rec.get('id')} {kind} on {channel}: {exc}")
+                        prod["art"] = "unfixed"
+                        self.log(f"shop: couldn't redraw {rec.get('id')} {kind} on {channel}: {str(exc)[:400]}")
                     save_state(st, shop.state_path)
         return n
 
