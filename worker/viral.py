@@ -63,7 +63,7 @@ DEFAULTS = {"enabled": True,
             # Haaland video on 2026-11-05), so the narration is sent bare
             "tts_model": "gemini-3.8-flash-tts",
             "ai_label": True,
-            "claude_model": "opus",                 # the strongest Claude on the membership writes the script + 3D scene
+            "claude_model": "fable",                # the strongest Claude on the membership writes the script + 3D scene
             "claude_effort": "medium",              # high (11-05) made scenes pass 30 min and hit the weekly
                                                     # Claude limit on 11-07; medium finished in ~15 min before
             "instagram": True,
@@ -1262,6 +1262,11 @@ the kit draws the yellow word-by-word captions (at 62-68% of the height), the br
   short (< 1.5 s) establishing wides. Medium shots: camera 4-7 m away with fov 35-45 (a TV lens, no distortion).
 - Never a frame that is mostly one flat colour (plain sky, white fog, black, an empty sea or floor), never a close-up
   of feet or a body part filling the frame.
+- A sign, banner or scoreboard is never a shot on its own: frame it WITH a person (the star walking past it, a
+  steward pointing at it, fans holding it) so the sign fills at most half the frame.
+- Crowd reaction shots look at the fans from the front, from outside the stand (camera at least 3 m in front of the
+  nearest fan, at their chest height or above): never stand the camera inside the crowd, where the backs and heads
+  of the nearest fans block the picture.
 - No explainer graphics in the world: no floating words or arrows ("HEAT", "ERROR", "PASS"), no glowing text on a dark
   background, no maps or diagrams. The narrator and the kit's cards explain; the world just shows it happening.
   In-world text is only real signage (banners, boards, a scoreboard, a street sign, a ship's name).
@@ -1331,7 +1336,8 @@ Judge it like a viewer scrolling TikTok. Check every frame against this list:
   frame, below the title), not an empty wide shot, a sign, the sky or black
 - every frame: a person at a readable size; the subject in front of the camera and not hidden under the captions
   (62-68% of the height) or the title / cards (top third); no frame mostly one flat colour, black or empty; no camera
-  inside geometry or a body part filling the frame; no tiny far-away subject; no floating explainer text, arrows or
+  inside geometry or a body part filling the frame; no tiny far-away subject; no shot of only a sign or board with nobody in it; no crowd shot taken from
+  inside the stand with fans' backs or heads blocking the frame; no floating explainer text, arrows or
   diagrams; no prop made of a few plain boxes in close-up; no objects at absurd scale; no glowing lines or light
   blobs the story doesn't need
 - the action readable and on time for its sentence
