@@ -102,6 +102,10 @@ def text_width(line: str, bold: bool = False) -> int:
     return sum(len(_glyph(ch, bold)[0]) for ch in line) + max(0, len(line) - 1)
 
 
+BOLD_WORTH = 1.3                  # bold letters read as well as plain ones this much bigger: on a listing's small photo
+                                  # it's the weight of the strokes that carries (at 1.12 thin letters a size up kept winning)
+
+
 def fit_lines(slogan: str, across: int, max_lines: int = 3, max_scale: int = 4, frame=None) -> tuple:
     """(lines, scale, bold): how to set the slogan in a column `across` stitches wide so its letters print biggest.
     scale = stitches per letter square; bold thickens the uprights. frame(text_w, text_h) -> (design_w, design_h,
@@ -123,7 +127,7 @@ def fit_lines(slogan: str, across: int, max_lines: int = 3, max_scale: int = 4, 
                 if frame:
                     w, h, aspect = frame(max(text_width(l, bold) for l in lines) * scale, _text_height(n, scale))
                     shrink = min(aspect / w, 1.0 / h)
-                score = scale * shrink * (1.12 if bold else 1.0) * (1 - 0.03 * (n - 1))
+                score = scale * shrink * (BOLD_WORTH if bold else 1.0) * (1 - 0.03 * (n - 1))
                 if score > best_score * 1.001:
                     best, best_score = (lines, scale, bold), score
                 if not frame:
