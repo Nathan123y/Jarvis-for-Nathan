@@ -1175,6 +1175,16 @@ Pieces (all return the object; pos is [x,y,z]):
       shirtless), sleeves 'none' (tank/jersey)|'short'|'long'; pants colour, legs 'shorts'|'long'; shoes colour;
       gloves colour (boxing gloves); number (printed on the shirt front+back, e.g. 23 or '666'), numberColor '#fff';
       horns: true; eyes: glow colour (0xff3300); s: size (1.1 = a 2 m athlete, 1.3 = a giant).
+      COSTUMES (they make a historical / mythical character readable at a glance; use them for every such figure):
+      hat 'bicorne' (Napoleon) | 'tricorn' (colonial, redcoat, pirate) | 'tophat' (Lincoln, Victorian) | 'crown' |
+      'helmet' (Roman) | 'greek' (Spartan / Trojan, tall crest) | 'knight' | 'viking' | 'astronaut' (+ backpack) |
+      'laurel' (Caesar, Zeus) | 'halo' | 'cap' | 'cowboy' | 'chef' | 'wizard' | 'plague' (plague doctor: beak mask) |
+      'fur' (Mongol) | 'pharaoh'; hatColor, crest colour; cape: colour (shoulders to calves); robe: colour (toga, robe,
+      long coat: waist to ankles); shield 'round' (Greek, emblemColor) | 'scutum' (Roman), shieldColor; holding (right
+      hand) 'spear' | 'staff' | 'trident' | 'torch' | 'flag' (flagColor: [colours] stripes) | 'sword' | 'hotdog' |
+      'mic' | 'scroll'. E.g. Napoleon {hat:'bicorne', shirt:0x1d2a5a, sleeves:'long', pants:0xf2f2f2, legs:'long'};
+      Zeus {hat:'laurel', robe:0xf1ede2, shirt:0xf1ede2, sleeves:'none', hair:'long', hairColor:0xdddddd, beard:true,
+      holding:'trident'}; a Spartan {hat:'greek', cape:0x9b1111, shield:'round', holding:'spear', shirt:0xb08d57}.
       Animate it EVERY frame (it holds the last pose otherwise), with time in seconds:
       .play(clip, time, weight=1) - clips: idle talk walk strut jog sprint jump_start jump_air jump_land punch jab
         hit_chest hit_head death roll dance sit sit_talk sit_down stand_up crouch sneak cast cast_idle swing guard
