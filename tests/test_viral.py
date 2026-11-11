@@ -144,6 +144,28 @@ class CleanupTests(unittest.TestCase):
                 svc.deliver(rec, {"post": True, "instagram": True})
         tt.assert_not_called(), ig.assert_not_called()
 
+    def _tiktok_retry(self, already_up):
+        svc = wv.ViralService.__new__(wv.ViralService)
+        svc.log = lambda m: None
+        rec = {"title": "t", "caption": "Itachi trapped the wrong guy #fyp", "path": "/nope.mp4"}
+        with patch.object(wv, "tiktok_post", side_effect=[RuntimeError("Post click never went through"), "posted"]) as tt, \
+                patch.object(wv, "tiktok_has_post", **already_up) as seen, patch.object(wv, "_mark"), \
+                patch.object(wv.time, "sleep"):
+            result = svc._deliver_tiktok(rec, {"post": True, "ai_label": True})
+        return result, tt.call_count, seen.call_count
+
+    def test_a_failed_looking_upload_that_went_up_is_not_posted_twice(self):
+        self.assertEqual(self._tiktok_retry({"return_value": True}), ("posted", 1, 1))       # 11-10: posted twice
+
+    def test_an_upload_that_really_failed_is_tried_once_more(self):
+        self.assertEqual(self._tiktok_retry({"return_value": False}), ("posted", 2, 1))
+
+    def test_no_retry_when_the_post_list_cant_be_read(self):
+        self.assertEqual(self._tiktok_retry({"side_effect": RuntimeError("list didn't load")}), ("failed", 1, 1))
+
+    def test_caption_keys_ignore_odd_spaces(self):
+        self.assertEqual(wv._caption_key("Itachi  trapped the wrong\nguy"), "Itachi trapped the wrong guy")
+
     def test_narrated_videos_never_use_a_robot_voice(self):
         with tempfile.TemporaryDirectory() as tmp, \
                 patch.object(wv, "gemini_tts", side_effect=RuntimeError("quota")), patch.object(wv, "edge_tts") as edge:
