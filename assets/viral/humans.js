@@ -199,6 +199,167 @@ export function humanKit(K, updaters) {
     return list;
   }
 
+  // ── costumes: hats and helmets, capes, robes, shields and things held in the right hand ─────────────
+  // Built in the idle pose and pinned to bones, so they move with every animation. Most of the user's video ideas are
+  // history / myth crossovers (Napoleon, Spartans, Lincoln, Zeus, plague doctors...): a hat, a cape and a prop are
+  // what make a character readable at a glance.
+  const BRONZE = 0xb08d57, STEEL = 0xb9bec7, GOLD = 0xd4af37, WOOD = 0x6b4a2e;
+  function costume(o, g, root, bones, sex) {
+    if (!o.hat && !o.cape && !o.robe && !o.shield && !o.holding) return;
+    applyClip(bones, sex, 'idle', 0); g.updateMatrixWorld(true);
+    const at = (n) => root.worldToLocal(bones[n].getWorldPosition(new THREE.Vector3()));
+    const pin = (bone, obj) => { root.add(obj); root.updateMatrixWorld(true); bones[bone].attach(obj); return obj; };
+    const cloth = (c, x = {}) => K.mat(c, Object.assign({ roughness: .85 }, x));
+    const metal = (c) => K.mat(c, { roughness: .32, metalness: .8 });
+    const mesh = (geo, mat, p, r, s, parent) => { const m = new THREE.Mesh(geo, mat); if (p) m.position.set(...p); if (r) m.rotation.set(...r);
+      if (s) m.scale.set(...s); parent.add(m); return m; };
+    // a half disc standing upright: across the head (bicorne) or front to back (a helmet crest)
+    const arch = (r, thick, flat, mat, parent, p, sideways) => mesh(new THREE.CylinderGeometry(r, r, thick, 32, 1, false, -Math.PI / 2, Math.PI), mat, p,
+      [-Math.PI / 2, sideways ? Math.PI / 2 : 0, 0, ], [1, 1, flat], parent);
+    if (o.hat) {
+      const head = at('Head'), h = new THREE.Group(), c = o.hatColor;
+      const top = head.y + (sex === 'f' ? .2 : .205), mid = -.105;       // hat space: y 0 = the top of the head
+      switch (o.hat) {
+        case 'bicorne': { const m = cloth(c ?? 0x15151a);                // Napoleon, worn side to side
+          arch(.28, .1, .6, m, h, [0, -.07, 0], false);
+          mesh(new THREE.CylinderGeometry(.04, .04, .012, 20), cloth(0x1f3fa0), [.13, .04, .055], [Math.PI / 2, 0, 0], null, h);
+          mesh(new THREE.CylinderGeometry(.026, .026, .014, 20), cloth(0xf2f2f2), [.13, .04, .058], [Math.PI / 2, 0, 0], null, h);
+          mesh(new THREE.CylinderGeometry(.012, .012, .016, 12), cloth(0xc0202a), [.13, .04, .06], [Math.PI / 2, 0, 0], null, h); break; }
+        case 'tricorn': { const m = cloth(c ?? 0x1a1a22);                // colonial, redcoat, pirate
+          mesh(new THREE.CylinderGeometry(.26, .26, .03, 3), m, [0, -.05, 0], [0, Math.PI, 0], null, h);
+          mesh(new THREE.CylinderGeometry(.27, .22, .07, 3, 1, true), cloth(c ?? 0x1a1a22, { side: THREE.DoubleSide }), [0, -.02, 0], [0, Math.PI, 0], null, h);
+          mesh(new THREE.CylinderGeometry(.105, .118, .1, 24), m, [0, .0, 0], null, null, h); break; }
+        case 'tophat': { const m = cloth(c ?? 0x111114, { roughness: .5 });  // Lincoln
+          mesh(new THREE.CylinderGeometry(.108, .1, .25, 28), m, [0, .09, 0], null, null, h);
+          mesh(new THREE.CylinderGeometry(.18, .18, .014, 32), m, [0, -.03, 0], null, null, h);
+          mesh(new THREE.CylinderGeometry(.109, .104, .045, 28), cloth(0x2a2a30), [0, -.002, 0], null, null, h); break; }
+        case 'crown': { const m = metal(c ?? GOLD);
+          mesh(new THREE.CylinderGeometry(.118, .112, .07, 28, 1, true), K.mat(c ?? GOLD, { roughness: .3, metalness: .85, side: THREE.DoubleSide }), [0, -.03, 0], null, null, h);
+          for (let k = 0; k < 7; k++) { const a = k / 7 * Math.PI * 2; mesh(new THREE.ConeGeometry(.022, .075, 6), m, [Math.sin(a) * .115, .035, Math.cos(a) * .115], null, null, h);
+            mesh(new THREE.SphereGeometry(.013, 8, 6), K.mat([0xc0102a, 0x1040c0, 0x10a050][k % 3], { roughness: .2 }), [Math.sin(a) * .121, -.03, Math.cos(a) * .121], null, null, h); } break; }
+        case 'helmet': case 'greek': case 'viking': {                       // Roman galea / Greek crest / horned
+          const m = metal(c ?? (o.hat === 'viking' ? STEEL : BRONZE));
+          mesh(new THREE.SphereGeometry(.132, 28, 14, 0, Math.PI * 2, 0, Math.PI * .56), m, [0, mid + .02, -.005], null, null, h);
+          for (const sx of [-1, 1]) mesh(new THREE.BoxGeometry(.018, .11, .075), m, [sx * .118, mid - .045, .035], [0, 0, sx * .12], null, h);
+          mesh(new THREE.CylinderGeometry(.14, .155, .06, 24, 1, true, Math.PI * .6, Math.PI * .8), K.mat(c ?? (o.hat === 'viking' ? STEEL : BRONZE), { roughness: .32, metalness: .8, side: THREE.DoubleSide }), [0, mid - .03, -.01], null, null, h);
+          if (o.hat === 'viking') for (const sx of [-1, 1]) mesh(new THREE.ConeGeometry(.03, .2, 12), cloth(0xefe6d2, { roughness: .5 }), [sx * .15, mid + .1, 0], [0, 0, -sx * .9], null, h);
+          else arch(o.hat === 'greek' ? .2 : .135, .035, o.hat === 'greek' ? 1 : .8, cloth(o.crest ?? 0xb3121f), h, [0, mid + .13, -.01], true);
+          break; }
+        case 'knight': { const m = metal(c ?? STEEL);
+          mesh(new THREE.CylinderGeometry(.135, .14, .3, 28), m, [0, mid + .01, 0], null, null, h);
+          mesh(new THREE.BoxGeometry(.2, .02, .03), K.mat(0x050505), [0, mid + .02, .13], null, null, h);
+          if (o.crest) arch(.12, .03, .8, cloth(o.crest), h, [0, mid + .16, 0], true); break; }
+        case 'astronaut': {
+          mesh(new THREE.SphereGeometry(.2, 32, 20), K.mat(0xf4f4f2, { roughness: .35 }), [0, mid - .01, 0], null, null, h);
+          mesh(new THREE.SphereGeometry(.204, 32, 20, -Math.PI * .32, Math.PI * .64, Math.PI * .3, Math.PI * .34), K.mat(0xd9a52a, { roughness: .08, metalness: 1 }), [0, mid - .01, 0], null, null, h);
+          mesh(new THREE.TorusGeometry(.13, .03, 10, 28), K.mat(0xc9ccd2, { metalness: .6, roughness: .4 }), [0, mid - .2, 0], [Math.PI / 2, 0, 0], null, h); break; }
+        case 'laurel': { const leaf = cloth(c ?? 0x4f8a32, { roughness: .6 });
+          for (let k = 0; k < 22; k++) { const a = k / 22 * Math.PI * 2; if (Math.abs(Math.sin(a / 2)) < .12) continue;
+            mesh(new THREE.SphereGeometry(.03, 8, 6), leaf, [Math.sin(a) * .118, -.07, Math.cos(a) * .118], [0, a, .6], [.45, 1, .2], h); } break; }
+        case 'halo':
+          mesh(new THREE.TorusGeometry(.14, .013, 8, 40), K.glowMat(c ?? 0xffd76a, 2.4), [0, .09, -.02], [Math.PI / 2, 0, 0], null, h); break;
+        case 'cap': { const m = cloth(c ?? 0x1d3f8a, { roughness: .7 });
+          mesh(new THREE.SphereGeometry(.122, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2), m, [0, mid + .055, 0], null, [1, .9, 1.04], h);
+          mesh(new THREE.CylinderGeometry(.12, .12, .012, 24, 1, false, -Math.PI / 2, Math.PI), m, [0, mid + .055, .07], null, [1, 1, 1], h); break; }
+        case 'cowboy': { const m = cloth(c ?? 0x7a5230, { roughness: .8 });
+          mesh(new THREE.CylinderGeometry(.27, .27, .018, 32), m, [0, -.045, 0], null, [1, 1, .9], h);
+          mesh(new THREE.CylinderGeometry(.1, .122, .14, 24), m, [0, .02, 0], null, [1, 1, .9], h); break; }
+        case 'chef': { const m = cloth(c ?? 0xf8f8f6, { roughness: .9 });
+          mesh(new THREE.CylinderGeometry(.13, .118, .2, 24), m, [0, .05, 0], null, null, h);
+          mesh(new THREE.SphereGeometry(.16, 20, 12), m, [0, .17, 0], null, [1, .55, 1], h); break; }
+        case 'wizard': { const m = cloth(c ?? 0x3a2a8a, { roughness: .8 });
+          mesh(new THREE.ConeGeometry(.15, .46, 24), m, [0, .18, -.02], [-.12, 0, 0], null, h);
+          mesh(new THREE.CylinderGeometry(.28, .28, .014, 32), m, [0, -.04, 0], null, null, h); break; }
+        case 'plague': { const m = cloth(c ?? 0x121214, { roughness: .8 });   // plague doctor: wide hat and beak mask
+          mesh(new THREE.CylinderGeometry(.3, .3, .016, 32), m, [0, -.04, 0], null, null, h);
+          mesh(new THREE.CylinderGeometry(.11, .125, .13, 24), m, [0, .02, 0], null, null, h);
+          mesh(new THREE.ConeGeometry(.055, .28, 16), cloth(0xd9ceb4, { roughness: .6 }), [0, mid - .055, .2], [Math.PI / 2, 0, 0], null, h);
+          for (const sx of [-1, 1]) mesh(new THREE.SphereGeometry(.026, 12, 8), K.mat(0x202830, { roughness: .1, metalness: .4 }), [sx * .045, mid + .02, .1], null, null, h); break; }
+        case 'fur': {                                                        // Mongol / steppe hat
+          mesh(new THREE.ConeGeometry(.13, .2, 20), cloth(c ?? 0x8a1f1f), [0, .03, 0], null, null, h);
+          mesh(new THREE.TorusGeometry(.12, .042, 10, 28), cloth(0x6b4a2e, { roughness: 1 }), [0, -.06, 0], [Math.PI / 2, 0, 0], null, h); break; }
+        case 'pharaoh': {                                                    // nemes headdress
+          const m = cloth(c ?? 0x1f4fa0, { roughness: .6 });
+          mesh(new THREE.SphereGeometry(.135, 24, 12, 0, Math.PI * 2, 0, Math.PI * .6), m, [0, mid + .03, -.01], null, null, h);
+          for (const sx of [-1, 1]) mesh(new THREE.BoxGeometry(.07, .26, .05), m, [sx * .12, mid - .14, .02], [0, 0, sx * .08], null, h);
+          mesh(new THREE.TorusGeometry(.13, .012, 8, 28), metal(GOLD), [0, mid + .03, 0], [Math.PI / 2, 0, 0], null, h); break; }
+        default: break;
+      }
+      h.position.set(head.x, top, head.z + .01);
+      pin('Head', h);
+    }
+    if (o.cape) {                                                          // from the shoulders to mid-calf, behind
+      const s3 = at('spine_03'), len = s3.y - .2;
+      const geo = new THREE.CylinderGeometry(.24, .44, len, 20, 6, true, Math.PI / 2 + .3, Math.PI - .6); geo.translate(0, -len / 2, 0);
+      const cape = new THREE.Mesh(geo, cloth(o.cape === true ? 0xa3121f : o.cape, { side: THREE.DoubleSide }));
+      cape.scale.z = .64; cape.position.set(s3.x, s3.y + .16, s3.z + .045); cape.rotation.x = .07;
+      pin('spine_03', cape);
+    }
+    if (o.robe) {                                                          // toga, robe, long coat: waist to ankles
+      const pel = at('pelvis'), topY = pel.y + .09, len = topY - .05, col = o.robe === true ? 0xf1ede2 : o.robe;
+      const geo = new THREE.CylinderGeometry(.158, .32, len, 28, 4, true); geo.translate(0, -len / 2, 0);
+      const robe = new THREE.Mesh(geo, cloth(col, { side: THREE.DoubleSide }));
+      robe.scale.z = .8; robe.position.set(pel.x, topY, pel.z + .075);
+      const belt = new THREE.Mesh(new THREE.TorusGeometry(.158, .022, 8, 28), cloth(o.belt ?? new THREE.Color(col).multiplyScalar(.55).getHex(), { roughness: .6 }));
+      belt.rotation.x = Math.PI / 2; belt.scale.set(1, .8, 1); belt.position.set(pel.x, topY - .01, pel.z + .075);
+      pin('pelvis', robe); pin('pelvis', belt);
+    }
+    if (o.hat === 'astronaut') {                                           // the life-support pack sells the suit
+      const s3 = at('spine_03'), pack = new THREE.Group();
+      mesh(new THREE.BoxGeometry(.4, .52, .2), K.mat(0xeeeeec, { roughness: .5 }), null, null, null, pack);
+      mesh(new THREE.BoxGeometry(.3, .12, .03), K.mat(0x8a8f98, { roughness: .4, metalness: .5 }), [0, .12, -.105], null, null, pack);
+      pack.position.set(s3.x, s3.y - .02, s3.z - .2);
+      pin('spine_03', pack);
+    }
+    if (o.shield) {                                                        // on the left forearm, facing out and forward
+      const la = at('lowerarm_l'), hl = at('hand_l'), sh = new THREE.Group();
+      if (o.shield === 'scutum') {                                         // Roman: a tall curved red board
+        mesh(new THREE.CylinderGeometry(.6, .6, 1.05, 18, 1, true, -.45, .9), cloth(o.shieldColor ?? 0x9b1b1b, { roughness: .6, side: THREE.DoubleSide }), [0, 0, -.55], null, null, sh);
+        mesh(new THREE.SphereGeometry(.07, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2), metal(GOLD), [0, 0, .05], [Math.PI / 2, 0, 0], null, sh);
+      } else {                                                             // round Greek hoplon
+        mesh(new THREE.CylinderGeometry(.42, .42, .04, 40), metal(o.shieldColor ?? BRONZE), null, [Math.PI / 2, 0, 0], null, sh);
+        mesh(new THREE.TorusGeometry(.42, .025, 8, 40), metal(0x8a6a3a), null, null, null, sh);
+        if (o.emblem !== false) mesh(new THREE.CylinderGeometry(.16, .16, .045, 3), cloth(o.emblemColor ?? 0x9b1b1b), [0, 0, .005], [Math.PI / 2, 0, Math.PI], null, sh);
+      }
+      sh.position.copy(la.clone().lerp(hl, .5)).add(new THREE.Vector3(.1, 0, .05));
+      sh.rotation.y = Math.atan2(1, .5);
+      pin('lowerarm_l', sh);
+    }
+    if (o.holding) {                                                       // in the right hand, upright at rest
+      const hr = at('hand_r'), it = new THREE.Group(), wood = cloth(WOOD, { roughness: .7 });
+      switch (o.holding) {
+        case 'spear': mesh(new THREE.CylinderGeometry(.017, .017, 2.3, 8), wood, [0, .23, 0], null, null, it);
+          mesh(new THREE.ConeGeometry(.04, .22, 8), metal(BRONZE), [0, 1.49, 0], null, null, it); break;
+        case 'staff': mesh(new THREE.CylinderGeometry(.022, .028, 1.8, 8), wood, [0, .2, 0], null, null, it);
+          mesh(new THREE.SphereGeometry(.045, 12, 8), wood, [0, 1.12, 0], null, null, it); break;
+        case 'trident': { const m = metal(o.holdColor ?? GOLD);
+          mesh(new THREE.CylinderGeometry(.018, .018, 2.0, 8), m, [0, .2, 0], null, null, it);
+          mesh(new THREE.BoxGeometry(.26, .03, .03), m, [0, 1.2, 0], null, null, it);
+          for (const x of [-.12, 0, .12]) mesh(new THREE.ConeGeometry(.022, .28, 8), m, [x, 1.35, 0], null, null, it); break; }
+        case 'torch': mesh(new THREE.CylinderGeometry(.025, .02, .55, 8), wood, [0, .15, 0], null, null, it);
+          mesh(new THREE.ConeGeometry(.06, .2, 12), K.glowMat(0xff8a2a, 2.6), [0, .5, 0], null, null, it);
+          mesh(new THREE.ConeGeometry(.035, .14, 10), K.glowMat(0xffe08a, 3), [0, .47, 0], null, null, it); break;
+        case 'flag': { mesh(new THREE.CylinderGeometry(.016, .016, 2.1, 8), wood, [0, .4, 0], null, null, it);
+          const cols = [].concat(o.flagColor ?? [0x1f3fa0, 0xf2f2f2, 0xc0202a]);
+          cols.forEach((col, k) => mesh(new THREE.PlaneGeometry(.95 / cols.length, .6), cloth(col, { side: THREE.DoubleSide }), [.03 + (k + .5) * .95 / cols.length, 1.15, 0], null, null, it)); break; }
+        case 'sword': mesh(new THREE.BoxGeometry(.05, .85, .012), metal(STEEL), [0, 0, .0], null, null, it);
+          mesh(new THREE.BoxGeometry(.2, .03, .04), metal(GOLD), [0, -.43, 0], null, null, it);
+          mesh(new THREE.CylinderGeometry(.018, .018, .16, 8), cloth(0x3a2a1a), [0, -.52, 0], null, null, it);
+          it.children.forEach(m => m.position.y += .9); it.rotation.x = Math.PI * .5; break;
+        case 'hotdog': mesh(new THREE.CapsuleGeometry(.032, .14, 4, 10), cloth(0xd9a35a, { roughness: .9 }), null, null, [1.25, 1, 1.05], it);
+          mesh(new THREE.CapsuleGeometry(.02, .17, 4, 10), cloth(0xa0402a, { roughness: .5 }), [0, 0, .02], null, null, it);
+          mesh(new THREE.BoxGeometry(.012, .15, .006), cloth(0xf0c020), [0, 0, .042], null, null, it);
+          it.rotation.x = Math.PI / 2; break;
+        case 'mic': mesh(new THREE.CylinderGeometry(.016, .012, .18, 10), cloth(0x222222), null, null, null, it);
+          mesh(new THREE.SphereGeometry(.035, 12, 10), metal(0x9a9a9a), [0, .1, 0], null, null, it); break;
+        case 'scroll': mesh(new THREE.CylinderGeometry(.03, .03, .3, 14), cloth(0xe8dcb8), null, [0, 0, Math.PI / 2], null, it); break;
+        default: break;
+      }
+      it.position.copy(hr).add(new THREE.Vector3(0, -.06, .035));
+      pin('hand_r', it);
+    }
+  }
+
   /**
    * A realistic person (1.8 m, faces +z). o: sex 'm'|'f', skin 'light'|'pale'|'tan'|'brown'|'dark'|'red'|'devil'|'green'|hex,
    * hair 'buzzed'|'parted'|'long'|'buns'|'bald', hairColor, beard, shirt (hex, or null = shirtless), sleeves 'none'|'short'|'long',
@@ -221,7 +382,9 @@ export function humanKit(K, updaters) {
       m.frustumCulled = false;
     });
     skeleton = body.skeleton;
-    body.material = bodyMaterial(lib.body.material, Object.assign({}, o, { skinMap, skinTint }));
+    // under a robe the legs wear its colour, so a stride poking through the cloth doesn't show dark trousers
+    const robeLegs = o.robe && o.pants == null ? { pants: o.robe === true ? 0xf1ede2 : o.robe, legs: 'long' } : {};
+    body.material = bodyMaterial(lib.body.material, Object.assign({}, o, robeLegs, { skinMap, skinTint }));
     if (o.eyes && eyes) eyes.material = K.glowMat(o.eyes, 6);
     root.traverse(m => { if (m.isSkinnedMesh && m !== body && m !== eyes) { m.material = m.material.clone(); m.material.color = new THREE.Color(o.hairColor ?? 0x2a1c12).multiplyScalar(2.2); } });
     for (const [src, color] of hairMeshes(o, sex)) {
@@ -261,6 +424,7 @@ export function humanKit(K, updaters) {
       sh.scale.z = .78; sh.position.set(0, hy - .2, .005);
       root.add(sh); root.updateMatrixWorld(true); bones.pelvis.attach(sh);
     }
+    costume(o, g, root, bones, sex);
     K.add(g, pos);
     g.traverse(m => { if (m.isMesh) { m.castShadow = o.shadow !== false; m.receiveShadow = true; } });
     g.userData.sex = sex; g.bones = bones; g.skeleton = skeleton;
