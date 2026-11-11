@@ -1302,11 +1302,14 @@ class Shop:
         kind), and publish it again if it was live so the listing's photos follow."""
         rec["upload_id"] = self.upload(rec)
         areas = self.print_areas(rec, kind, rec["upload_id"], rec["size"])
-        # an update must name every variant the product has, sold or not (Printify fills them in itself when a product
-        # is created, and answers 400 "all product variants must be present" otherwise): the rest go with the first area
+        # an update must name every variant the product's print areas already cover, sold or not (Printify fills them
+        # in itself when a product is created, and answers 400 "all product variants must be present" otherwise): the
+        # rest go with the first area. Not every variant the product lists: an older product also lists ones its
+        # printer has since dropped, and naming those is refused too
         path = f"shops/{prod['shop']}/products/{prod['id']}.json"
         named = {i for a in areas for i in a["variant_ids"]}
-        rest = [v["id"] for v in (self.c.printify("GET", path) or {}).get("variants") or [] if v["id"] not in named]
+        covered = [i for a in (self.c.printify("GET", path) or {}).get("print_areas") or [] for i in a.get("variant_ids") or []]
+        rest = [i for i in dict.fromkeys(covered) if i not in named]
         areas[0] = dict(areas[0], variant_ids=list(areas[0]["variant_ids"]) + rest)
         self.c.printify("PUT", path, {"print_areas": areas})
         if prod.get("published"):
