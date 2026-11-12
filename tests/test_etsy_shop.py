@@ -377,8 +377,8 @@ class ListingTests(_Base):
 
     def test_tiktok_shop_gets_newest_clean_designs_up_to_its_daily_cap(self):
         c = FakeClients(shops=[{"id": 4, "sales_channel": "tiktok"}])
-        s = self.shop(c, tiktok_per_day=4)
         three = ["tee", "mug", "sticker"]
+        s = self.shop(c, tiktok_per_day=4, tiktok_products=three)
         s.make_design(only=three)                         # oldest: past today's cap
         s.make_design(only=three)
         s.make_design(only=three)
@@ -391,6 +391,15 @@ class ListingTests(_Base):
         designs = ws.load_state(self.dir / "s.json")["designs"]
         self.assertEqual([len(d.get("channels", {}).get("tiktok", {})) for d in designs], [1, 3, 0])
         self.assertEqual(s.list_pending(), [])            # the cap holds for the rest of the day
+
+    def test_tiktok_shop_only_gets_the_kinds_it_accepts(self):
+        c = FakeClients(shops=[{"id": 4, "sales_channel": "tiktok"}])
+        s = self.shop(c)                                  # TikTok refuses products printed outside the US
+        s.make_design(only=["tee", "mug", "hoodie"])
+        s.list_pending()
+        rec = ws.load_state(self.dir / "s.json")["designs"][0]
+        self.assertEqual(sorted(rec["channels"]["tiktok"]), ["hoodie", "tee"])
+        self.assertEqual(s.list_pending(), [])            # the mug doesn't use up tomorrow's budget either
 
     def test_ebay_rotation_ends_the_oldest_unsold_listing_for_a_winners_spin_off(self):
         c = FakeClients(shops=[{"id": 5, "sales_channel": "ebay"}])

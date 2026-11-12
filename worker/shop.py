@@ -293,6 +293,9 @@ DEFAULTS = {"enabled": True, "designs_per_day": 1, "time": "06:00",  # live befo
             # TikTok Shop (2026-11-08, user: "lets do tik tok shop"): free to list, ~6-8% a sale. New shops get
             # reviewed, so at most this many new listings a day, newest designs first
             "tiktok_per_day": 25,
+            # and only these kinds: TikTok takes products printed in the US from Printify's TikTok catalog. The all-over
+            # sweater (a provider abroad) was refused 2026-11-11; the T-shirt and hoodie went live
+            "tiktok_products": ["sweater_tee", "sweater_hoodie", "tee", "hoodie"],
             # sell-what-sold mix (2026-11-10, user: "whatever is gonna get me more sales"): daily designs alternate a close
             # variant of the winner (same core slogan, slight twist) and a new joke in its style; the extra breed/job
             # designs and the shirts for viral videos are off (never sold)
@@ -1451,7 +1454,7 @@ class Shop:
                 continue
             listed = products_in(rec, "tiktok")
             missing = sum(1 for k in rec.get("only") or cfg["products"]
-                          if k in PRODUCTS and not (listed.get(k) or {}).get("published"))
+                          if k in PRODUCTS and k in cfg["tiktok_products"] and not (listed.get(k) or {}).get("published"))
             if missing:
                 tiktok_ok[pos] = min(missing, budget)
                 budget -= missing
@@ -1472,6 +1475,8 @@ class Shop:
                         picks = [k for k in (cfg.get("etsy_products") or kinds) if k in kinds]
                         rec["etsy_kinds"] = live or (picks[:cfg.get("etsy_per_design", 3)] if self.on_etsy(rec, st) else [])
                     kinds = [k for k in kinds if k in live or k in rec["etsy_kinds"]]
+                if channel == "tiktok":
+                    kinds = [k for k in kinds if k in cfg["tiktok_products"]]
                 for kind in kinds:
                     if kind not in PRODUCTS:
                         continue
