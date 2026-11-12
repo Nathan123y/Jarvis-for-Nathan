@@ -294,8 +294,9 @@ DEFAULTS = {"enabled": True, "designs_per_day": 1, "time": "06:00",  # live befo
             # reviewed, so at most this many new listings a day, newest designs first
             "tiktok_per_day": 25,
             # and only these kinds: TikTok takes products printed in the US from Printify's TikTok catalog. The all-over
-            # sweater (a provider abroad) was refused 2026-11-11; the T-shirt and hoodie went live
-            "tiktok_products": ["sweater_tee", "sweater_hoodie", "tee", "hoodie"],
+            # sweater (a provider abroad) was refused 2026-11-11, and the crewneck twice ("unexpected error"); these
+            # were each tried and went live
+            "tiktok_products": ["sweater_tee", "sweater_hoodie", "tee", "hoodie", "tank", "mug", "shorts", "pants", "hat"],
             # sell-what-sold mix (2026-11-10, user: "whatever is gonna get me more sales"): daily designs alternate a close
             # variant of the winner (same core slogan, slight twist) and a new joke in its style; the extra breed/job
             # designs and the shirts for viral videos are off (never sold)
