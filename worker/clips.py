@@ -6,11 +6,12 @@ Clips come from one folder, ~/Movies/Jarvis Clips/inbox, used oldest first, one 
 Name a file "@streamer anything.mp4" (or put the name in a .txt beside it) to credit the streamer on screen.
 
 Each clip:
-  1. Gemini watches it and picks the best 15-45 seconds, a hook title, one spoken hook line and the caption.
+  1. Gemini watches it and picks the best 15-30 seconds, a hook title, one spoken hook line and the caption.
      A clip with nothing worth posting is moved to inbox/skipped.
   2. ffmpeg builds the 1080x1920 video: the gameplay over a blurred copy of itself, the big hook title on from
      the first frame (yellow key words), the streamer's credit under the picture, the game's own sound.
   3. The narrator (the same Gemini voice as the daily videos) says the hook line over the first seconds.
+     What the streamer says is put on screen a few words at a time (Whisper, run on this Mac, times each word).
   4. It posts to TikTok and Instagram through the same logged-in Chrome profiles as the daily videos.
 
     python3 -m worker.clips make FILE [--no-post]   cut one clip now (and post it, unless --no-post)
@@ -52,7 +53,8 @@ DEFAULTS = {"enabled": True,
             "game": "GTA 6",
             "hashtags": "gta6,gtavi,gta,gaming,fyp",
             "min_seconds": 15,
-            "max_seconds": 45,
+            "max_seconds": 30,              # 15-30 s clips hold viewers best on all three apps
+            "captions": True,               # what the streamer says, word by word, in yellow over the picture
             "voice_hook": True,             # the narrator says one hook line over the first seconds
             "ai_label": False}              # real gameplay footage, not AI-made video
 
@@ -298,6 +300,73 @@ def hook_voice(text: str, out: Path, log: Callable = print) -> Optional[Path]:
     return None
 
 
+# ── spoken-word captions ─────────────────────────────────────────────────────
+WHISPER = "small.en"                    # ~460 MB, downloaded once; about 5 s of work for a 30 s clip
+CAPTION_Y = {False: PICTURE_Y + PICTURE_H - 96, True: 1290}     # the caption's centre: low on the picture
+
+
+def hear_words(src: Path, start: float, end: float) -> list[tuple]:
+    """Every word spoken in that stretch as (from, to, word, sureness), timed from the stretch's start."""
+    import numpy as np
+    from faster_whisper import WhisperModel
+    raw = subprocess.run([wv.ffmpeg(), "-loglevel", "error", "-ss", f"{start:.2f}", "-t", f"{end - start:.2f}", "-i", str(src),
+                          "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "-"], capture_output=True, timeout=300).stdout
+    if len(raw) < 16000 * 4:
+        return []
+    model = WhisperModel(WHISPER, device="cpu", compute_type="int8")
+    segs, _ = model.transcribe(np.frombuffer(raw, dtype=np.float32), word_timestamps=True, vad_filter=True,
+                               condition_on_previous_text=False)
+    return [(float(w.start), float(w.end), w.word.strip(), float(w.probability)) for s in segs for w in s.words or []]
+
+
+def caption_chunks(words: list[tuple], length: float, skip_before: float = 0, sure: float = .35) -> list[tuple]:
+    """Words grouped into (from, to, TEXT) captions of up to three words. [] when Whisper mostly guessed (another
+    language, music, game noise): wrong captions are worse than none."""
+    said = [w for w in words if w[2] and re.search(r"\w", w[2])]
+    good = [w for w in said if w[3] >= sure]
+    if len(good) < 4 or len(good) < .7 * len(said):
+        return []
+    chunks, cur = [], []
+    for w in said:                                          # the clip passed: keep every word, short unsure ones too
+        if w[0] < skip_before or w[0] >= length:            # the narrator is talking / past the end
+            continue
+        if cur and (len(cur) >= 3 or len(" ".join(c[2] for c in cur + [w])) > 16 or w[0] - cur[-1][1] > .5
+                    or re.search(r"[.!?]$", cur[-1][2])):
+            chunks.append(cur)
+            cur = []
+        cur.append(w)
+    if cur:
+        chunks.append(cur)
+    out = []
+    for i, c in enumerate(chunks):
+        a = c[0][0]
+        nxt = chunks[i + 1][0][0] if i + 1 < len(chunks) else length
+        b = min(nxt, max(c[-1][1] + .35, a + .3), length)
+        if b - a >= .12:
+            out.append((round(a, 2), round(b, 2), re.sub(r"[.,;:]+$", "", " ".join(x[2] for x in c)).upper()))
+    return out
+
+
+def _ass_time(t: float) -> str:
+    cs = max(0, round(t * 100))
+    return f"{cs // 360000}:{cs // 6000 % 60:02d}:{cs // 100 % 60:02d}.{cs % 100:02d}"
+
+
+def write_ass(chunks: list[tuple], out: Path, tall: bool = False) -> Path:
+    """The captions as a subtitle file ffmpeg burns in: big yellow Impact with a black edge, each one popping in."""
+    head = ("[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\nWrapStyle: 2\n\n[V4+ Styles]\n"
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, "
+            "Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, "
+            "MarginV, Encoding\n"
+            "Style: Cap,Impact,84,&H0021DEFF,&H0021DEFF,&H00000000,&H96000000,0,0,0,0,100,100,1,0,1,7,3,5,40,40,40,1\n\n"
+            "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
+    y = CAPTION_Y[bool(tall)]
+    lines = [f"Dialogue: 0,{_ass_time(a)},{_ass_time(b)},Cap,,0,0,0,,{{\\pos(540,{y})\\fscx82\\fscy82\\t(0,70,\\fscx100\\fscy100)}}"
+             + re.sub(r"[{}\\\n]", "", text) for a, b, text in chunks]
+    out.write_text(head + "\n".join(lines) + "\n")
+    return out
+
+
 def wav_seconds(path: Path) -> float:
     import wave
     with wave.open(str(path), "rb") as w:
@@ -305,7 +374,7 @@ def wav_seconds(path: Path) -> float:
 
 
 def edit_command(src: Path, layer: Path, out: Path, plan: dict, info: dict, voice: Optional[Path] = None,
-                 voice_s: float = 0) -> list[str]:
+                 voice_s: float = 0, subs: Optional[Path] = None) -> list[str]:
     """The ffmpeg call: blurred backdrop + the picture + the title layer; the clip's sound, ducked under the hook."""
     length = plan["end"] - plan["start"]
     tall = info["h"] > info["w"]
@@ -324,7 +393,8 @@ def edit_command(src: Path, layer: Path, out: Path, plan: dict, info: dict, voic
                  f"eq=brightness=-0.16:saturation=1.15[bg];"
                  f"[b]scale=-2:{PICTURE_H},crop='min(iw,{W})':{PICTURE_H}[fg];"
                  f"[bg][fg]overlay=(W-w)/2:{PICTURE_Y},setsar=1[v0]")
-    video += ";[v0][1:v]overlay=0:0:shortest=1,format=yuv420p[v]"
+    burn = f",subtitles=f={subs}:fontsdir=/System/Library/Fonts/Supplemental" if subs else ""
+    video += f";[v0][1:v]overlay=0:0:shortest=1{burn},format=yuv420p[v]"
     game = "[0:a]" if info["audio"] else f"[{3 if voice else 2}:a]"
     if voice:
         audio = (f"{game}aresample=48000,loudnorm=I=-16:TP=-2,volume=0.22:enable='lt(t,{voice_s + .35:.2f})'[g];"
@@ -350,21 +420,31 @@ def make(src: Path, cfg: Optional[dict] = None, log: Callable = print, plan_with
     slug = re.sub(r"[^a-z0-9]+", "-", plan["title"].lower()).strip("-")[:50]
     out = OUT / f"{datetime.now():%Y%m%d-%H%M%S}-{slug}.mp4"
     layer, voice_file = out.with_suffix(".png"), out.with_suffix(".wav")
+    import tempfile
+    subs_file = Path(tempfile.gettempdir()) / f"jarvis-clip-{int(time.time() * 1000)}.ass"   # a path ffmpeg's filter needn't escape
     try:
         overlay(plan, credit, layer, tall=info["h"] > info["w"], site=site)
         voice = hook_voice(plan["hook"], voice_file, log) if cfg["voice_hook"] and plan["hook"] else None
         voice_s = wav_seconds(voice) if voice else 0
         if voice and voice_s > (plan["end"] - plan["start"]) * .6:   # a line that long would talk over the moment
             voice = None
-        done = subprocess.run(edit_command(src, layer, out, plan, info, voice, voice_s), capture_output=True, text=True, timeout=1800)
+        subs, length = None, plan["end"] - plan["start"]
+        if cfg.get("captions"):
+            try:
+                chunks = caption_chunks(hear_words(src, plan["start"], plan["end"]), length, skip_before=voice_s + .3 if voice else 0)
+                subs = write_ass(chunks, subs_file, tall=info["h"] > info["w"]) if chunks else None
+            except Exception as exc:
+                log(f"clips: no captions this time ({str(exc)[:90]})")
+        done = subprocess.run(edit_command(src, layer, out, plan, info, voice, voice_s, subs), capture_output=True, text=True, timeout=1800)
         if done.returncode or not out.exists():
             raise Skip(f"ffmpeg couldn't cut it ({done.stderr.strip()[-200:]})")
     finally:
         layer.unlink(missing_ok=True)
         voice_file.unlink(missing_ok=True)
+        subs_file.unlink(missing_ok=True)
     log(f"clips: cut \"{plan['title']}\" ({plan['end'] - plan['start']:.0f}s from {src.name})")
     return {"path": str(out), "title": plan["title"], "caption": caption_for(plan, credit, site), "credit": credit, "site": site,
-            "src": str(src), "key": fingerprint(src), "voiced": bool(voice), "made": time.time()}
+            "src": str(src), "key": fingerprint(src), "voiced": bool(voice), "captioned": bool(subs), "made": time.time()}
 
 
 # ── 3. the daily slots ───────────────────────────────────────────────────────
