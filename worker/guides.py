@@ -568,12 +568,20 @@ def clean_match(raw, needs: list[float], shots: list[dict]) -> list[list[int]]:
 
 
 def match_shots(sections: list, needs: list[float], shots: list[dict], game: str, log: Callable = print) -> list[list[int]]:
-    """Which catalogue shots go under which section (a text-only question to Gemini: cheap)."""
+    """Which catalogue shots go under which section: Claude (the same model that wrote the script) edits,
+    Gemini only if Claude is unavailable."""
     from core import gemini
     from google.genai import types
     prompt = MATCH_PROMPT.format(
         game=game, sections="\n".join(f"{i} | {n:.0f} | {s['say'][:400]} [show: {s['show']}]" for i, (s, n) in enumerate(zip(sections, needs))),
         catalogue="\n".join(f"{s['id']} | {s['end'] - s['start']:.0f} | {s['what']}" for s in shots))
+    try:
+        answer = wv.claude_run(prompt + "\n\nReply with the JSON only.", timeout_s=600)
+        if answer:
+            return clean_match(wv._json_from(answer), needs, shots)
+        log("guides: Claude couldn't pick the footage, asking Gemini")
+    except Exception as exc:
+        log(f"guides: Claude's footage picks unreadable ({str(exc)[:80]}), asking Gemini")
     try:
         c = gemini.client(timeout_ms=180000)
         for model in ("gemini-3.5-flash", "gemini-3.5-flash-lite"):
