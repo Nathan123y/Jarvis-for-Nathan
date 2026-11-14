@@ -113,6 +113,9 @@ def cmd_run(args) -> int:
     guides = GuideService(logging.getLogger("jarvis.guides").info,
                           notify=lambda kind, text: alerts.alerts.scheduled(kind, text))
     guides.start()
+    # Agents HQ: a page showing what every crew above is doing, at http://localhost:8460 (worker/agents_hq.py).
+    from worker import agents_hq
+    agents_hq.start(logging.getLogger("jarvis.worker").info)
     try:
         w.run_forever()
     finally:
