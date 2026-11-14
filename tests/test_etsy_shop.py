@@ -392,6 +392,18 @@ class ListingTests(_Base):
         self.assertEqual([len(d.get("channels", {}).get("tiktok", {})) for d in designs], [1, 3, 0])
         self.assertEqual(s.list_pending(), [])            # the cap holds for the rest of the day
 
+    def test_tiktok_shop_stops_at_its_listing_limit(self):
+        class Counting(FakeClients):
+            def printify(self, method, path, body=None):
+                if path.startswith("shops/4/products.json?"):
+                    return {"data": [{"external": {"id": str(i)}} for i in range(48)] + [{}], "last_page": 1}
+                return super().printify(method, path, body)
+        s = self.shop(Counting(shops=[{"id": 4, "sales_channel": "tiktok"}]), tiktok_max=50,
+                      tiktok_products=["tee", "mug", "sticker"])
+        s.make_design(only=["tee", "mug", "sticker"])
+        done = s.list_pending()
+        self.assertEqual(len(done), 2)                    # 48 are live of 50 allowed
+
     def test_tiktok_shop_only_gets_the_kinds_it_accepts(self):
         c = FakeClients(shops=[{"id": 4, "sales_channel": "tiktok"}])
         s = self.shop(c)                                  # TikTok refuses products printed outside the US

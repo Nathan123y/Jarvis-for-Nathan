@@ -293,6 +293,9 @@ DEFAULTS = {"enabled": True, "designs_per_day": 1, "time": "06:00",  # live befo
             # TikTok Shop (2026-11-08, user: "lets do tik tok shop"): free to list, ~6-8% a sale. New shops get
             # reviewed, so at most this many new listings a day, newest designs first
             "tiktok_per_day": 25,
+            # a new TikTok shop is on a probation program (2026-11-13: 100 listings in all, until its targets are met), so
+            # the shop stops adding when this many are live there; raise it when Seller Center lifts the limit
+            "tiktok_max": 100,
             # and only these kinds: TikTok takes products printed in the US from Printify's TikTok catalog. The all-over
             # sweater (a provider abroad) was refused 2026-11-11, and the crewneck twice ("unexpected error"); these
             # were each tried and went live
@@ -457,7 +460,7 @@ def settings() -> dict:
         out["holiday_per_day"] = max(0, min(3, int(out["holiday_per_day"])))
     except (TypeError, ValueError):
         out["holiday_per_day"] = DEFAULTS["holiday_per_day"]
-    for key in ("etsy_per_day", "etsy_per_design", "ebay_max", "tiktok_per_day"):
+    for key in ("etsy_per_day", "etsy_per_design", "ebay_max", "tiktok_per_day", "tiktok_max"):
         try:
             out[key] = max(0, int(out[key]))
         except (TypeError, ValueError):
@@ -1428,6 +1431,23 @@ class Shop:
                 return True
         return False
 
+    def tiktok_live(self, shop_id: int) -> Optional[int]:
+        """How many of the TikTok store's products TikTok has taken (Printify gives each one a TikTok id as `external`;
+        one still in review counts too). None when Printify can't say."""
+        n = 0
+        try:
+            for page in range(1, 11):
+                r = self.c.printify("GET", f"shops/{shop_id}/products.json?limit=50&page={page}")
+                data = r.get("data") if isinstance(r, dict) else None
+                if not isinstance(data, list):
+                    return None
+                n += sum(1 for p in data if p.get("external"))
+                if page >= int(r.get("last_page") or 1):
+                    break
+        except Exception:
+            return None
+        return n
+
     def list_pending(self) -> list:
         """Put every queued design on the products it's still missing in each connected channel, and publish
         them. A channel that fails waits an hour without holding up the others."""
@@ -1443,6 +1463,9 @@ class Shop:
                            if p.get("listed_at") and datetime.fromtimestamp(p["listed_at"]).date() == today)
         # TikTok's daily budget goes to the newest clean designs first (the holiday ones that matter now)
         budget, tiktok_ok = cfg.get("tiktok_per_day", 25) - tiktok_today, {}     # list position -> new listings it may make
+        live = self.tiktok_live(stores["tiktok"]["id"]) if "tiktok" in stores and budget > 0 else None
+        if live is not None:
+            budget = min(budget, cfg.get("tiktok_max", 100) - live)
         sold = {i for x in st.get("sales_log") or [] for i in x.get("designs") or []}
         winning = lambda d: d.get("id") in sold or bool(d.get("spinoff_of"))
         # the winner and its spin-offs/variants first, then newest
