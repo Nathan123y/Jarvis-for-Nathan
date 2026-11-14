@@ -91,7 +91,9 @@ class DescriptionTests(unittest.TestCase):
         s = g.clean_script(RAW, 1)
         text = g.describe(s, [0.0, 14.2, 71.0], [{"channel": "Some Gamer", "url": "https://youtu.be/x"}])
         self.assertIn("0:00 Intro\n0:14 Heists First\n1:11 Stocks", text)
-        self.assertIn("Gameplay footage from:\nSome Gamer - https://youtu.be/x", text)
+        self.assertIn("Footage: Some Gamer\nSources: example.com", text)
+        self.assertNotIn("https://", text)                      # no wall of links
+        self.assertTrue(text.rstrip().endswith("#gta6 #gta6money #heists"))
         self.assertEqual(g.chapters(s["sections"], [0.0, 4.0, 8.0]), "")          # too close together for YouTube
 
     def test_thumbnail_is_drawn(self):

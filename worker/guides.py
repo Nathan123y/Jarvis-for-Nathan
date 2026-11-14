@@ -747,27 +747,41 @@ def write_ass_short(chunks: list[tuple], headings: list[tuple], out: Path) -> Pa
 
 
 def thumbnail(frame: Path, text: str, out: Path) -> Path:
-    from PIL import Image, ImageDraw, ImageEnhance
-    img = ImageEnhance.Contrast(Image.open(frame).convert("RGB").resize((1280, 720))).enhance(1.15)
-    img = ImageEnhance.Color(img).enhance(1.25)
+    """1280x720: the still, punched up, with 2-4 huge words stacked on the left (yellow and white, heavy black
+    edge) over a dark fade, and a yellow bar down the left side."""
+    from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
+    img = Image.open(frame).convert("RGB")
+    w, h = img.size
+    side = min(w, int(h * 16 / 9))
+    img = img.crop(((w - side) // 2, 0, (w - side) // 2 + side, h)).resize((1280, 720), Image.LANCZOS)
+    img = ImageEnhance.Color(ImageEnhance.Contrast(img).enhance(1.18)).enhance(1.22)
+    img = ImageEnhance.Sharpness(img).enhance(1.6)
     shade = Image.new("RGBA", (1280, 720), (0, 0, 0, 0))
     ds = ImageDraw.Draw(shade)
-    for x in range(760):                                    # darker on the left, under the words
-        ds.line([(x, 0), (x, 720)], fill=(0, 0, 0, int(190 * (1 - x / 760))))
+    for x in range(860):                                    # dark on the left, under the words
+        ds.line([(x, 0), (x, 720)], fill=(0, 0, 0, int(225 * (1 - x / 860) ** 1.2)))
     img = Image.alpha_composite(img.convert("RGBA"), shade)
-    d = ImageDraw.Draw(img)
-    words = text.upper().split()
-    size = 190
-    while size > 70:
+    words = text.upper().split()[:4] or ["GTA 6"]
+    probe = ImageDraw.Draw(img)
+    size = 250
+    while size > 80:
         f = clips._font(clips.TITLE_FONT, size)
-        if all(d.textlength(w, font=f) <= 700 for w in words) and len(words) * size * 1.05 <= 640:
+        if all(probe.textlength(wd, font=f) <= 760 for wd in words) and len(words) * size * 1.0 <= 650:
             break
         size -= 8
-    y = (720 - len(words) * size * 1.05) / 2
-    for i, w in enumerate(words):
-        d.text((50, y), w, font=f, fill=clips.YELLOW if i % 2 == 0 else clips.WHITE, stroke_width=max(6, size // 14), stroke_fill=(0, 0, 0, 255))
-        y += size * 1.05
-    img.convert("RGB").save(out, quality=92)
+    edge = max(10, size // 9)
+    layer = Image.new("RGBA", (1280, 720), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    y = (720 - len(words) * size) / 2 - size * .06
+    for i, wd in enumerate(words):
+        d.text((64, y), wd, font=f, fill=clips.YELLOW if i % 2 == 0 else clips.WHITE, stroke_width=edge, stroke_fill=(0, 0, 0, 255))
+        y += size
+    glow = layer.filter(ImageFilter.GaussianBlur(14))       # a soft dark halo so the words lift off any background
+    dark = Image.new("RGBA", (1280, 720), (0, 0, 0, 0))
+    dark.putalpha(glow.getchannel("A").point(lambda v: min(255, int(v * .8))))
+    img = Image.alpha_composite(Image.alpha_composite(img, dark), layer)
+    ImageDraw.Draw(img).rectangle((0, 0, 22, 720), fill=clips.YELLOW)
+    img.convert("RGB").save(out, quality=93)
     return out
 
 
@@ -782,13 +796,74 @@ def chapters(sections: list, starts: list[float]) -> str:
     return "\n".join(rows) if len(rows) >= 3 else ""
 
 
+def site_names(urls: list) -> list[str]:
+    """kotaku.com, forbes.com ... : where the facts came from, without the long links."""
+    from urllib.parse import urlparse
+    out = []
+    for u in urls:
+        host = re.sub(r"^www\.", "", urlparse(str(u)).netloc.lower())
+        if host and host not in out:
+            out.append(host)
+    return out
+
+
 def describe(script: dict, starts: list[float], credits: list[dict]) -> str:
+    """The YouTube description: what the video covers, the chapters, then one short line each for the footage and
+    the sources (no walls of links), and three hashtags."""
     parts = [script["description"], chapters(script["sections"], starts)]
-    if credits:
-        parts.append("Gameplay footage from:\n" + "\n".join(f"{c['channel']} - {c['url']}" for c in credits))
-    if script["sources"]:
-        parts.append("Sources:\n" + "\n".join(script["sources"][:8]))
+    who = sorted({c["channel"] for c in credits if c.get("channel")})
+    tail = []
+    if who:
+        tail.append("Footage: " + ", ".join(who))
+    names = site_names(script.get("sources") or [])
+    if names:
+        tail.append("Sources: " + ", ".join(names[:8]))
+    parts.append("\n".join(tail))
+    tags = [re.sub(r"[^a-z0-9]", "", t.lower()) for t in script.get("tags") or []]
+    parts.append(" ".join("#" + t for t in list(dict.fromkeys(["gta6"] + [t for t in tags if t and len(t) <= 18]))[:3]))
     return "\n\n".join(p for p in parts if p)[:4900]
+
+
+PEOPLE = re.compile(r"\b(jason|lucia|man|woman|men|women|character|face|close-?up|couple|person|people)\b", re.I)
+
+
+def people_shots(files: list[Path]) -> list[Path]:
+    """The library clips whose catalogue line says a person is on screen: faces make the best thumbnails."""
+    what = {f"{c['source']}-{c['start']:.0f}-{c['end']:.0f}.mp4": c["what"] for c in catalogue(load_library())}
+    return [f for f in files if PEOPLE.search(what.get(Path(f).name, ""))]
+
+
+def best_frame(shot_files: list[Path], out: Path) -> Path:
+    """The most eye-catching still for the thumbnail: a shot with a person in it when there is one, then bright,
+    colourful and sharp. Taken from the footage itself, so there are no captions on it."""
+    import numpy as np
+    from PIL import Image
+    best, best_score = None, -1.0
+    shot_files = people_shots(shot_files) or shot_files
+    step = max(1, len(shot_files) // 14)
+    for k, f in enumerate(shot_files[::step][:14]):
+        tmp = out.with_name(f"cand-{k}.png")
+        bars = detect_bars(Path(f))
+        r = subprocess.run([wv.ffmpeg(), "-loglevel", "error", "-y", "-ss", "1.2", "-i", str(f)] + (["-vf", f"crop={bars}"] if bars else [])
+                           + ["-frames:v", "1", str(tmp)], capture_output=True, timeout=120)
+        if r.returncode or not tmp.exists():
+            continue
+        x = np.asarray(Image.open(tmp).convert("RGB").resize((320, 180)), dtype=np.float32) / 255
+        light = float(x.mean())
+        colour = float((x.max(axis=2) - x.min(axis=2)).mean())
+        g = x.mean(axis=2)
+        sharp = float(np.abs(np.diff(g, axis=0)).mean() + np.abs(np.diff(g, axis=1)).mean())
+        score = colour * 2 + sharp * 6 + (1 - abs(light - .5) * 2) * .6
+        if score > best_score:
+            if best:
+                best.unlink(missing_ok=True)
+            best, best_score = tmp, score
+        else:
+            tmp.unlink(missing_ok=True)
+    if not best:
+        raise RuntimeError("no frame for the thumbnail")
+    best.replace(out)
+    return out
 
 
 def make(topic: str = "", cfg: Optional[dict] = None, log: Callable = print, resume: Optional[Path] = None,
@@ -898,11 +973,8 @@ def make(topic: str = "", cfg: Optional[dict] = None, log: Callable = print, res
         rec["caption"] = f"{script['caption']} {tags}".strip()[:2000]
         rec["description"] = "\n\n".join(x for x in (script["caption"], footage, tags if "#shorts" in tags else "#shorts " + tags) if x)[:4900]
     else:
-        frame, thumb = job / "frame.png", out.with_suffix(".jpg")
-        at = starts[1] + 2 if len(starts) > 1 else total / 3   # a frame from the first real section, without captions on it
-        k = next((i for i, x in enumerate(shots) if sum(y["seconds"] for y in shots[:i + 1]) > at), 0)
-        subprocess.run([wv.ffmpeg(), "-loglevel", "error", "-y", "-ss", "1", "-i", str(shots_dir / f"{k:04d}.mp4"), "-frames:v", "1", str(frame)],
-                       check=True, timeout=120)
+        thumb = out.with_suffix(".jpg")
+        frame = best_frame(list(dict.fromkeys(Path(x["path"]) for x in pieces)), job / "frame.png")
         thumbnail(frame, script["thumbnail"], thumb)
         rec["thumb"] = str(thumb)
         rec["description"] = describe(script, starts, credits)
@@ -1010,6 +1082,53 @@ def youtube_upload(rec: dict, cfg: Optional[dict] = None, log: Callable = print,
             pg.wait_for_timeout(8000)
             pg.screenshot(path=str(shot))
             return link or "posted"
+        except Exception:
+            try:
+                pg.screenshot(path=str(shot))
+            except Exception:
+                pass
+            raise
+        finally:
+            ctx.close()
+
+
+def youtube_edit(video_id: str, description: str = "", thumb: str = "", cfg: Optional[dict] = None, log: Callable = print) -> str:
+    """Changes a posted video's description and/or thumbnail in YouTube Studio. Returns what happened."""
+    from playwright.sync_api import sync_playwright
+    cfg = cfg or settings()
+    notes = []
+    with wv.BROWSER, sync_playwright() as p:
+        ctx = _context(p, visible=False)
+        pg = ctx.pages[0] if ctx.pages else ctx.new_page()
+        shot = WORK / f"youtube-edit-{int(time.time())}.png"
+        try:
+            if not logged_in(ctx):
+                raise wv.NotLoggedIn("YouTube isn't logged in (run: python3 -m worker.guides login)")
+            pg.goto(f"https://studio.youtube.com/video/{video_id}/edit", wait_until="domcontentloaded", timeout=60000)
+            box = pg.locator("#description-textarea #textbox").first
+            box.wait_for(state="visible", timeout=60000)
+            pg.wait_for_timeout(2500)
+            if description:
+                box.click()
+                pg.keyboard.press("Meta+A")
+                pg.keyboard.press("Backspace")
+                pg.keyboard.insert_text(description[:4900])
+                notes.append("description set")
+            if thumb and Path(thumb).exists():
+                try:
+                    pg.locator("input#file-loader[type=file], ytcp-thumbnail-uploader input[type=file], ytcp-thumbnails-compact-editor-uploader input[type=file]").first.set_input_files(thumb, timeout=8000)
+                    pg.wait_for_timeout(5000)
+                    notes.append("thumbnail sent")
+                except Exception:
+                    notes.append("no thumbnail upload offered (the channel needs phone verification)")
+            pg.wait_for_timeout(1500)
+            save = pg.locator("#save").first
+            if save.get_attribute("disabled") is None and save.get_attribute("aria-disabled") != "true":
+                save.click(timeout=15000)
+                pg.wait_for_timeout(6000)
+                notes.append("saved")
+            pg.screenshot(path=str(shot), full_page=False)
+            return "; ".join(notes) + f" (screenshot {shot})"
         except Exception:
             try:
                 pg.screenshot(path=str(shot))
