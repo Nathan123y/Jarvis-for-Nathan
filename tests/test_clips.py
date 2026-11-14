@@ -27,7 +27,7 @@ class PlanTests(unittest.TestCase):
 
     def test_window_is_kept_inside_the_clip_and_the_limits(self):
         p = clips.clean_plan(dict(RAW, start=5, end=300), 60, CFG)
-        self.assertEqual((p["start"], p["end"]), (5, 50))                    # no longer than max_seconds
+        self.assertEqual((p["start"], p["end"]), (5, 35))                    # no longer than max_seconds
         p = clips.clean_plan(dict(RAW, start=55, end=58), 60, CFG)
         self.assertEqual((p["start"], p["end"]), (45, 60))                   # too short: grown back from the end
         p = clips.clean_plan(dict(RAW, start="x", end=None), 20, CFG)
@@ -95,6 +95,31 @@ class EditTests(unittest.TestCase):
         self.assertNotIn("boxblur", f)                      # a tall clip fills the frame
         self.assertIn("[2:a]aresample", f)                  # no sound in the clip: silence stands in
         self.assertIn("anullsrc=r=48000:cl=stereo", plain)
+
+    def test_captions_group_words_and_wait_for_the_narrator(self):
+        words = [(0.2, 0.5, "Watch", .9), (0.5, 0.8, "this.", .9), (3.0, 3.2, "I", .1), (3.2, 3.5, "don't", .9), (3.5, 3.8, "know", .9),
+                 (3.8, 4.0, "what", .9), (4.0, 4.2, "happened,", .9), (6.0, 6.4, "unbelievable", .9), (9.9, 10.5, "late", .9)]
+        ch = clips.caption_chunks(words, 10.0, skip_before=2.5)
+        self.assertEqual([c[2] for c in ch], ["I DON'T KNOW", "WHAT HAPPENED", "UNBELIEVABLE"])   # a word in the last tenth of a second is left off
+        self.assertEqual(ch[0][:2], (3.0, 3.8))                 # held until the next caption starts
+        self.assertLessEqual(ch[-1][1], 10.0)
+        self.assertEqual(clips.caption_chunks(words, 10.0)[0][2], "WATCH THIS")
+
+    def test_guessed_speech_gets_no_captions(self):
+        noise = [(i * .5, i * .5 + .4, "guwaku", .05 if i % 3 else .8) for i in range(12)]
+        self.assertEqual(clips.caption_chunks(noise, 10.0), [])
+        self.assertEqual(clips.caption_chunks([(0, 1, "hi", .9)], 10.0), [])
+
+    def test_subtitle_file_and_burn_in(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = clips.write_ass([(1.5, 2.25, "OH NO {x}"), (61.0, 62.0, "GO")], Path(d) / "c.ass")
+            text = f.read_text()
+            self.assertIn("Dialogue: 0,0:00:01.50,0:00:02.25,Cap", text)
+            self.assertIn("0:01:01.00", text)
+            self.assertTrue(text.rstrip().splitlines()[-2].endswith("OH NO x"))
+            p = clips.clean_plan(RAW, 60, CFG)
+            cmd = clips.edit_command(Path("in.mp4"), Path("l.png"), Path("o.mp4"), p, INFO, subs=f)
+            self.assertIn(f"subtitles=f={f}:fontsdir=", cmd[cmd.index("-filter_complex") + 1])
 
     def test_title_layer_is_drawn(self):
         from PIL import Image
