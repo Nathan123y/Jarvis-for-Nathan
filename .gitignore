@@ -107,6 +107,7 @@ memory/instagram_profile/
 memory/youtube_profile/
 memory/guides/
 memory/guides.json
+memory/guides_library/
 # the sound library (public-domain clips from Wikimedia Commons; rebuilt by worker/viral.py)
 memory/viral_sfx/
 memory/kokoro/

@@ -1,4 +1,5 @@
-"""Game guides: long narrated YouTube videos about the game (GTA 6 at launch), one a day, on the guides' own channel.
+"""Game guides: narrated videos about the game (GTA 6) over real footage: one long YouTube video a day, and
+numbered-list Shorts ("5 crazy things...") for YouTube Shorts, TikTok and Instagram.
 
 Each video:
   1. Claude looks the topic up on the web (real sources, nothing invented) and writes the script: a hook, then
@@ -11,7 +12,10 @@ Each video:
   5. It uploads through YouTube Studio in a Chrome profile logged into the guides' channel, with chapters and the
      footage's sources in the description.
 
-    python3 -m worker.guides make ["topic"] [--minutes 2] [--game "GTA 5"] [--no-post]
+    python3 -m worker.guides make ["topic"] [--minutes 2] [--game "GTA 5"] [--no-post]     a long video now
+    python3 -m worker.guides short ["topic"] [--no-post]                                  a numbered-list Short now
+    python3 -m worker.guides topic "..." / shorttopic "..."                               queue a topic
+    python3 -m worker.guides library                                                      catalogue new footage
     python3 -m worker.guides upload FILE.mp4      upload a finished video (its .json sits beside it)
     python3 -m worker.guides login                log in to the YouTube channel once, in a Chrome window
     python3 -m worker.guides status
@@ -46,20 +50,30 @@ PROFILE = ROOT / "memory" / "youtube_profile"           # the Chrome profile log
 NS = "game_guides"
 W, H, FPS = 1920, 1080, 30
 DEFAULTS = {"enabled": True,
-            "start_date": "2026-11-19",                 # launch day: nothing true can be said about the game before it
-            "time": "16:00",                            # one video a day
+            "start_date": "2026-11-13",                 # the user wants GTA posting running before launch (11-13)
+            "launch_date": "2026-11-19",                # before it: official trailers + the Extended Look only
+            "time": "16:00",                            # one long video a day
+            "short_times": "12:00,19:30",               # numbered-list shorts (YouTube Shorts + TikTok + Instagram)
+            "official": "@RockstarGames",               # channels whose footage of the game is official
+            # Rockstar's own upload of the 27-minute Extended Look is age-restricted (can't be fetched without a
+            # login), so these full re-uploads of it stand in; the first one that catalogues cleanly is used
+            "extra_sources": "M3qfj0_IO9E,yk7WDsjC3v4",
             "post": True,
             "game": "GTA 6",
             "game_names": "Grand Theft Auto VI,Grand Theft Auto 6,GTA VI,GTA 6,GTA6",
             "minutes": 7,                               # narration length to aim for (8+ minutes allows mid-roll ads,
                                                         # but a day's free narrator requests are shared with the shorts)
+            "minutes_prelaunch": 4,                     # before launch there are only a few minutes of official footage
             "channel_id": "UCpdCqccEXBYmMkSq-xbD3Sg",   # the ONLY channel Jarvis may upload to
             "visibility": "public",
             "claude_effort": "medium",
-            "sources": 3,                               # gameplay videos Gemini watches for footage
+            "sources": 2,                               # new gameplay videos added to the footage library per day (after launch)
             "footage_search": "{game} gameplay no commentary"}
 WPM = 165                                               # the narrator at speed 1.08
 SHOT = 6.0
+LIB = ROOT / "memory" / "guides_library"                # the footage catalogue (index.json) + downloaded stretches
+LIB_MAX_BYTES = 2_500_000_000                           # the Mac's disk is nearly full: old stretches are dropped past this
+SIZES = {"guide": (1920, 1080), "short": (1080, 1920)}
 
 
 class Busy(RuntimeError):
@@ -80,6 +94,7 @@ def settings() -> dict:
 # ── 1. the script ────────────────────────────────────────────────────────────
 SCRIPT_PROMPT = """You write long-form YouTube videos for a gaming channel about {game}: clear, fast, useful guides
 and explainers narrated over real gameplay. Today is {today}.
+{when}
 
 {topic_line}
 Videos already made (pick something different): {history}
@@ -111,6 +126,32 @@ Rules for the narration ("say"):
 - No asking for likes or subscribes until one short line at the very end.
 - "show" describes ordinary gameplay that would exist in any playthrough footage (driving at night, a shootout,
   the map screen, a car garage), not a specific rare moment."""
+
+
+SHORT_PROMPT = """You write viral numbered-list Shorts about {game} (YouTube Shorts, TikTok, Reels): one fast narrator over
+real footage, about 60 seconds. Today is {today}.
+{when}
+
+{topic_line}
+Shorts already made (pick something different): {history}
+
+RESEARCH FIRST. Use web search. Every item must be true and checkable; say "reportedly" for anything not
+official. Pick the items a fan would repeat to a friend: specific, surprising, concrete. Nothing generic
+("better graphics") and nothing everybody already knows.
+
+Then write ONE JSON object and nothing else:
+{{"topic": "a few words",
+ "title": "the Short's title, under 70 characters, like '5 Crazy Things In GTA 6 You Can't Do In GTA 5'",
+ "headline": "the same promise in 4-8 words for the screen",
+ "hook": "ONE spoken sentence that says the title's promise outright (e.g. 'Here's five crazy things you can do in GTA 6 that you could never do in GTA 5.')",
+ "items": [{{"headline": "2-4 words", "say": "starts 'Number one.' then 2-3 punchy spoken sentences, 22-34 words, explaining exactly what it is and why it's wild", "show": "footage to show, 3-8 words"}}],
+ "outro": "one short question to the viewer, then the words 'And in case you missed it...' so the video loops into its start",
+ "caption": "the post's caption: one line that makes people comment",
+ "hashtags": ["4-6 tags without #"],
+ "sources": ["URLs"]}}
+
+Exactly 5 items unless the topic gives fewer true ones (minimum 3). Spoken English, contractions, no filler, no
+'in this video'. The whole narration is 150-185 words."""
 
 
 def _claude_web(prompt: str, timeout_s: float = 1800, effort: str = "medium") -> str:
@@ -171,16 +212,71 @@ def clean_script(raw, minutes: float) -> dict:
             "sections": sections, "sources": [str(u)[:300] for u in raw.get("sources") or [] if str(u).startswith("http")][:12]}
 
 
-def write_script(topic: str, cfg: dict, history: list, ask: Callable = _claude_web) -> dict:
-    prompt = SCRIPT_PROMPT.format(game=cfg["game"], today=datetime.now().strftime("%B %d, %Y"),
+def clean_short(raw) -> dict:
+    """A list Short's script in the same shape as a guide's: hook, one section per item, the outro."""
+    if not isinstance(raw, dict):
+        raise ValueError("no script")
+    tidy = lambda v: re.sub(r"\s+", " ", str(v or "")).strip()
+    items = [i for i in raw.get("items") or [] if isinstance(i, dict) and tidy(i.get("say"))]
+    title, hook = tidy(raw.get("title")), tidy(raw.get("hook"))
+    if len(items) < 3 or not title or not hook:
+        raise ValueError(f"the short's script is too thin ({len(items)} items)")
+    sections = [{"heading": (tidy(raw.get("headline")) or title).upper()[:60], "say": hook, "show": tidy(items[0].get("show")) or "gameplay"}]
+    for n, it in enumerate(items[:7], 1):
+        sections.append({"heading": f"{n}. {tidy(it.get('headline')).upper()[:28]}", "say": tidy(it["say"]),
+                         "show": tidy(it.get("show"))[:80] or "gameplay"})
+    if tidy(raw.get("outro")):
+        sections.append({"heading": "", "say": tidy(raw["outro"]), "show": "the most exciting action"})
+    words = sum(len(x["say"].split()) for x in sections)
+    if not 90 <= words <= 260:
+        raise ValueError(f"the short's narration is {words} words, not about a minute")
+    tags, seen = [], set()
+    for t in list(raw.get("hashtags") or []) + ["gta6", "gtavi", "gta", "gaming", "fyp"]:
+        t = re.sub(r"[^a-z0-9]", "", str(t).lower())
+        if t and t not in seen:
+            seen.add(t)
+            tags.append(t)
+    return {"topic": tidy(raw.get("topic")) or title, "title": title[:90], "thumbnail": "", "description": tidy(raw.get("caption")) or title,
+            "caption": tidy(raw.get("caption")) or title, "hashtags": tags[:9], "tags": tags[:9], "sections": sections,
+            "sources": [str(u)[:300] for u in raw.get("sources") or [] if str(u).startswith("http")][:8]}
+
+
+def when_line(cfg: dict, today: Optional[str] = None) -> str:
+    launch = str(cfg.get("launch_date") or "")
+    if launch and (today or datetime.now().date().isoformat()) < launch:
+        have = sorted({v.get("title", "") for v in load_library()["sources"].values()} - {""})
+        footage = ("The only footage we can show is: " + "; ".join(have) + ". Every \"show\" must describe something visible in those."
+                   if have else "The only footage we can show is the official trailers, so every \"show\" must describe something visible in them.")
+        return (f"IMPORTANT: the game is NOT out yet (it releases {launch}). What exists is official material only: Rockstar's "
+                "trailers, the 27-minute 'Extended Look' gameplay presentation, Rockstar's own site, and previews by major outlets. "
+                "State confirmed things as confirmed; anything from leaks or speculation must be called unconfirmed, or left out. "
+                + footage)
+    return f"The game released on {launch}; write from what players have actually found in it." if launch else ""
+
+
+def minutes_for(cfg: dict, today: Optional[str] = None) -> float:
+    before = (today or datetime.now().date().isoformat()) < str(cfg.get("launch_date") or "")
+    return float(cfg["minutes_prelaunch"] if before and cfg.get("minutes_prelaunch") else cfg["minutes"])
+
+
+def write_script(topic: str, cfg: dict, history: list, ask: Callable = _claude_web, kind: str = "guide") -> dict:
+    if kind == "short":
+        prompt = SHORT_PROMPT.format(game=cfg["game"], today=datetime.now().strftime("%B %d, %Y"), when=when_line(cfg),
+                                     topic_line=(f"The topic: {topic}" if topic else "Pick the topic yourself: the list fans would most want to see this week."),
+                                     history="; ".join(history[-40:]) or "none yet")
+        text = ask(prompt, effort=cfg["claude_effort"])
+        if not text:
+            raise Busy("Claude isn't available to write the script")
+        return clean_short(wv._json_from(text))
+    prompt = SCRIPT_PROMPT.format(game=cfg["game"], today=datetime.now().strftime("%B %d, %Y"), when=when_line(cfg),
                                   topic_line=(f"The topic: {topic}" if topic else
                                               "Pick the topic yourself: search for what players are asking about the game "
                                               "this week and choose the one question the most people need answered."),
-                                  history="; ".join(history[-25:]) or "none yet", words=int(float(cfg["minutes"]) * WPM))
+                                  history="; ".join(history[-25:]) or "none yet", words=int(minutes_for(cfg) * WPM))
     text = ask(prompt, effort=cfg["claude_effort"])
     if not text:
         raise Busy("Claude isn't available to write the script")
-    return clean_script(wv._json_from(text), float(cfg["minutes"]))
+    return clean_script(wv._json_from(text), minutes_for(cfg))
 
 
 # ── 2. the narration ─────────────────────────────────────────────────────────
@@ -244,21 +340,31 @@ def section_times(sections: list, words: list[tuple], total: float) -> list[floa
 
 
 # ── 3. the footage ───────────────────────────────────────────────────────────
-FOOTAGE_PROMPT = """Watch this whole video. It should be clean gameplay footage of {game}.
-I'm editing a narrated guide and need stretches of this footage to put under each section of the narration.
+INDEX_WAIT_S = 70                                       # Gemini's free tier counts tokens per minute
 
-The sections (number: what the footage should show):
+INDEX_PROMPT = """Watch this whole video: footage of {game}. List every visually distinct stretch of it so an
+editor can find footage by description later.
+
+JSON only: {{"is_game": true or false,    // false if this is not real {game} footage (fan concept, mod, AI, another game)
+ "clean": true or false,                 // false if a facecam, streamer overlay or big watermark covers most of it
+ "shots": [{{"start": seconds, "end": seconds, "what": "8-16 words: who or what is on screen, where, doing what"}}]}}
+
+Rules: each stretch 3-25 seconds, in order, no overlaps, covering the whole video. Leave out logos, title cards,
+rating screens, black frames and frames that are mostly text. If a menu, map, phone or weapon wheel is on screen,
+say so in "what"."""
+
+MATCH_PROMPT = """You are the editor of a narrated {game} video. Pick footage for each section from the catalogue.
+
+SECTIONS (number | seconds of footage needed | what the narrator is saying):
 {sections}
 
-Answer with JSON only:
-{{"is_game": true or false,     // false if this is not mostly real {game} gameplay
- "clean": true or false,       // false if a facecam, a streamer's overlay, big burned-in text or a watermark covers
-                               // the picture for most of the video
- "spans": [{{"section": number, "start": seconds, "end": seconds}}]}}
+CATALOGUE (id | seconds | what it shows):
+{catalogue}
 
-Rules: 2-4 spans per section where the video has something fitting, each 12-40 seconds. Also add 6-10 spans with
-"section": -1 of the best-looking general gameplay (driving, action, scenery) to use anywhere. No menus, loading
-screens, cutscenes with subtitles, or stretches where nothing moves. Spans must not overlap."""
+JSON only: {{"sections": [[ids for section 0], [ids for section 1], ...]}}
+Rules: for each section pick the shots that SHOW what is being said, best match first, adding up to at least the
+seconds needed and no more than twice that. Use an id at most once in the whole answer. If nothing in the
+catalogue fits a section, pick good-looking general shots (driving, the city, action) rather than leaving it empty."""
 
 
 def find_sources(cfg: dict, n: int, log: Callable = print) -> list[dict]:
@@ -282,82 +388,249 @@ def find_sources(cfg: dict, n: int, log: Callable = print) -> list[dict]:
     return sorted(found.values(), key=plain, reverse=True)[:n * 3]
 
 
-def clean_spans(raw, duration: float, n_sections: int) -> list[dict]:
+NOT_FOOTAGE = re.compile(r"\b(logos?|title cards?|rating|esrb|pegi|black screen|credits|release date|pre-?order|text (on|over) (a )?(black|screen))\b", re.I)
+
+
+def clean_shots(raw, duration: float) -> list[dict]:
+    """Gemini's catalogue of one video: [{"start", "end", "what"}], inside the video, 2-40 s each, not overlapping."""
     out = []
-    if not isinstance(raw, dict) or not raw.get("is_game") or raw.get("clean") is False:
+    if not isinstance(raw, dict):
         return out
-    for s in raw.get("spans") or []:
+    for s in raw.get("shots") or []:
         if not isinstance(s, dict):
             continue
-        a, b, sec = wv._num(s.get("start"), -1), wv._num(s.get("end"), -1), int(wv._num(s.get("section"), -1))
-        if a < 0 or b - a < 6 or (duration and b > duration + 1):
+        a, b = wv._num(s.get("start"), -1), wv._num(s.get("end"), -1)
+        what = re.sub(r"\s+", " ", str(s.get("what") or "")).strip()[:160]
+        if a < 0 or b - a < 2 or not what or (duration and b > duration + 1) or NOT_FOOTAGE.search(what):
             continue
         b = min(b, a + 40)
         if not any(a < o["end"] and o["start"] < b for o in out):
-            out.append({"section": sec if 0 <= sec < n_sections else -1, "start": round(a), "end": round(b)})
+            out.append({"start": round(a, 1), "end": round(b, 1), "what": what})
     return out
 
 
-def watch_source(url: str, duration: float, sections: list, game: str, log: Callable = print) -> Optional[list]:
-    """Gemini watches one gameplay video and matches stretches to sections. None = couldn't be reached."""
+def index_source(url: str, duration: float, game: str, log: Callable = print, trusted: bool = False) -> Optional[list]:
+    """Gemini watches one video by its link and catalogues its shots. None = couldn't be reached."""
     from core import gemini
     from google.genai import types
-    listing = "\n".join(f"{i}: {s['show']}" + (f" ({s['heading']})" if s["heading"] else "") for i, s in enumerate(sections))
-    c = gemini.client(timeout_ms=600000)
-    for model in ("gemini-3.5-flash", "gemini-3.5-flash-lite"):
-        try:
+    c = gemini.client(timeout_ms=900000)
+    for model in ("gemini-3.5-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"):   # the better model twice: its
+        try:                                                    # per-minute limit clears after a short wait
             r = c.models.generate_content(
                 model=model, contents=[types.Part(file_data=types.FileData(file_uri=url, mime_type="video/*")),
-                                       FOOTAGE_PROMPT.format(game=game, sections=listing)],
+                                       INDEX_PROMPT.format(game=game)],
                 config=types.GenerateContentConfig(response_mime_type="application/json",
                                                    media_resolution=types.MediaResolution.MEDIA_RESOLUTION_LOW))
-            return clean_spans(wv._json_from(r.text), duration, len(sections))
+            raw = wv._json_from(r.text)
+            if not trusted and isinstance(raw, dict) and (raw.get("is_game") is False or raw.get("clean") is False):
+                return []                                       # not the game, or covered by an overlay: never use it
+            shots = clean_shots(raw, duration)
+            if len(shots) >= 3:
+                return shots
+            log(f"guides: {model} gave no usable catalogue of {url[-11:]}")
         except Exception as exc:
-            log(f"guides: {model} couldn't watch {url[-11:]} ({str(exc)[:80]})")
+            log(f"guides: {model} couldn't catalogue {url[-11:]} ({str(exc)[:80]})")
+            if "429" in str(exc):
+                time.sleep(INDEX_WAIT_S)
     return None
 
 
-def gather_footage(sections: list, need_s: float, job: Path, cfg: dict, log: Callable = print) -> tuple[list[dict], list[dict]]:
-    """Downloads matched stretches until there's enough to cover the narration. Returns (pieces, credits):
-    pieces = [{"path", "section", "seconds"}], credits = [{"channel", "url"}]."""
-    foot = job / "footage"
-    foot.mkdir(parents=True, exist_ok=True)
-    pieces, credits, watched, reached = [], [], 0, False
-    for e in find_sources(cfg, int(cfg["sources"]), log):
-        have = sum(p["seconds"] for p in pieces)
-        if watched >= int(cfg["sources"]) or have >= need_s * 1.15:
-            break
+def load_library() -> dict:
+    try:
+        lib = json.loads((LIB / "index.json").read_text())
+    except (OSError, ValueError):
+        lib = {}
+    lib.setdefault("sources", {})
+    return lib
+
+
+def save_library(lib: dict) -> None:
+    LIB.mkdir(parents=True, exist_ok=True)
+    tmp = LIB / "index.tmp"
+    tmp.write_text(json.dumps(lib, indent=1))
+    tmp.replace(LIB / "index.json")
+
+
+def official_sources(cfg: dict, log: Callable = print) -> list[dict]:
+    """The publisher's own videos of the game, a minute or longer (trailers, the Extended Look), longest first."""
+    from urllib.parse import quote_plus
+    names = cs._list(cfg["game_names"])
+    found = {}
+    for ch in cs._list(cfg["official"]):
+        try:
+            for e in cs.listing(f"https://www.youtube.com/{ch}/search?query={quote_plus(names[0])}", 40):
+                if e.get("id") and cs.is_game(e.get("title"), names) and (e.get("duration") or 0) >= 60:
+                    found.setdefault(e["id"], dict(e, _official=True))
+        except Exception as exc:
+            log(f"guides: couldn't list {ch}'s videos ({str(exc)[:70]})")
+    return sorted(found.values(), key=lambda e: -(e.get("duration") or 0))
+
+
+def refresh_library(cfg: dict, log: Callable = print, today: Optional[str] = None, max_new: int = 4) -> dict:
+    """Adds videos not catalogued yet: the official ones always; after launch, today's best gameplay videos too."""
+    lib = load_library()
+    today = today or datetime.now().date().isoformat()
+    wanted = official_sources(cfg, log)
+    if not any(lib["sources"].get(x) for x in cs._list(cfg.get("extra_sources"))):     # one stand-in is enough
+        wanted += [{"id": x, "_official": True, "_standin": True} for x in cs._list(cfg.get("extra_sources"))]
+    if today >= str(cfg.get("launch_date") or "") and lib.get("gameplay_day") != today:
+        wanted += find_sources(cfg, int(cfg["sources"]), log)[:int(cfg["sources"]) * 3]
+    added = added_gameplay = 0
+    for e in wanted:
+        if e["id"] in lib["sources"] or e["id"] in lib.get("rejected", []) or added >= max_new:
+            continue
+        if not e.get("_official") and added_gameplay >= int(cfg["sources"]):
+            continue
         url = f"https://www.youtube.com/watch?v={e['id']}"
         try:
             info = cs.details(url)
-            if (info.get("height") or 0) < 1080:
-                continue
         except Exception as exc:
             log(f"guides: couldn't open {e['id']} ({str(exc)[:70]})")
             continue
-        spans = watch_source(url, info.get("duration") or 0, sections, cfg["game"], log)
-        if spans is None:
+        if (info.get("height") or 0) < 1080:
+            lib.setdefault("rejected", []).append(e["id"])
             continue
-        reached = True
-        watched += 1
-        got = 0
-        spans.sort(key=lambda sp: sp["section"] < 0)            # section-matched stretches first, general ones after
-        for sp in spans:
-            if sum(p["seconds"] for p in pieces) >= need_s * 1.3:   # enough: every download costs time
-                break
-            dest = foot / f"{e['id']}-{sp['start']}.mp4"
+        if e.get("_standin") and any(lib["sources"].get(x) for x in cs._list(cfg.get("extra_sources"))):
+            continue
+        shots = index_source(url, info.get("duration") or 0, cfg["game"], log, trusted=bool(e.get("_official")) and not e.get("_standin"))
+        if shots is None:
+            continue                                            # Gemini is busy: next time
+        if not shots:
+            lib.setdefault("rejected", []).append(e["id"])
+            continue
+        lib["sources"][e["id"]] = {"url": url, "title": info.get("title") or "", "channel": "Rockstar Games" if e.get("_standin") else info.get("channel") or info.get("uploader") or "",
+                                   "official": bool(e.get("_official")), "added": time.time(), "shots": shots}
+        added += 1
+        added_gameplay += 0 if e.get("_official") else 1
+        log(f"guides: catalogued {len(shots)} shots of \"{(info.get('title') or '')[:50]}\"")
+        save_library(lib)
+    if today >= str(cfg.get("launch_date") or ""):
+        lib["gameplay_day"] = today
+    extra = sorted((k for k, v in lib["sources"].items() if not v.get("official")), key=lambda k: lib["sources"][k].get("added", 0))
+    for k in extra[:-24] if len(extra) > 24 else []:            # keep the catalogue to recent gameplay
+        lib["sources"].pop(k, None)
+    lib["rejected"] = lib.get("rejected", [])[-200:]
+    save_library(lib)
+    return lib
+
+
+def catalogue(lib: dict) -> list[dict]:
+    """Every shot in the library as one flat list: [{"id", "source", "start", "end", "what"}]."""
+    out = []
+    for sid, src in lib["sources"].items():
+        for sh in src["shots"]:
+            out.append({"id": len(out), "source": sid, "start": sh["start"], "end": sh["end"], "what": sh["what"]})
+    return out
+
+
+def fallback_match(needs: list[float], shots: list[dict]) -> list[list[int]]:
+    """No editor available: deal the shots out in order until each section has enough."""
+    out, k = [], 0
+    for need in needs:
+        row, have = [], 0.0
+        while have < need and shots:
+            sh = shots[k % len(shots)]
+            row.append(sh["id"])
+            have += sh["end"] - sh["start"]
+            k += 1
+        out.append(row)
+    return out
+
+
+def clean_match(raw, needs: list[float], shots: list[dict]) -> list[list[int]]:
+    """Gemini's picks: known ids, each used once; a section left short is topped up from the unused shots."""
+    rows = raw.get("sections") if isinstance(raw, dict) else None
+    by_id = {s["id"]: s for s in shots}
+    used, out = set(), []
+    for i, need in enumerate(needs):
+        row = []
+        for x in (rows[i] if isinstance(rows, list) and i < len(rows) and isinstance(rows[i], list) else []):
             try:
-                cs.download(url, dest, (sp["start"], sp["end"]))
-                pieces.append({"path": str(dest), "section": sp["section"], "seconds": float(clips.probe(dest)["duration"])})
-                got += 1
+                x = int(x)
+            except (TypeError, ValueError):
+                continue
+            if x in by_id and x not in used:
+                used.add(x)
+                row.append(x)
+        out.append(row)
+    spare = [s["id"] for s in shots if s["id"] not in used]
+    for i, need in enumerate(needs):
+        have = sum(by_id[x]["end"] - by_id[x]["start"] for x in out[i])
+        while have < need and spare:
+            x = spare.pop(0)
+            out[i].append(x)
+            have += by_id[x]["end"] - by_id[x]["start"]
+    return out
+
+
+def match_shots(sections: list, needs: list[float], shots: list[dict], game: str, log: Callable = print) -> list[list[int]]:
+    """Which catalogue shots go under which section (a text-only question to Gemini: cheap)."""
+    from core import gemini
+    from google.genai import types
+    prompt = MATCH_PROMPT.format(
+        game=game, sections="\n".join(f"{i} | {n:.0f} | {s['say'][:400]} [show: {s['show']}]" for i, (s, n) in enumerate(zip(sections, needs))),
+        catalogue="\n".join(f"{s['id']} | {s['end'] - s['start']:.0f} | {s['what']}" for s in shots))
+    try:
+        c = gemini.client(timeout_ms=180000)
+        for model in ("gemini-3.5-flash", "gemini-3.5-flash-lite"):
+            try:
+                r = c.models.generate_content(model=model, contents=prompt,
+                                              config=types.GenerateContentConfig(response_mime_type="application/json"))
+                return clean_match(wv._json_from(r.text), needs, shots)
             except Exception as exc:
-                log(f"guides: couldn't fetch {e['id']} at {sp['start']}s ({str(exc)[:70]})")
-        if got:
-            credits.append({"channel": info.get("channel") or info.get("uploader") or "", "url": url})
-            log(f"guides: {got} stretches of footage from \"{(info.get('title') or '')[:50]}\"")
+                log(f"guides: {model} couldn't pick the footage ({str(exc)[:80]})")
+    except Exception as exc:
+        log(f"guides: couldn't ask for footage picks ({str(exc)[:80]})")
+    return clean_match({}, needs, shots)
+
+
+def fetch_shot(lib: dict, shot: dict) -> Path:
+    """One catalogue shot as a file, downloaded once and kept for the next videos."""
+    dest = LIB / "clips" / f"{shot['source']}-{shot['start']:.0f}-{shot['end']:.0f}.mp4"
+    if not dest.exists():
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        cs.download(lib["sources"][shot["source"]]["url"], dest, (shot["start"], shot["end"]))
+    os.utime(dest)
+    return dest
+
+
+def prune_library(max_bytes: int = LIB_MAX_BYTES) -> None:
+    files = sorted((LIB / "clips").glob("*.mp4"), key=lambda f: f.stat().st_mtime) if (LIB / "clips").exists() else []
+    total = sum(f.stat().st_size for f in files)
+    for f in files:
+        if total <= max_bytes:
+            break
+        total -= f.stat().st_size
+        f.unlink(missing_ok=True)
+
+
+def gather_footage(sections: list, needs: list[float], cfg: dict, log: Callable = print) -> tuple[list[dict], list[dict]]:
+    """Footage for every section from the library. Returns (pieces, credits): pieces = [{"path", "section",
+    "seconds"}], credits = [{"channel", "url"}] for the videos actually used."""
+    lib = refresh_library(cfg, log)
+    shots = catalogue(lib)
+    if not shots:
+        raise Busy("the footage library is empty (Gemini couldn't catalogue any video yet)")
+    by_id = {s["id"]: s for s in shots}
+    pieces, used_sources = [], []
+    for sec, (row, need) in enumerate(zip(match_shots(sections, needs, shots, cfg["game"], log), needs)):
+        have = 0.0
+        for x in row:
+            if have >= need * 1.1:
+                break
+            try:
+                f = fetch_shot(lib, by_id[x])
+                secs = float(clips.probe(f)["duration"])
+            except Exception as exc:
+                log(f"guides: couldn't fetch a shot of {by_id[x]['source']} ({str(exc)[:70]})")
+                continue
+            pieces.append({"path": str(f), "section": sec, "seconds": secs})
+            have += secs
+            if by_id[x]["source"] not in used_sources:
+                used_sources.append(by_id[x]["source"])
     if not pieces:
-        raise Busy("Gemini couldn't watch any footage") if not reached else RuntimeError("no usable gameplay footage was found")
-    return pieces, credits
+        raise RuntimeError("no footage could be downloaded")
+    return pieces, [{"channel": lib["sources"][k]["channel"], "url": lib["sources"][k]["url"]} for k in used_sources]
 
 
 def plan_shots(pieces: list[dict], starts: list[float], total: float, shot: float = SHOT) -> list[dict]:
@@ -396,11 +669,28 @@ def plan_shots(pieces: list[dict], starts: list[float], total: float, shot: floa
 
 
 # ── 4. the edit ──────────────────────────────────────────────────────────────
-def shot_command(s: dict, out: Path, has_audio: bool) -> list[str]:
+def detect_bars(path: Path) -> str:
+    """A crop ("w:h:x:y") that removes black cinema bars baked into the footage, or "" when there are none."""
+    out = subprocess.run([wv.ffmpeg(), "-hide_banner", "-ss", "0.5", "-i", str(path), "-vf", "cropdetect=28:2:0", "-frames:v", "45",
+                          "-f", "null", "-"], capture_output=True, text=True, timeout=120).stderr
+    size = re.search(r"Stream #.*Video:.*?\b(\d{3,5})x(\d{3,5})\b", out)
+    found = re.findall(r"crop=(\d+):(\d+):(\d+):(\d+)", out)
+    if not size or not found:
+        return ""
+    w, h, x, y = (int(v) for v in found[-1])
+    iw, ih = int(size.group(1)), int(size.group(2))
+    if w < iw * .5 or h < ih * .5 or (w >= iw * .97 and h >= ih * .97):       # a dark scene, or nothing to remove
+        return ""
+    return f"{w}:{h}:{x}:{y}"
+
+
+def shot_command(s: dict, out: Path, has_audio: bool, size: tuple = (W, H)) -> list[str]:
+    w, h = size
     d = s["seconds"]
     z = f"(1+0.05*t/{d:.2f})" if s["zoom_in"] else f"(1.05-0.05*t/{d:.2f})"
-    vf = (f"fps={FPS},scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
-          f"scale=w='2*trunc({W // 2}*{z})':h='2*trunc({H // 2}*{z})':eval=frame,crop={W}:{H},setsar=1,format=yuv420p")
+    bars = f"crop={s['crop']}," if s.get("crop") else ""
+    vf = (f"fps={FPS},{bars}scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},"
+          f"scale=w='2*trunc({w // 2}*{z})':h='2*trunc({h // 2}*{z})':eval=frame,crop={w}:{h},setsar=1,format=yuv420p")
     cmd = [wv.ffmpeg(), "-loglevel", "error", "-y", "-ss", f"{s['at']:.2f}", "-t", f"{d:.2f}", "-i", s["path"]]
     if not has_audio:
         cmd += ["-f", "lavfi", "-t", f"{d:.2f}", "-i", "anullsrc=r=48000:cl=stereo"]
@@ -409,20 +699,41 @@ def shot_command(s: dict, out: Path, has_audio: bool) -> list[str]:
                   "-video_track_timescale", "15360", str(out)]
 
 
-def write_ass(chunks: list[tuple], headings: list[tuple], out: Path) -> Path:
-    """Captions low in the frame, and each section's heading top-left for its first seconds."""
-    head = ("[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\nWrapStyle: 2\n\n[V4+ Styles]\n"
+ASS_HEAD = ("[Script Info]\nScriptType: v4.00+\nPlayResX: {w}\nPlayResY: {h}\nWrapStyle: 0\n\n[V4+ Styles]\n"
             "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, "
             "Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, "
-            "MarginV, Encoding\n"
-            "Style: Cap,Impact,66,&H0021DEFF,&H0021DEFF,&H00000000,&H96000000,0,0,0,0,100,100,1,0,1,5,2,2,60,60,70,1\n"
-            "Style: Head,Impact,58,&H00FFFFFF,&H00FFFFFF,&H00000000,&HB4000000,0,0,0,0,100,100,1,0,3,14,0,7,60,60,56,1\n\n"
-            "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
-    safe = lambda t: re.sub(r"[{}\\\n]", "", t)
-    lines = [f"Dialogue: 0,{clips._ass_time(a)},{clips._ass_time(b)},Cap,,0,0,0,,{safe(t)}" for a, b, t in chunks]
-    lines += [f"Dialogue: 1,{clips._ass_time(a)},{clips._ass_time(a + 4.5)},Head,,0,0,0,,{{\\fad(250,400)}}{safe(t.upper())}"
+            "MarginV, Encoding\n{styles}\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
+
+
+def _safe(t: str) -> str:
+    return re.sub(r"[{}\\\n]", "", t)
+
+
+def write_ass(chunks: list[tuple], headings: list[tuple], out: Path) -> Path:
+    """A long video's text: captions low in the frame, and each section's heading top-left for its first seconds."""
+    styles = ("Style: Cap,Impact,66,&H0021DEFF,&H0021DEFF,&H00000000,&H96000000,0,0,0,0,100,100,1,0,1,5,2,2,60,60,70,1\n"
+              "Style: Head,Impact,58,&H00FFFFFF,&H00FFFFFF,&H00000000,&HB4000000,0,0,0,0,100,100,1,0,3,14,0,7,60,60,56,1")
+    lines = [f"Dialogue: 0,{clips._ass_time(a)},{clips._ass_time(b)},Cap,,0,0,0,,{_safe(t)}" for a, b, t in chunks]
+    lines += [f"Dialogue: 1,{clips._ass_time(a)},{clips._ass_time(a + 4.5)},Head,,0,0,0,,{{\\fad(250,400)}}{_safe(t.upper())}"
               for a, t in headings if t]
-    out.write_text(head + "\n".join(lines) + "\n")
+    out.write_text(ASS_HEAD.format(w=1920, h=1080, styles=styles) + "\n".join(lines) + "\n")
+    return out
+
+
+def write_ass_short(chunks: list[tuple], headings: list[tuple], out: Path) -> Path:
+    """A Short's text: each item's numbered headline big in the top third for as long as the item lasts (its number
+    yellow, the words white), and the word-by-word captions in the middle. headings = [(from, to, text)]."""
+    styles = ("Style: Cap,Impact,92,&H0021DEFF,&H0021DEFF,&H00000000,&H96000000,0,0,0,0,100,100,1,0,1,7,3,5,60,60,40,1\n"
+              "Style: Head,Impact,104,&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,0,0,0,0,100,100,1,0,1,8,3,8,70,70,300,1")
+    lines = [f"Dialogue: 0,{clips._ass_time(a)},{clips._ass_time(b)},Cap,,0,0,0,,{{\\pos(540,1200)\\fscx82\\fscy82\\t(0,70,\\fscx100\\fscy100)}}{_safe(t)}"
+             for a, b, t in chunks]
+    for a, b, t in headings:
+        if not t:
+            continue
+        m = re.match(r"(\d+\.)\s*(.*)", t)
+        text = f"{{\\c&H0021DEFF&}}{m.group(1)} {{\\c&H00FFFFFF&}}{_safe(m.group(2))}" if m else _safe(t)
+        lines.append(f"Dialogue: 1,{clips._ass_time(a)},{clips._ass_time(b)},Head,,0,0,0,,{{\\fad(120,0)}}{text}")
+    out.write_text(ASS_HEAD.format(w=1080, h=1920, styles=styles) + "\n".join(lines) + "\n")
     return out
 
 
@@ -471,18 +782,22 @@ def describe(script: dict, starts: list[float], credits: list[dict]) -> str:
     return "\n\n".join(p for p in parts if p)[:4900]
 
 
-def make(topic: str = "", cfg: Optional[dict] = None, log: Callable = print, resume: Optional[Path] = None) -> dict:
-    """One guide, from the topic to the finished mp4 + thumbnail + its .json (title, description, tags)."""
+def make(topic: str = "", cfg: Optional[dict] = None, log: Callable = print, resume: Optional[Path] = None,
+         kind: str = "guide") -> dict:
+    """One video, from the topic to the finished mp4 (+ thumbnail for a long one) and its .json. kind = "guide"
+    (long, 16:9) or "short" (a numbered list, 9:16, about a minute)."""
     import tempfile
+    import numpy as np
     cfg = cfg or settings()
     st = wv.load_state(STATE)
-    job = resume or WORK / datetime.now().strftime("%Y%m%d-%H%M%S")
+    short = kind == "short"
+    job = resume or WORK / (datetime.now().strftime("%Y%m%d-%H%M%S") + ("-short" if short else ""))
     job.mkdir(parents=True, exist_ok=True)
     sfile = job / "script.json"
     if sfile.exists():
         script = json.loads(sfile.read_text())
     else:
-        script = write_script(topic, cfg, [v["title"] for v in st["videos"]])
+        script = write_script(topic, cfg, [v["title"] for v in st["videos"]], kind=kind)
         sfile.write_text(json.dumps(script, indent=1))
     sections = script["sections"]
     log(f"guides: script \"{script['title']}\" ({sum(len(s['say'].split()) for s in sections)} words, {len(sections)} sections)")
@@ -493,26 +808,32 @@ def make(topic: str = "", cfg: Optional[dict] = None, log: Callable = print, res
     total = clips.wav_seconds(voice)
     words = clips.hear_words(voice, 0, total)
     starts = section_times(sections, words, total)
+    ends = starts[1:] + [total]
     chunks = clips.caption_chunks(words, total)
     log(f"guides: narration {total:.0f}s, {len(chunks)} captions")
 
     pfile = job / "pieces.json"
-    if pfile.exists():
-        saved = json.loads(pfile.read_text())
+    saved = json.loads(pfile.read_text()) if pfile.exists() else None
+    if saved and all(Path(x["path"]).exists() for x in saved["pieces"]):
         pieces, credits = saved["pieces"], saved["credits"]
     else:
-        pieces, credits = gather_footage(sections, total, job, cfg, log)
+        pieces, credits = gather_footage(sections, [b - a for a, b in zip(starts, ends)], cfg, log)
         pfile.write_text(json.dumps({"pieces": pieces, "credits": credits}, indent=1))
-    shots = plan_shots(pieces, starts, total)
+    size = SIZES[kind]
+    shots = plan_shots(pieces, starts, total, shot=3.0 if short else SHOT)
     shots_dir = job / "shots"
     shots_dir.mkdir(exist_ok=True)
-    audio_of = {}
-    listing = []
+    audio_of, bars_of, listing = {}, {}, []
     for i, s in enumerate(shots):
         if s["path"] not in audio_of:
             audio_of[s["path"]] = clips.probe(Path(s["path"]))["audio"]
+            try:
+                bars_of[s["path"]] = detect_bars(Path(s["path"]))
+            except Exception:
+                bars_of[s["path"]] = ""
+        s["crop"] = bars_of[s["path"]]
         f = shots_dir / f"{i:04d}.mp4"
-        done = subprocess.run(shot_command(s, f, audio_of[s["path"]]), capture_output=True, text=True, timeout=600)
+        done = subprocess.run(shot_command(s, f, audio_of[s["path"]], size), capture_output=True, text=True, timeout=600)
         if done.returncode or not f.exists():
             raise RuntimeError(f"ffmpeg couldn't cut shot {i} ({done.stderr.strip()[-160:]})")
         listing.append(f"file '{f}'")
@@ -521,30 +842,50 @@ def make(topic: str = "", cfg: Optional[dict] = None, log: Callable = print, res
     OUT.mkdir(parents=True, exist_ok=True)
     slug = re.sub(r"[^a-z0-9]+", "-", script["title"].lower()).strip("-")[:60]
     out = OUT / f"{datetime.now():%Y%m%d-%H%M%S}-{slug}.mp4"
-    subs = write_ass(chunks, [(t, s["heading"]) for s, t in zip(sections, starts)],
-                     Path(tempfile.gettempdir()) / f"jarvis-guide-{int(time.time() * 1000)}.ass")
+    subs = Path(tempfile.gettempdir()) / f"jarvis-guide-{int(time.time() * 1000)}.ass"
+    inputs = ["-f", "concat", "-safe", "0", "-i", str(job / "shots.txt"), "-i", str(voice)]
+    if short:
+        write_ass_short(chunks, [(a, b, s["heading"]) for s, a, b in zip(sections, starts, ends)], subs)
+        bed = job / "music.wav"                                 # a tense, driving bed under the voice
+        x = wv.music_drive(total, seed=int(time.time()) % 97)
+        with wave.open(str(bed), "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(wv.SR)
+            w.writeframes((np.clip(x / max(1e-6, float(np.abs(x).max())), -1, 1) * 32767 * .9).astype("<i2").tobytes())
+        inputs += ["-i", str(bed)]
+        audio = ("[0:a]volume=0.05[g];[1:a]aresample=48000,pan=stereo|c0=c0|c1=c0[n];[2:a]aresample=48000,pan=stereo|c0=c0|c1=c0,volume=0.20[m];"
+                 "[g][n][m]amix=inputs=3:duration=shortest:normalize=0,alimiter=limit=0.89[a]")
+    else:
+        write_ass(chunks, [(t, s["heading"]) for s, t in zip(sections, starts)], subs)
+        audio = ("[0:a]volume=0.10[g];[1:a]aresample=48000,pan=stereo|c0=c0|c1=c0[n];"
+                 "[g][n]amix=inputs=2:duration=shortest:normalize=0,alimiter=limit=0.89[a]")
     try:
         done = subprocess.run(
-            [wv.ffmpeg(), "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(job / "shots.txt"), "-i", str(voice),
-             "-filter_complex",
-             f"[0:v]subtitles=f={subs}:fontsdir=/System/Library/Fonts/Supplemental,format=yuv420p[v];"
-             f"[0:a]volume=0.10[g];[1:a]aresample=48000,pan=stereo|c0=c0|c1=c0[n];"
-             f"[g][n]amix=inputs=2:duration=shortest:normalize=0,alimiter=limit=0.89[a]",
-             "-map", "[v]", "-map", "[a]", "-t", f"{total:.2f}", "-c:v", "libx264", "-preset", "medium", "-crf", "22",
+            [wv.ffmpeg(), "-loglevel", "error", "-y"] + inputs +
+            ["-filter_complex", f"[0:v]subtitles=f={subs}:fontsdir=/System/Library/Fonts/Supplemental,format=yuv420p[v];" + audio,
+             "-map", "[v]", "-map", "[a]", "-t", f"{total:.2f}", "-c:v", "libx264", "-preset", "medium", "-crf", "20" if short else "22",
              "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(out)], capture_output=True, text=True, timeout=7200)
     finally:
         subs.unlink(missing_ok=True)
     if done.returncode or not out.exists():
         raise RuntimeError(f"ffmpeg couldn't build the video ({done.stderr.strip()[-200:]})")
+    prune_library()
 
-    frame, thumb = job / "frame.png", out.with_suffix(".jpg")
-    at = starts[1] + 2 if len(starts) > 1 else total / 3   # a frame from the first real section, without captions on it
-    k = next((i for i, x in enumerate(shots) if sum(y["seconds"] for y in shots[:i + 1]) > at), 0)
-    subprocess.run([wv.ffmpeg(), "-loglevel", "error", "-y", "-ss", "1", "-i", str(shots_dir / f"{k:04d}.mp4"), "-frames:v", "1", str(frame)],
-                   check=True, timeout=120)
-    thumbnail(frame, script["thumbnail"], thumb)
-    rec = {"path": str(out), "thumb": str(thumb), "job": str(job), "title": script["title"], "topic": script["topic"],
-           "description": describe(script, starts, credits), "tags": script["tags"], "seconds": round(total), "made": time.time()}
+    rec = {"kind": kind, "path": str(out), "job": str(job), "title": script["title"], "topic": script["topic"],
+           "tags": script["tags"], "seconds": round(total), "made": time.time()}
+    footage = ("Footage: " + ", ".join(sorted({c["channel"] for c in credits if c["channel"]}))) if credits else ""
+    if short:
+        tags = " ".join("#" + t for t in script["hashtags"])
+        rec["caption"] = f"{script['caption']} {tags}".strip()[:2000]
+        rec["description"] = "\n\n".join(x for x in (script["caption"], footage, tags if "#shorts" in tags else "#shorts " + tags) if x)[:4900]
+    else:
+        frame, thumb = job / "frame.png", out.with_suffix(".jpg")
+        at = starts[1] + 2 if len(starts) > 1 else total / 3   # a frame from the first real section, without captions on it
+        k = next((i for i, x in enumerate(shots) if sum(y["seconds"] for y in shots[:i + 1]) > at), 0)
+        subprocess.run([wv.ffmpeg(), "-loglevel", "error", "-y", "-ss", "1", "-i", str(shots_dir / f"{k:04d}.mp4"), "-frames:v", "1", str(frame)],
+                       check=True, timeout=120)
+        thumbnail(frame, script["thumbnail"], thumb)
+        rec["thumb"] = str(thumb)
+        rec["description"] = describe(script, starts, credits)
     out.with_suffix(".json").write_text(json.dumps(rec, indent=1))
     log(f"guides: made \"{script['title']}\" ({total / 60:.1f} min, {len(shots)} shots)")
     return rec
@@ -659,7 +1000,21 @@ def youtube_upload(rec: dict, cfg: Optional[dict] = None, log: Callable = print,
             ctx.close()
 
 
-# ── the daily slot ───────────────────────────────────────────────────────────
+# ── the daily slots ──────────────────────────────────────────────────────────
+KINDS = (("guide", "time", "slots"), ("short", "short_times", "short_slots"))
+
+
+def remove_files(rec: dict) -> None:
+    """A posted video's files go (the disk is nearly full); its record stays."""
+    video = Path(rec["path"])
+    if video.parent == OUT:
+        for f in (video, video.with_suffix(".json"), video.with_suffix(".jpg")):
+            f.unlink(missing_ok=True)
+    job = Path(rec.get("job") or "")
+    if job.parent == WORK:
+        shutil.rmtree(job, ignore_errors=True)
+
+
 class GuideService:
     PASS_SECONDS = 120
     MAX_TRIES = 2
@@ -668,6 +1023,7 @@ class GuideService:
         self.log, self.notify = log, notify or (lambda kind, text: None)
         self._stop = threading.Event()
         self._busy = threading.Lock()
+        self._poster = wv.ViralService(log, notify)             # TikTok + Instagram posting for the shorts
 
     def start(self) -> None:
         threading.Thread(target=self._run, daemon=True, name="game-guides").start()
@@ -691,68 +1047,86 @@ class GuideService:
             return ""
         try:
             today = now.date().isoformat()
-            done = st["slots"].get(today, [])
-            due = wv.due_slots(cfg["time"], done, now, late_ok_h=6)
-            if not due:
-                return ""
-            topic = (st.get("topic_queue") or [""])[0]
-            try:
-                rec = make(topic, cfg, self.log, resume=Path(st["resume"]) if st.get("resume") and Path(st["resume"]).exists() else None)
-            except Busy as exc:
-                st = wv.load_state(STATE)
-                st["tries"] = st.get("tries", 0) + 1
-                if st["tries"] >= self.MAX_TRIES:
-                    st["tries"], st["slots"] = 0, {today: done + due}
-                    self.log(f"guides: {exc}; gave up on today's guide")
-                else:
-                    st["busy_until"] = time.time() + 45 * 60
-                    self.log(f"guides: {exc}; trying again in 45 minutes")
-                wv.save_state(st, STATE)
-                return "waiting"
-            except Exception as exc:
-                st = wv.load_state(STATE)
-                st["slots"] = {today: done + due}
-                wv.save_state(st, STATE)
-                self.log(f"guides: couldn't make today's guide: {exc}")
-                self.notify("guides", f"🎮 Couldn't make today's GTA guide video: {str(exc)[:160]}")
-                return "failed"
-            st = wv.load_state(STATE)
-            st["slots"], st["tries"] = {today: done + due}, 0
-            st["topic_queue"] = (st.get("topic_queue") or [])[1:] if topic else st.get("topic_queue") or []
-            st["videos"] = (st["videos"] + [rec])[-200:]
-            wv.save_state(st, STATE)
-            return self.deliver(rec, cfg)
+            for kind, times_key, slots_key in KINDS:
+                done = (st.get(slots_key) or {}).get(today, [])
+                due = wv.due_slots(cfg[times_key], done, now, late_ok_h=6 if kind == "guide" else 3)
+                if due:
+                    return self._produce(kind, slots_key, today, done + due, cfg)
+            return ""
         finally:
             self._busy.release()
 
+    def _produce(self, kind: str, slots_key: str, today: str, done: list, cfg: dict) -> str:
+        st = wv.load_state(STATE)
+        queue_key = "topic_queue" if kind == "guide" else "short_queue"
+        topic = (st.get(queue_key) or [""])[0]
+        try:
+            rec = make(topic, cfg, self.log, kind=kind)
+        except Busy as exc:
+            st = wv.load_state(STATE)
+            st["tries"] = st.get("tries", 0) + 1
+            if st["tries"] >= self.MAX_TRIES:
+                st["tries"], st[slots_key] = 0, {today: done}
+                self.log(f"guides: {exc}; gave up on this {kind}")
+            else:
+                st["busy_until"] = time.time() + 30 * 60
+                self.log(f"guides: {exc}; trying again in 30 minutes")
+            wv.save_state(st, STATE)
+            return "waiting"
+        except Exception as exc:
+            st = wv.load_state(STATE)
+            st[slots_key] = {today: done}
+            wv.save_state(st, STATE)
+            self.log(f"guides: couldn't make the {kind}: {exc}")
+            self.notify("guides", f"🎮 Couldn't make a GTA {kind} video: {str(exc)[:160]}")
+            return "failed"
+        st = wv.load_state(STATE)
+        st[slots_key], st["tries"] = {today: done}, 0
+        if topic:
+            st[queue_key] = (st.get(queue_key) or [])[1:]
+        st["videos"] = (st["videos"] + [rec])[-300:]
+        wv.save_state(st, STATE)
+        return self.deliver(rec, cfg)
+
     def deliver(self, rec: dict, cfg: dict) -> str:
         from core import phone_alerts
+        short = rec.get("kind") == "short"
         if not cfg["post"]:
-            phone_alerts.send_text(f"🎮 Made a guide (not posted, posting is off): \"{rec['title']}\"\n{rec['path']}")
+            phone_alerts.send_text(f"🎮 Made a GTA video (not posted, posting is off): \"{rec['title']}\"\n{rec['path']}")
             return "off"
+        lines, ok = [], True
         try:
             link = youtube_upload(rec, cfg, self.log)
+            lines.append(f"YouTube: ✅ {link}")
         except Exception as exc:
-            self.log(f"guides: upload failed: {exc}")
-            try:
-                phone_alerts.send_text(f"🎮 Made \"{rec['title']}\" but YouTube didn't take it: {str(exc)[:140]}\nThe file: {rec['path']}")
-            except Exception:
-                pass
-            return "failed"
+            self.log(f"guides: YouTube upload failed: {exc}")
+            link, ok = "", False
+            lines.append(f"YouTube: ❌ {str(exc)[:110]}")
+        if short:                                               # the same Short on the videos' TikTok and Instagram
+            pcfg = clips.post_settings(dict(cfg, ai_label=False))
+            tt = self._poster._deliver_tiktok(rec, pcfg)
+            ig = self._poster.post_instagram(rec, pcfg) if pcfg.get("instagram") else "off"
+            why = rec.get("_why", {})
+            lines.append("TikTok: ✅" if tt == "posted" else f"TikTok: ❌ {why.get('tiktok', tt)}")
+            if ig != "off":
+                lines.append("Instagram: ✅" if ig == "posted" else f"Instagram: ❌ {why.get('instagram', ig)}")
+            ok = ok and tt == "posted" and ig in ("posted", "off")
         st = wv.load_state(STATE)
         for v in st["videos"]:
             if v.get("path") == rec["path"]:
-                v.update(posted=True, link=link)
+                v.update(posted=bool(link), link=link)
+                v.pop("_why", None)
         wv.save_state(st, STATE)
-        self.log(f"guides: posted to YouTube: {rec['title']} {link}")
+        self.log(f"guides: {rec['title']}: " + "; ".join(lines))
         try:
-            phone_alerts.send_text(f"🎮 Just posted on YouTube: \"{rec['title']}\" ({rec['seconds'] // 60} min)\n{link}")
+            length = f"{rec['seconds']} s" if short else f"{rec['seconds'] // 60} min"
+            phone_alerts.send_text(f"🎮 GTA {'short' if short else 'video'}: \"{rec['title']}\" ({length})\n" + "\n".join(lines)
+                                   + ("" if ok else f"\nThe file is kept: {rec['path']}"))
         except Exception as exc:
             self.log(f"guides: couldn't text the post note: {exc}")
-        job = Path(rec.get("job") or "")
-        if job.parent == WORK:                                  # the big work folder goes; the finished video stays
-            shutil.rmtree(job, ignore_errors=True)
-        return "posted"
+        if ok:
+            remove_files(rec)
+        return "posted" if ok else "partly" if link else "failed"
 
 
 def main(argv: list[str]) -> int:
@@ -763,20 +1137,26 @@ def main(argv: list[str]) -> int:
         print("A Chrome window is opening: log in to the guides' YouTube channel there (it waits up to 15 minutes).")
         print("Logged in." if youtube_login() else "Timed out before you logged in.")
         return 0
-    if cmd == "topic":
+    if cmd in ("topic", "shorttopic"):
         st = wv.load_state(STATE)
-        st.setdefault("topic_queue", []).append(" ".join(argv[1:]))
+        key = "topic_queue" if cmd == "topic" else "short_queue"
+        st.setdefault(key, []).append(" ".join(argv[1:]))
         wv.save_state(st, STATE)
-        print("next topics:", st["topic_queue"])
+        print("next topics:", st[key])
         return 0
-    if cmd == "make":
+    if cmd == "library":
+        lib = refresh_library(cfg)
+        for sid, src in lib["sources"].items():
+            print(f"{len(src['shots']):4d} shots  {'official' if src.get('official') else 'gameplay'}  {src['title'][:70]}")
+        return 0
+    if cmd in ("make", "short"):
         if opt("--minutes"):
             cfg["minutes"] = float(opt("--minutes"))
         if opt("--game"):
             cfg["game"] = cfg["game_names"] = opt("--game")
         skip = {opt("--minutes"), opt("--game"), opt("--resume")}
         topic = " ".join(a for a in argv[1:] if not a.startswith("--") and a not in skip)
-        rec = make(topic, cfg, resume=Path(opt("--resume")) if opt("--resume") else None)
+        rec = make(topic, cfg, resume=Path(opt("--resume")) if opt("--resume") else None, kind="short" if cmd == "short" else "guide")
         print(json.dumps(rec, indent=1))
         if cfg["post"] and "--no-post" not in argv:
             st = wv.load_state(STATE)
