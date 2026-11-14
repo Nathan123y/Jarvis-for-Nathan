@@ -53,7 +53,9 @@ DEFAULTS = {"enabled": True,
             "start_date": "2026-11-13",                 # the user wants GTA posting running before launch (11-13)
             "launch_date": "2026-11-19",                # before it: official trailers + the Extended Look only
             "time": "16:00",                            # one long video a day
-            "short_times": "12:00,19:30",               # numbered-list shorts (YouTube Shorts + TikTok + Instagram)
+            "short_times": "12:00,17:00,21:00",         # numbered-list shorts (YouTube Shorts + TikTok + Instagram)
+            "vertical_copy": True,                      # the long video is also cut tall for TikTok and Instagram, so
+                                                        # every account gets it (user, 11-13: "every social media account")
             "official": "@RockstarGames",               # channels whose footage of the game is official
             # Rockstar's own upload of the 27-minute Extended Look is age-restricted (can't be fetched without a
             # login), so these full re-uploads of it stand in; the first one that catalogues cleanly is used
@@ -978,9 +980,48 @@ def make(topic: str = "", cfg: Optional[dict] = None, log: Callable = print, res
         thumbnail(frame, script["thumbnail"], thumb)
         rec["thumb"] = str(thumb)
         rec["description"] = describe(script, starts, credits)
+    if not short and cfg.get("vertical_copy"):
+        try:
+            rec["vertical"] = str(vertical_copy(job, shots, audio_of, sections, starts, ends, chunks, voice, total, out))
+            tags = " ".join("#" + t for t in dict.fromkeys(["gta6", "gtavi"] + [re.sub(r"[^a-z0-9]", "", t.lower()) for t in script["tags"][:3]] + ["gaming", "fyp"]) if t)
+            rec["caption"] = f"{script['title']} {tags}"[:2000]
+        except Exception as exc:
+            log(f"guides: couldn't make the tall copy ({str(exc)[:120]})")
     out.with_suffix(".json").write_text(json.dumps(rec, indent=1))
     log(f"guides: made \"{script['title']}\" ({total / 60:.1f} min, {len(shots)} shots)")
     return rec
+
+
+def vertical_copy(job: Path, shots: list, audio_of: dict, sections: list, starts: list, ends: list, chunks: list, voice: Path,
+                  total: float, out: Path) -> Path:
+    """The same long video cut tall (1080x1920) for TikTok and Instagram: the same shots and narration, the
+    section headings big at the top, the captions in the middle."""
+    import tempfile
+    vdir = job / "shots_v"
+    vdir.mkdir(exist_ok=True)
+    listing = []
+    for i, s in enumerate(shots):
+        f = vdir / f"{i:04d}.mp4"
+        done = subprocess.run(shot_command(s, f, audio_of.get(s["path"], True), SIZES["short"]), capture_output=True, text=True, timeout=600)
+        if done.returncode or not f.exists():
+            raise RuntimeError(f"ffmpeg couldn't cut tall shot {i} ({done.stderr.strip()[-120:]})")
+        listing.append(f"file '{f}'")
+    (job / "shots_v.txt").write_text("\n".join(listing) + "\n")
+    tall = out.with_name(out.stem + "-tall.mp4")
+    subs = write_ass_short(chunks, [(a, min(b, a + 5), s["heading"]) for s, a, b in zip(sections, starts, ends)],
+                           Path(tempfile.gettempdir()) / f"jarvis-guide-tall-{int(time.time() * 1000)}.ass")
+    try:
+        done = subprocess.run(
+            [wv.ffmpeg(), "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(job / "shots_v.txt"), "-i", str(voice),
+             "-filter_complex", f"[0:v]subtitles=f={subs}:fontsdir=/System/Library/Fonts/Supplemental,format=yuv420p[v];"
+             "[0:a]volume=0.10[g];[1:a]aresample=48000,pan=stereo|c0=c0|c1=c0[n];[g][n]amix=inputs=2:duration=shortest:normalize=0,alimiter=limit=0.8[a]",
+             "-map", "[v]", "-map", "[a]", "-t", f"{total:.2f}", "-c:v", "libx264", "-preset", "medium", "-crf", "23",
+             "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(tall)], capture_output=True, text=True, timeout=7200)
+    finally:
+        subs.unlink(missing_ok=True)
+    if done.returncode or not tall.exists():
+        raise RuntimeError(f"ffmpeg couldn't build the tall copy ({done.stderr.strip()[-160:]})")
+    return tall
 
 
 # ── 5. YouTube ───────────────────────────────────────────────────────────────
@@ -1147,7 +1188,7 @@ def remove_files(rec: dict) -> None:
     """A posted video's files go (the disk is nearly full); its record stays."""
     video = Path(rec["path"])
     if video.parent == OUT:
-        for f in (video, video.with_suffix(".json"), video.with_suffix(".jpg")):
+        for f in (video, video.with_suffix(".json"), video.with_suffix(".jpg"), video.with_name(video.stem + "-tall.mp4")):
             f.unlink(missing_ok=True)
     job = Path(rec.get("job") or "")
     if job.parent == WORK:
@@ -1241,10 +1282,12 @@ class GuideService:
             self.log(f"guides: YouTube upload failed: {exc}")
             link, ok = "", False
             lines.append(f"YouTube: ❌ {str(exc)[:110]}")
-        if short:                                               # the same Short on the videos' TikTok and Instagram
+        tall = rec if short else dict(rec, path=rec["vertical"]) if rec.get("vertical") and Path(rec["vertical"]).exists() else None
+        if tall:                                                # the Short (or the long video's tall copy) on TikTok and Instagram
             pcfg = clips.post_settings(dict(cfg, ai_label=False))
-            tt = self._poster._deliver_tiktok(rec, pcfg)
-            ig = self._poster.post_instagram(rec, pcfg) if pcfg.get("instagram") else "off"
+            tt = self._poster._deliver_tiktok(tall, pcfg)
+            ig = self._poster.post_instagram(tall, pcfg) if pcfg.get("instagram") else "off"
+            rec.setdefault("_why", {}).update(tall.get("_why", {}))
             why = rec.get("_why", {})
             lines.append("TikTok: ✅" if tt == "posted" else f"TikTok: ❌ {why.get('tiktok', tt)}")
             if ig != "off":
