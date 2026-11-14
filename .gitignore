@@ -101,6 +101,7 @@ config/google_forms_token.json.tmp
 # logged into TikTok (committing that profile hands over the account)
 memory/viral/
 memory/viral.json
+memory/clips.json
 memory/tiktok_profile/
 memory/instagram_profile/
 # the sound library (public-domain clips from Wikimedia Commons; rebuilt by worker/viral.py)

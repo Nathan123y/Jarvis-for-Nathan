@@ -1774,6 +1774,20 @@ class NotLoggedIn(RuntimeError):
     pass
 
 
+BROWSER = threading.RLock()     # one Chrome at a time: the daily videos and the game clips (worker/clips.py) share
+                                # the logged-in profiles, and a profile can't be opened twice
+
+
+def _one_browser(fn):
+    import functools
+
+    @functools.wraps(fn)
+    def held(*a, **kw):
+        with BROWSER:
+            return fn(*a, **kw)
+    return held
+
+
 def _tiktok_context(p, visible: bool):
     PROFILE.mkdir(parents=True, exist_ok=True)
     args = ["--disable-blink-features=AutomationControlled"]
@@ -1805,6 +1819,7 @@ def tiktok_login(wait_s: int = 900) -> bool:
     return False
 
 
+@_one_browser
 def tiktok_post(video: Path, caption: str, ai_label: bool = True, log: Callable = print, dry_run: bool = False) -> str:
     """Uploads through TikTok Studio in the logged-in profile. Returns a note; raises on failure (with a screenshot)."""
     from playwright.sync_api import sync_playwright
@@ -1876,6 +1891,7 @@ def _caption_key(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip()[:50]
 
 
+@_one_browser
 def tiktok_has_post(caption: str, wait_s: float = 30) -> bool:
     """True when TikTok Studio's post list already shows this caption. Raises if the list can't be read, so a
     caller never re-uploads on a guess."""
@@ -1966,6 +1982,7 @@ def _ig_click(pg, texts, timeout: int = 4000) -> bool:
     return False
 
 
+@_one_browser
 def ig_post(video: Path, caption: str, ai_label: bool = True, log: Callable = print, dry_run: bool = False) -> str:
     """Uploads the video as a Reel through instagram.com in the logged-in profile. Raises on failure (with a screenshot)."""
     from playwright.sync_api import sync_playwright
@@ -2106,6 +2123,7 @@ def parse_count(text: str) -> int:
     return int(n * {"": 1, "K": 1e3, "M": 1e6, "B": 1e9}[m.group(2)])
 
 
+@_one_browser
 def read_profile_stats(handle: str = "") -> list[dict]:
     """Views of each video on the account's profile page: [{id, url, views, desc}] newest first."""
     from playwright.sync_api import sync_playwright

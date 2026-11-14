@@ -102,9 +102,16 @@ def cmd_run(args) -> int:
     viral = ViralService(logging.getLogger("jarvis.viral").info,
                          notify=lambda kind, text: alerts.alerts.scheduled(kind, text))
     viral.start()
+    # Game clips: gameplay clips dropped in ~/Movies/Jarvis Clips/inbox, cut vertical and posted to the same
+    # accounts between the daily videos (worker/clips.py).
+    from worker.clips import ClipService
+    clips = ClipService(logging.getLogger("jarvis.clips").info,
+                        notify=lambda kind, text: alerts.alerts.scheduled(kind, text))
+    clips.start()
     try:
         w.run_forever()
     finally:
+        clips.stop()
         viral.stop()
         internships.stop()
         shop.stop()
