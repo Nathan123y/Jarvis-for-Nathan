@@ -479,6 +479,8 @@ def refresh_library(cfg: dict, log: Callable = print, today: Optional[str] = Non
     for e in wanted:
         if e["id"] in lib["sources"] or e["id"] in lib.get("rejected", []) or added >= max_new:
             continue
+        if e.get("_official") and e.get("title") and any(v.get("title") == e["title"] for v in lib["sources"].values()):
+            continue                                            # the same trailer uploaded twice
         if not e.get("_official") and added_gameplay >= int(cfg["sources"]):
             continue
         url = f"https://www.youtube.com/watch?v={e['id']}"
@@ -684,6 +686,13 @@ def detect_bars(path: Path) -> str:
     return f"{w}:{h}:{x}:{y}"
 
 
+def black_seconds(path: Path) -> float:
+    """How long the picture is (nearly) black in this file."""
+    out = subprocess.run([wv.ffmpeg(), "-hide_banner", "-nostats", "-i", str(path), "-vf", "blackdetect=d=0.15:pix_th=0.08", "-an",
+                          "-f", "null", "-"], capture_output=True, text=True, timeout=120).stderr
+    return sum(float(d) for d in re.findall(r"black_duration:([\d.]+)", out))
+
+
 def shot_command(s: dict, out: Path, has_audio: bool, size: tuple = (W, H)) -> list[str]:
     w, h = size
     d = s["seconds"]
@@ -793,6 +802,7 @@ def make(topic: str = "", cfg: Optional[dict] = None, log: Callable = print, res
     short = kind == "short"
     job = resume or WORK / (datetime.now().strftime("%Y%m%d-%H%M%S") + ("-short" if short else ""))
     job.mkdir(parents=True, exist_ok=True)
+    job = job.resolve()                                         # ffmpeg's shot list needs full paths
     sfile = job / "script.json"
     if sfile.exists():
         script = json.loads(sfile.read_text())
@@ -833,9 +843,19 @@ def make(topic: str = "", cfg: Optional[dict] = None, log: Callable = print, res
                 bars_of[s["path"]] = ""
         s["crop"] = bars_of[s["path"]]
         f = shots_dir / f"{i:04d}.mp4"
-        done = subprocess.run(shot_command(s, f, audio_of[s["path"]], size), capture_output=True, text=True, timeout=600)
-        if done.returncode or not f.exists():
-            raise RuntimeError(f"ffmpeg couldn't cut shot {i} ({done.stderr.strip()[-160:]})")
+        spares = [x for x in pieces if x["path"] != s["path"] and x["seconds"] >= s["seconds"] + .2]
+        for attempt in range(4):                                # a shot that fades to black is swapped for another
+            done = subprocess.run(shot_command(s, f, audio_of.get(s["path"], True), size), capture_output=True, text=True, timeout=600)
+            if done.returncode or not f.exists():
+                raise RuntimeError(f"ffmpeg couldn't cut shot {i} ({done.stderr.strip()[-160:]})")
+            if black_seconds(f) < .3 or not spares or attempt == 3:
+                break
+            alt = spares[(i + attempt) % len(spares)]
+            if alt["path"] not in audio_of:
+                audio_of[alt["path"]] = clips.probe(Path(alt["path"]))["audio"]
+                bars_of[alt["path"]] = detect_bars(Path(alt["path"]))
+            s = dict(s, path=alt["path"], at=0.0, crop=bars_of.get(alt["path"], ""))
+            shots[i] = s
         listing.append(f"file '{f}'")
     (job / "shots.txt").write_text("\n".join(listing) + "\n")
 
@@ -853,11 +873,11 @@ def make(topic: str = "", cfg: Optional[dict] = None, log: Callable = print, res
             w.writeframes((np.clip(x / max(1e-6, float(np.abs(x).max())), -1, 1) * 32767 * .9).astype("<i2").tobytes())
         inputs += ["-i", str(bed)]
         audio = ("[0:a]volume=0.05[g];[1:a]aresample=48000,pan=stereo|c0=c0|c1=c0[n];[2:a]aresample=48000,pan=stereo|c0=c0|c1=c0,volume=0.20[m];"
-                 "[g][n][m]amix=inputs=3:duration=shortest:normalize=0,alimiter=limit=0.89[a]")
+                 "[g][n][m]amix=inputs=3:duration=shortest:normalize=0,alimiter=limit=0.8[a]")
     else:
         write_ass(chunks, [(t, s["heading"]) for s, t in zip(sections, starts)], subs)
         audio = ("[0:a]volume=0.10[g];[1:a]aresample=48000,pan=stereo|c0=c0|c1=c0[n];"
-                 "[g][n]amix=inputs=2:duration=shortest:normalize=0,alimiter=limit=0.89[a]")
+                 "[g][n]amix=inputs=2:duration=shortest:normalize=0,alimiter=limit=0.8[a]")
     try:
         done = subprocess.run(
             [wv.ffmpeg(), "-loglevel", "error", "-y"] + inputs +
