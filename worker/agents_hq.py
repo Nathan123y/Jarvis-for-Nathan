@@ -135,7 +135,7 @@ def numbers(now: Optional[datetime] = None) -> list:
             for c in ("etsy", "ebay", "popup", "tiktok")}
     made_today = sum(1 for d in designs if d.get("made") and datetime.fromtimestamp(d["made"]).date() == today)
     out.append({"crew": "Shop crew", "items": [["designs made", len(designs)], ["made today", made_today],
-                                              ["products on TikTok Shop", chan["tiktok"]], ["on the Pop-Up Store", chan["popup"]],
+                                              ["products sent to TikTok Shop", chan["tiktok"]], ["on the Pop-Up Store", chan["popup"]],
                                               ["on eBay", chan["ebay"]], ["on Etsy", chan["etsy"]],
                                               ["sales so far", len(shop.get("sales_log") or [])]]})
     viral = _json(ROOT / "memory" / "viral.json") or {}
@@ -177,38 +177,66 @@ def snapshot() -> dict:
     for c in crews:
         c["numbers"] = counts.get(c["crew"], [])
     agents = [a for c in crews for a in c["agents"]]
-    return {"at": now.strftime("%H:%M:%S"), "crews": crews, "memecoin": memecoin_feed(),
+    return {"at": now.strftime("%H:%M:%S"), "gta": gta(now), "crews": crews, "memecoin": memecoin_feed(),
             "summary": {"agents": len(agents), "active_now": sum(a["light"] == "green" for a in agents),
                         "active_today": sum(a["light"] in ("green", "blue") for a in agents),
                         "problems": sum(a["problem"] for a in agents)}}
 
 
+LAUNCH = "2026-11-19"                      # GTA 6 launch day; the guides and clip services use the same date
+
+
+def gta(now: Optional[datetime] = None) -> dict:
+    """Countdown plus what the crews do before and after launch."""
+    today = (now or datetime.now()).date()
+    days = (datetime.strptime(LAUNCH, "%Y-%m-%d").date() - today).days
+    return {"launch": LAUNCH, "days": days, "live": days <= 0,
+            "plan": [["Guides crew", "A narrated guide video a day plus three list Shorts (YouTube, TikTok, Instagram)"],
+                     ["Clips crew", "From launch day: pulls Twitch and YouTube gameplay clips, cuts them vertical, posts 3 a day"],
+                     ["Video crew", "Keeps the daily 'what if' videos going on the same accounts"],
+                     ["Shop crew", "Original designs only (no GTA, Rockstar or Marvel names); TikTok Shop gets 25 a day"]]}
+
+
 PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Agents HQ</title><style>
-:root{--bg:#f6f4ef;--card:#fff;--ink:#1b1b1f;--mute:#6d6d76;--line:#e4e1d8;--green:#2f9e5b;--blue:#3b7ddd;--grey:#b9b7ae;--amber:#c47a00}
-@media(prefers-color-scheme:dark){:root{--bg:#141517;--card:#1e2023;--ink:#ececee;--mute:#9a9aa3;--line:#2c2e33;--green:#46c27a;--blue:#6aa2f2;--grey:#5a5c63;--amber:#e0a030}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,system-ui,sans-serif;padding:24px 16px}
-main{max-width:1100px;margin:0 auto}h1{margin:0 0 4px;font-size:26px}.sub{color:var(--mute);margin-bottom:18px}
-.top{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:22px}.stat{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 18px;min-width:130px}
-.stat b{display:block;font-size:26px}.stat span{color:var(--mute);font-size:13px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:14px}
-.crew{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}.crew h2{margin:0 0 10px;font-size:17px}
-.nums{display:flex;flex-wrap:wrap;gap:6px 14px;color:var(--mute);font-size:13px;margin-bottom:10px}.nums b{color:var(--ink)}
-.agent{display:flex;gap:10px;padding:9px 0;border-top:1px solid var(--line)}.dot{width:10px;height:10px;border-radius:50%;margin-top:6px;flex:none;background:var(--grey)}
-.dot.green{background:var(--green);box-shadow:0 0 0 4px color-mix(in srgb,var(--green) 25%,transparent)}.dot.blue{background:var(--blue)}
-.name{font-weight:600}.role{color:var(--mute);font-size:13px}.last{font-size:13px;margin-top:2px;word-break:break-word}.last.problem{color:var(--amber)}
-.when{color:var(--mute);font-size:12px;margin-left:6px;font-weight:400}
-.feed{margin-top:22px}.feed h2{font-size:17px}.msg{font-size:13px;padding:6px 0;border-top:1px solid var(--line)}.msg em{color:var(--mute);font-style:normal}
-</style></head><body><main><h1>Agents HQ</h1><div class="sub">What every crew is doing right now. Updates every 10 seconds. <span id="at"></span></div>
-<div class="top" id="top"></div><div class="grid" id="grid"></div>
+:root{--bg:#0a0f1c;--card:#111a2e;--ink:#e6ecf5;--mute:#8d9bb4;--line:#243452;--green:#46d68a;--blue:#5aa2ff;--grey:#58657f;--amber:#f2b34e;--wall:#16233a}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 -apple-system,system-ui,sans-serif;padding:20px 16px}
+main{max-width:1180px;margin:0 auto}h1{margin:0;font-size:26px}.sub{color:var(--mute);margin:2px 0 16px}
+.top{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}.stat{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 16px;min-width:120px}
+.stat b{display:block;font-size:24px}.stat span{color:var(--mute);font-size:12px}
+.gta{background:linear-gradient(135deg,#2a1246,#0f2a4a);border:1px solid #4a3a7a;border-radius:14px;padding:14px 18px;margin-bottom:16px;display:flex;gap:22px;flex-wrap:wrap;align-items:center}
+.gta .big{font-size:42px;font-weight:800;line-height:1;color:#ffd166}.gta small{display:block;color:#c9b8ff;font-size:12px}
+.gta ul{margin:0;padding:0;list-style:none;flex:1;min-width:300px;font-size:13px}.gta li{padding:2px 0}.gta li b{color:#ffd166}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px}
+.crew{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden}.crew h2{margin:0;padding:12px 16px 4px;font-size:16px}
+.nums{display:flex;flex-wrap:wrap;gap:4px 14px;color:var(--mute);font-size:12px;padding:0 16px 8px}.nums b{color:var(--ink)}
+svg.office{display:block;width:100%;height:auto;background:var(--wall)}
+.typing{animation:bob .5s infinite alternate}@keyframes bob{to{transform:translateY(2px)}}
+.live{stroke-dasharray:60;animation:dash 2s linear infinite}@keyframes dash{to{stroke-dashoffset:-120}}
+.agent{display:flex;gap:10px;padding:8px 16px;border-top:1px solid var(--line)}.dot{width:9px;height:9px;border-radius:50%;margin-top:6px;flex:none;background:var(--grey)}
+.dot.green{background:var(--green);box-shadow:0 0 0 4px rgba(70,214,138,.22)}.dot.blue{background:var(--blue)}
+.name{font-weight:600}.role{color:var(--mute);font-size:12px}.last{font-size:12.5px;margin-top:2px;word-break:break-word}.last.problem{color:var(--amber)}
+.when{color:var(--mute);font-size:11px;margin-left:6px;font-weight:400}
+.feed{margin-top:16px;padding-bottom:8px}.msg{font-size:12.5px;padding:6px 16px;border-top:1px solid var(--line)}.msg em{color:var(--mute);font-style:normal}
+</style></head><body><main><h1>Agents HQ</h1><div class="sub">Every crew at its desks. Typing = working in the last 15 minutes. Updates every 10 seconds. <span id="at"></span></div>
+<div class="top" id="top"></div><div class="gta" id="gta"></div><div class="grid" id="grid"></div>
 <div class="feed crew"><h2>Memecoin crew (live chatter)</h2><div id="feed"></div></div></main>
 <script>
 const ago=s=>s==null?'':s<90?'just now':s<5400?Math.round(s/60)+' min ago':s<172800?Math.round(s/3600)+' h ago':Math.round(s/86400)+' days ago';
 const esc=t=>String(t).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const COL={green:'#46d68a',blue:'#5aa2ff',grey:'#58657f'};
+function desk(x,a){const c=COL[a.light],on=a.light==='green';const lab=esc(a.name.length>13?a.name.slice(0,12)+'…':a.name);
+return `<g transform="translate(${x} 0)"><rect x="-46" y="118" width="92" height="10" rx="2" fill="#3b2f2a"/><rect x="-40" y="128" width="6" height="34" fill="#2a211d"/><rect x="34" y="128" width="6" height="34" fill="#2a211d"/>
+<rect x="-26" y="78" width="52" height="34" rx="3" fill="#0d1526" stroke="#33415c"/><polyline class="${on?'live':''}" points="-21,104 -13,98 -6,101 2,92 9,95 16,86 21,88" fill="none" stroke="${c}" stroke-width="2"/>
+<g class="${on?'typing':''}"><rect x="-11" y="118" width="22" height="24" rx="5" fill="#c9d2de"/><circle cx="0" cy="128" r="3" fill="${c}"/><rect x="-10" y="96" width="20" height="17" rx="5" fill="#e3e9f1"/><rect x="-7" y="101" width="14" height="5" rx="2" fill="${c}"/><line x1="0" y1="96" x2="0" y2="89" stroke="#9aa5b4" stroke-width="2"/><circle cx="0" cy="87" r="2.6" fill="${c}"/></g>
+<rect x="-40" y="150" width="80" height="16" rx="4" fill="rgba(7,12,24,.85)" stroke="${c}"/><text x="0" y="162" text-anchor="middle" fill="${c}" font-size="10.5" font-weight="700">${lab}</text></g>`}
+function scene(agents){const n=agents.length,w=Math.max(300,n*130);let b='';for(let i=0;i<Math.floor((w-50)/16);i++){const h=12+((i*37)%30);b+=`<rect x="${26+i*16}" y="${70-h}" width="11" height="${h}" fill="#1c2a44"/>`}
+return `<svg class="office" viewBox="0 0 ${w} 180"><rect x="20" y="14" width="${w-40}" height="56" rx="4" fill="#070b18" stroke="#243452"/>${b}<rect x="0" y="162" width="${w}" height="18" fill="#0b1220"/>${agents.map((a,i)=>desk(w/n*(i+.5),a)).join('')}</svg>`}
 async function tick(){try{const d=await (await fetch('/api/agents')).json();
-document.getElementById('at').textContent='Updated '+d.at;const s=d.summary;
-document.getElementById('top').innerHTML=[['Agents',s.agents],['Active now',s.active_now],['Active in 24 h',s.active_today],['Need a look',s.problems]].map(x=>`<div class="stat"><b>${x[1]}</b><span>${x[0]}</span></div>`).join('');
-document.getElementById('grid').innerHTML=d.crews.map(c=>`<section class="crew"><h2>${esc(c.crew)}</h2><div class="nums">${c.numbers.map(n=>`<span><b>${esc(n[1])}</b> ${esc(n[0])}</span>`).join('')}</div>`+c.agents.map(a=>`<div class="agent"><span class="dot ${a.light}"></span><div><div class="name">${esc(a.name)}<span class="when">${ago(a.age_s)}</span></div><div class="role">${esc(a.role)}</div><div class="last ${a.problem?'problem':''}">${esc(a.last)}</div></div></div>`).join('')+`</section>`).join('');
+document.getElementById('at').textContent='Updated '+d.at;const s=d.summary,g=d.gta;
+document.getElementById('top').innerHTML=[['Agents',s.agents],['Working now',s.active_now],['Active in 24 h',s.active_today],['Need a look',s.problems]].map(x=>`<div class="stat"><b>${x[1]}</b><span>${x[0]}</span></div>`).join('');
+document.getElementById('gta').innerHTML=`<div><div class="big">${g.live?'LIVE':g.days}</div><small>${g.live?'GTA 6 is out':'days to GTA 6 ('+g.launch+')'}</small></div><ul>${g.plan.map(p=>`<li><b>${esc(p[0])}:</b> ${esc(p[1])}</li>`).join('')}</ul>`;
+document.getElementById('grid').innerHTML=d.crews.map(c=>`<section class="crew"><h2>${esc(c.crew)}</h2><div class="nums">${c.numbers.map(n=>`<span><b>${esc(n[1])}</b> ${esc(n[0])}</span>`).join('')}</div>${scene(c.agents)}`+c.agents.map(a=>`<div class="agent"><span class="dot ${a.light}"></span><div><div class="name">${esc(a.name)}<span class="when">${ago(a.age_s)}</span></div><div class="role">${esc(a.role)}</div><div class="last ${a.problem?'problem':''}">${esc(a.last)}</div></div></div>`).join('')+`</section>`).join('');
 document.getElementById('feed').innerHTML=d.memecoin.length?d.memecoin.map(m=>`<div class="msg"><em>${esc(m.from)} to ${esc(m.to)}:</em> ${esc(m.text)}</div>`).join(''):'<div class="msg"><em>Nothing yet.</em></div>';
 }catch(e){document.getElementById('at').textContent='(waiting for the worker)'}}
 tick();setInterval(tick,10000);
