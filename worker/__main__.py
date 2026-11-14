@@ -108,9 +108,15 @@ def cmd_run(args) -> int:
     clips = ClipService(logging.getLogger("jarvis.clips").info,
                         notify=lambda kind, text: alerts.alerts.scheduled(kind, text))
     clips.start()
+    # Game guides: one long narrated YouTube video a day about the game, over real gameplay (worker/guides.py).
+    from worker.guides import GuideService
+    guides = GuideService(logging.getLogger("jarvis.guides").info,
+                          notify=lambda kind, text: alerts.alerts.scheduled(kind, text))
+    guides.start()
     try:
         w.run_forever()
     finally:
+        guides.stop()
         clips.stop()
         viral.stop()
         internships.stop()
