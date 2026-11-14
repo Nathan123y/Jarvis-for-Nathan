@@ -37,7 +37,15 @@ DEFAULTS = {"enabled": True,
             "prelaunch": True,
             "prelaunch_skip": "leak,rumor,news,compilation,meme,gta 5,gta v ",
             "every_min": 30,
-            "stock": 6,                      # stop fetching once this many clips wait in the inbox
+            "stock": 12,                     # stop fetching once this many clips wait in the inbox
+            # LIVE: every few minutes each listed Twitch streamer who is live in the game is listened to through the
+            # stream's own running recording; the loudest moments (screams, laughing) are cut out while still live
+            "live": True,
+            "live_every_min": 5,
+            "live_listen_min": 12,           # how much of the newest stream is listened to per look
+            "live_per_look": 2,              # moments taken from one streamer per look
+            "kick": "adinross,xqc,n3on,sweatergxd,konvy,jackdoherty,lospollostv,amouranth,trainwreckstv,iceposeidon",
+            "kick_min_views": 100,
             # Twitch files clips under the game's exact name; YouTube titles are matched on any of these
             "game_names": "Grand Theft Auto VI,Grand Theft Auto 6,GTA VI,GTA 6,GTA6",
             "twitch": ("kaicenat,caseoh_,xqc,jynxzi,summit1g,lirik,shroud,zackrawrr,nmplol,sodapoppin,hasanabi,"
@@ -113,11 +121,11 @@ def details(url: str) -> dict:
         return y.extract_info(url, download=False) or {}
 
 
-def download(url: str, dest: Path, span: Optional[tuple] = None) -> Path:
+def download(url: str, dest: Path, span: Optional[tuple] = None, fmt: str = "") -> Path:
     """The video (or just `span` = (start, end) seconds of it) as an mp4 at up to 1080p."""
     import yt_dlp
     opts = {"outtmpl": str(dest.with_suffix(".%(ext)s")), "merge_output_format": "mp4",
-            "format": "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080][ext=mp4]/b[height<=1080]/b"}
+            "format": fmt or "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080][ext=mp4]/b[height<=1080]/b"}
     if span:
         opts["download_ranges"] = yt_dlp.utils.download_range_func(None, [span])
     with _ydl(**opts) as y:
@@ -203,6 +211,93 @@ def gemini_moments(url: str, duration: float, game: str, count: int, log: Callab
     return None
 
 
+def cut_playlist(text: str, base: str, start: float, end: float) -> tuple[str, float]:
+    """From a stream recording's segment list (HLS), a finished list of just the segments covering start-end
+    seconds, with full addresses. Returns (the list, the second its first segment starts at)."""
+    head, body, t, first = [], [], 0.0, None
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("#EXT-X-MAP"):
+            head.append(re.sub(r'URI="([^"]+)"', lambda m: f'URI="{m.group(1) if "://" in m.group(1) else base + m.group(1)}"', line))
+        elif line.startswith(("#EXTM3U", "#EXT-X-VERSION", "#EXT-X-TARGETDURATION")):
+            head.append(line)
+        elif line.startswith("#EXTINF") and i + 1 < len(lines):
+            d = float(re.match(r"#EXTINF:([\d.]+)", line).group(1))
+            if t + d > start and t < end:
+                first = t if first is None else first
+                seg = next(x for x in lines[i + 1:] if x and not x.startswith("#"))
+                body += [line, seg if "://" in seg else base + seg]
+            t += d
+    if first is None:
+        raise RuntimeError("that stretch isn't in the recording yet")
+    return "\n".join(head + body + ["#EXT-X-ENDLIST"]) + "\n", first
+
+
+def live_span(info: dict, fmt: str, dest: Path, start: float, end: float) -> tuple[Path, float]:
+    """start-end seconds of a recording that is still being written (a live stream's), which the normal download
+    can't seek in. `fmt` is "audio" or a height like 720. Returns (the file, the second it really starts at)."""
+    import subprocess
+    import tempfile
+    import urllib.request
+    formats = [f for f in info.get("formats") or [] if "m3u8" in str(f.get("protocol"))]
+    if fmt == "audio":
+        pick = [f for f in formats if f.get("vcodec") == "none"] or sorted(formats, key=lambda f: f.get("height") or 0)
+    else:
+        pick = sorted([f for f in formats if f.get("height") and f["height"] <= int(fmt)], key=lambda f: -f["height"]) \
+            or sorted([f for f in formats if f.get("height")], key=lambda f: f["height"])
+    if not pick:
+        raise RuntimeError("the recording has no stream to read")
+    url = pick[0]["url"]
+    text = urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"}), timeout=30).read().decode()
+    listing_, first = cut_playlist(text, url.rsplit("/", 1)[0] + "/", start, end)
+    with tempfile.TemporaryDirectory(prefix="jarvis-hls-") as tmp:
+        m3u8 = Path(tmp) / "part.m3u8"
+        m3u8.write_text(listing_)
+        done = subprocess.run([wv.ffmpeg(), "-loglevel", "error", "-y", "-protocol_whitelist", "file,https,tls,tcp,crypto",
+                               "-allowed_extensions", "ALL", "-i", str(m3u8), "-ss", f"{max(0.0, start - first):.2f}", "-t", f"{end - start:.2f}",
+                               "-c", "copy", "-movflags", "+faststart", str(dest)], capture_output=True, text=True, timeout=600)
+    if done.returncode or not dest.exists():
+        raise RuntimeError(f"couldn't read the live recording ({done.stderr.strip()[-120:]})")
+    return dest, max(start, first)
+
+
+def loud_moments(level: list[float], count: int = 2, before: float = 22, after: float = 10, apart: float = 45,
+                 jump: float = 2.2) -> list[tuple]:
+    """Where a stream got loud. `level` is its loudness second by second; a moment is a second far above the
+    stream's usual level (by `jump` spreads), and the clip runs from `before` seconds ahead of it (what caused
+    the scream) to `after` seconds past it. Loudest first, at least `apart` seconds apart. [(start, end)]."""
+    import numpy as np
+    x = np.asarray(level, dtype=float)
+    if len(x) < before + after + 5:
+        return []
+    x = np.convolve(x, np.ones(3) / 3, mode="same")          # a 3-second burst, not one click
+    mid = float(np.median(x))
+    spread = float(np.median(np.abs(x - mid))) * 1.4826 or 1e-6
+    out = []
+    for i in np.argsort(-x):
+        i = int(i)
+        if (x[i] - mid) / spread < jump or len(out) >= count:
+            break
+        if i < before or i > len(x) - after or any(abs(i - (a + before)) < apart for a, _ in out):
+            continue
+        out.append((int(i - before), int(i + after)))
+    return out
+
+
+def loudness(audio: Path) -> list[float]:
+    """A recording's loudness for each second (dB-like)."""
+    import subprocess
+    import numpy as np
+    raw = subprocess.run([wv.ffmpeg(), "-loglevel", "error", "-i", str(audio), "-vn", "-ac", "1", "-ar", "8000", "-f", "f32le", "-"],
+                         capture_output=True, timeout=300).stdout
+    x = np.frombuffer(raw, dtype="<f4")
+    n = len(x) // 8000
+    if not n:
+        return []
+    rms = np.sqrt((x[:n * 8000].reshape(n, 8000) ** 2).mean(axis=1))
+    return [float(v) for v in 20 * np.log10(rms + 1e-5)]
+
+
 def video_ok(e: dict, names: list[str], skip: list[str], min_views: int) -> bool:
     title = e.get("title") or ""
     return (is_game(title, names) and not any(s in title.lower() for s in skip)
@@ -244,7 +339,8 @@ class Scout:
         early = self.before_launch(cfg, now)
         try:
             if not early:
-                got += self.twitch(cfg, names, seen, (room + 1) // 2)   # half each, so one site can't crowd out the other
+                got += self.twitch(cfg, names, seen, (room + 2) // 3)   # a share each, so one site can't crowd out the others
+                got += self.kick(cfg, names, seen, (room + 2) // 3)
             got += self.youtube(cfg, names, seen, room - got, early)
             if got < room and not early:
                 got += self.twitch(cfg, names, seen, room - got)
@@ -287,6 +383,92 @@ class Scout:
                 got += 1
             except Exception as exc:
                 self.log(f"scout: couldn't fetch the Twitch clip {e['id']} ({str(exc)[:80]})")
+        return got
+
+    def kick(self, cfg: dict, names: list[str], seen: set, room: int) -> int:
+        """Kick: the listed streamers' viewer-made clips of the last day that Kick files under the game."""
+        if room <= 0:
+            return 0
+        picks = []
+        for ch in _list(cfg.get("kick")):
+            try:
+                picks += [dict(e, _channel=ch) for e in listing(f"https://kick.com/{ch}/clips", 15)
+                          if e.get("url") and f"kick:{e.get('id')}" not in seen and (e.get("view_count") or 0) >= int(cfg["kick_min_views"])]
+            except Exception as exc:
+                self.log(f"scout: couldn't list {ch}'s Kick clips ({str(exc)[:70]})")
+        got = 0
+        for e in sorted(picks, key=lambda e: -(e.get("view_count") or 0)):
+            if got >= room:
+                break
+            seen.add(f"kick:{e['id']}")
+            try:
+                info = details(e["url"])
+                if time.time() - (info.get("timestamp") or 0) > 36 * 3600 or not any(is_game(c, names) for c in info.get("categories") or []):
+                    continue
+                ch = info.get("uploader_id") or e["_channel"]
+                dest = clips.INBOX / f"@{ch} kick-{e['id'][-12:]}.mp4"
+                download(e["url"], dest)
+                write_note(dest, ch, "kick", e["url"], info.get("title") or "")
+                self.log(f"scout: Kick clip from {ch}: \"{(info.get('title') or '')[:60]}\" ({e.get('view_count')} views)")
+                got += 1
+            except Exception as exc:
+                self.log(f"scout: couldn't fetch the Kick clip {e['id']} ({str(exc)[:80]})")
+        return got
+
+    # ── live ─────────────────────────────────────────────────────────────────
+    def live_due(self, cfg: dict, st: dict, now: float) -> bool:
+        return (bool(cfg["enabled"]) and bool(cfg.get("live")) and not self.before_launch(cfg, now)
+                and now - st.get("live_at", 0) >= float(cfg["live_every_min"]) * 60)
+
+    def live(self, cfg: Optional[dict] = None, room: Optional[int] = None) -> int:
+        """One look at every listed Twitch streamer: whoever is live in the game right now gets the newest
+        stretch of their stream listened to, and its loudest moments cut into the inbox as "live-" clips."""
+        import tempfile
+        cfg = cfg or settings()
+        st = wv.load_state(clips.STATE)
+        st["live_at"] = time.time()
+        heard = dict(st.get("live_heard") or {})
+        wv.save_state(st, clips.STATE)
+        room = int(cfg["stock"]) * 2 - len(clips.inbox(settle_s=0)) if room is None else room   # live clips may overfill: they're the freshest
+        names, got = _list(cfg["game_names"]), 0
+        clips.INBOX.mkdir(parents=True, exist_ok=True)
+        for ch in _list(cfg["twitch"]):
+            if got >= room:
+                break
+            try:
+                details(f"https://www.twitch.tv/{ch}")              # raises when the channel isn't live
+            except Exception:
+                continue
+            try:
+                vods = listing(f"https://www.twitch.tv/{ch}/videos?filter=archives&sort=time", 1)
+                if not vods:
+                    continue                                        # this streamer keeps no recordings
+                info = details(vods[0]["url"])
+                length = float(info.get("duration") or 0)
+                chapter = (info.get("chapters") or [{}])[-1]        # what they're playing now
+                if info.get("live_status") != "is_live" or not is_game(chapter.get("title"), names):
+                    continue
+                vid = str(info.get("id") or vods[0]["id"])
+                start = max(float(heard.get(vid, 0)), length - float(cfg["live_listen_min"]) * 60, float(chapter.get("start_time") or 0))
+                end = length - 20                                   # the last seconds aren't written yet
+                if end - start < 90:
+                    continue
+                with tempfile.TemporaryDirectory(prefix="jarvis-live-") as tmp:
+                    sound, start = live_span(info, "audio", Path(tmp) / "sound.mp4", start, end)
+                    spans = loud_moments(loudness(sound), int(cfg["live_per_look"]))
+                heard[vid] = end
+                for a, b in spans[:max(0, room - got)]:
+                    at = int(start + a)
+                    dest = clips.INBOX / f"@{ch} live-{vid}-{at}.mp4"
+                    live_span(info, "720", dest, at, int(start + b))
+                    write_note(dest, ch, "twitch", f"https://www.twitch.tv/videos/{vid.lstrip('v')}?t={at}s", info.get("title") or "")
+                    self.log(f"scout: LIVE moment from {ch} at {at // 3600}:{at % 3600 // 60:02d}:{at % 60:02d} of the stream")
+                    got += 1
+            except Exception as exc:
+                self.log(f"scout: couldn't watch {ch}'s live stream ({str(exc)[:80]})")
+        st = wv.load_state(clips.STATE)
+        st["live_heard"] = dict(list(heard.items())[-60:])
+        wv.save_state(st, clips.STATE)
         return got
 
     def youtube(self, cfg: dict, names: list[str], seen: set, room: int, early: bool = False) -> int:
@@ -360,6 +542,11 @@ def main(argv: list[str]) -> int:
     cfg = settings()
     if "--game" in argv:
         cfg["game_names"] = cfg["_game"] = argv[argv.index("--game") + 1]
+    if argv and argv[0] == "live":                              # one look at the live streams now
+        if "--only" in argv:
+            cfg["twitch"] = argv[argv.index("--only") + 1]
+        print("live moments:", Scout().live(dict(cfg, start_date=""), room=2))
+        return 0
     if "--stock" in argv:
         cfg["stock"] = int(argv[argv.index("--stock") + 1])
     print("fetched:", Scout().run(cfg))

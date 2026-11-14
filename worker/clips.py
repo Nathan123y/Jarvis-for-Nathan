@@ -47,8 +47,10 @@ VIDEO = (".mp4", ".mov", ".mkv", ".webm", ".m4v")
 W, H = 1080, 1920
 PICTURE_Y, PICTURE_H = 600, 720         # where a widescreen clip sits in the tall frame
 DEFAULTS = {"enabled": True,
-            "times": "11:00,15:30,20:30",   # between the daily videos (09:00, 13:00, 18:00); hourly posting killed
-                                            # views in early November, so three a day and no more by default
+            # between the other videos' slots; five a day since 11-14 (user: "hundreds of short funny clips" for the
+            # GTA content). Hourly posting killed views in early November, so not more on one account
+            "times": "11:00,14:00,15:30,19:30,20:30",
+            "youtube": True,                # also a YouTube Short on the GTA channel (user, 11-14: "our three accounts")
             "post": True,
             "game": "GTA 6",
             "hashtags": "gta6,gtavi,gta,gaming,fyp",
@@ -107,7 +109,7 @@ def credit_for(src: Path) -> str:
     return m.group(1).strip(".") if m else ""
 
 
-SITES = {"twitch": ("twitch.tv/{}", "Twitch"), "youtube": ("youtube.com/@{}", "YouTube")}
+SITES = {"twitch": ("twitch.tv/{}", "Twitch"), "youtube": ("youtube.com/@{}", "YouTube"), "kick": ("kick.com/{}", "Kick")}
 NOTES = (".txt", ".json")               # files that may sit beside a clip: your credit note, the scout's note
 
 
@@ -489,7 +491,7 @@ class ClipService:
                 return ""
             seen = {v.get("key") for v in st["videos"]}
             src = None
-            for f in inbox():
+            for f in sorted(inbox(), key=lambda f: " live-" not in f.name):   # moments from live streams go first: they date fastest
                 if fingerprint(f) in seen:                  # the same clip dropped in again
                     self._set_aside(f, "already posted")
                     continue
@@ -521,6 +523,9 @@ class ClipService:
         from worker import clip_scout
         try:
             scfg = clip_scout.settings()
+            if self.scout.live_due(scfg, st, time.time()):
+                self.scout.live(scfg)
+                st = wv.load_state(STATE)
             if self.scout.due(scfg, st, time.time()):
                 self.scout.run(scfg)
         except Exception as exc:
@@ -542,9 +547,23 @@ class ClipService:
         pcfg = post_settings(cfg)
         tt = self._poster._deliver_tiktok(rec, pcfg)
         ig = self._poster.post_instagram(rec, pcfg) if pcfg["post"] and pcfg.get("instagram") else "off"
-        self._mark(rec, posted=tt == "posted", ig_posted=ig == "posted")
+        yt = "off"
+        if pcfg["post"] and cfg.get("youtube"):                 # a Short on the GTA channel; a miss there never blocks the rest
+            try:
+                from worker import guides
+                tags = [t.lstrip("#") for t in re.findall(r"#\w+", rec["caption"])]
+                link = guides.youtube_upload(dict(rec, title=rec["title"][:90] + " #shorts", tags=tags,
+                                                  description=rec["caption"]), guides.settings(), self.log)
+                rec["youtube"] = link
+                yt = "posted"
+                self.log(f"clips: YouTube Short: {link}")
+            except Exception as exc:
+                yt = "failed"
+                rec.setdefault("_why", {})["youtube"] = str(exc)[:110]
+                self.log(f"clips: the YouTube Short failed: {exc}")
+        self._mark(rec, posted=tt == "posted", ig_posted=ig == "posted", youtube=rec.get("youtube", ""))
         self._poster._text_result(rec, pcfg, tt, ig)
-        if tt == "posted" and ig in ("posted", "off"):      # up everywhere: free the space, clip and source both
+        if tt == "posted" and ig in ("posted", "off") and yt in ("posted", "off"):      # up everywhere: free the space, clip and source both
             Path(rec["path"]).unlink(missing_ok=True)
             src = Path(rec["src"])
             if src.parent == INBOX:

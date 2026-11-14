@@ -133,6 +133,33 @@ class EditTests(unittest.TestCase):
             self.assertEqual(img.crop((0, clips.PICTURE_Y + 5, 1080, clips.PICTURE_Y + clips.PICTURE_H - 5)).getbbox(), None)
 
 
+from worker import clip_scout as cs
+
+
+class LoudTests(unittest.TestCase):
+    def test_loud_moments_are_found_loudest_first_and_kept_apart(self):
+        level = [-40.0 + (i % 3) * .5 for i in range(600)]
+        for i in (200, 201, 202):
+            level[i] = -12.0
+        for i in (220, 221):
+            level[i] = -14.0                                 # the same moment, still echoing
+        for i in (450, 451, 452):
+            level[i] = -18.0
+        self.assertEqual(cs.loud_moments(level, count=3), [(179, 211), (429, 461)])
+        self.assertEqual(cs.loud_moments([-40.0] * 600), [])                 # a calm stream gives nothing
+        self.assertEqual(cs.loud_moments([-40.0] * 20), [])                  # too little to judge
+
+    def test_a_live_recording_is_cut_to_the_segments_that_cover_the_stretch(self):
+        text = "#EXTM3U\n#EXT-X-TARGETDURATION:10\n#EXT-X-MAP:URI=\"init.mp4\"\n" + "".join(f"#EXTINF:10.000,\n{i}.mp4\n" for i in range(10))
+        out, first = cs.cut_playlist(text, "https://x/a/", 25, 41)
+        self.assertEqual(first, 20.0)
+        self.assertEqual([l for l in out.splitlines() if l.startswith("https")], ["https://x/a/2.mp4", "https://x/a/3.mp4", "https://x/a/4.mp4"])
+        self.assertIn('URI="https://x/a/init.mp4"', out)
+        self.assertTrue(out.strip().endswith("#EXT-X-ENDLIST"))
+        with self.assertRaises(RuntimeError):
+            cs.cut_playlist(text, "https://x/a/", 500, 520)
+
+
 class SlotTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
