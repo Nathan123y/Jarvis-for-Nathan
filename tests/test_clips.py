@@ -45,6 +45,14 @@ class PlanTests(unittest.TestCase):
         p = clips.clean_plan(RAW, 60, CFG)
         self.assertTrue(clips.caption_for(p, "kai").startswith("would you bail? (clip: kai on Twitch) #jet"))
         self.assertNotIn("clip:", clips.caption_for(p, ""))
+        self.assertIn("(clip: speed on YouTube)", clips.caption_for(p, "speed", "youtube"))
+
+    def test_the_scouts_note_names_the_source(self):
+        with tempfile.TemporaryDirectory() as d:
+            clip = Path(d) / "@x yt-abc-10.mp4"
+            (Path(d) / "@x yt-abc-10.json").write_text('{"credit": "IShowSpeed", "site": "youtube"}')
+            self.assertEqual(clips.source_for(clip), ("IShowSpeed", "youtube"))
+            self.assertEqual(clips.source_for(Path(d) / "@kai clip.mp4"), ("kai", "twitch"))
 
     def test_probe_reads_ffmpeg(self):
         out = ("  Duration: 00:01:02.50, start: 0.0\n  Stream #0:0[0x1](und): Video: h264 (High), yuv420p(tv), 1920x1080 [SAR 1:1], 60 fps\n"
@@ -112,6 +120,7 @@ class SlotTests(unittest.TestCase):
         for p in self.patches:
             p.start()
         self.svc = clips.ClipService(log=lambda m: None)
+        self.svc._scout = lambda st: None                    # no fetching from the internet in tests
         self.noon = datetime(2026, 11, 19, 11, 5)
 
     def tearDown(self):
@@ -162,6 +171,62 @@ class SlotTests(unittest.TestCase):
             self.assertEqual(self.svc.deliver(rec, dict(CFG)), "posted")
         self.assertFalse(src.exists() or Path(rec["path"]).exists())
         self.assertTrue(clips.wv.load_state(clips.STATE)["videos"][0]["ig_posted"])
+
+
+class ScoutTests(unittest.TestCase):
+    NAMES = ["Grand Theft Auto VI", "GTA 6", "GTA VI", "GTA6"]
+
+    def test_game_names_match_whole_words_only(self):
+        from worker import clip_scout as cs
+        self.assertTrue(cs.is_game("Grand Theft Auto VI", self.NAMES))
+        self.assertTrue(cs.is_game("My first hour in GTA 6!! (crazy)", self.NAMES))
+        self.assertFalse(cs.is_game("Grand Theft Auto V", self.NAMES))
+        self.assertFalse(cs.is_game("GTA 67 leaks", self.NAMES))
+        self.assertFalse(cs.is_game("Just Chatting", self.NAMES))
+
+    def test_twitch_picks_are_new_watched_and_most_watched_first(self):
+        from worker import clip_scout as cs
+        es = [{"id": "1", "url": "u1", "view_count": 500, "duration": 30}, {"id": "2", "url": "u2", "view_count": 9000, "duration": 20},
+              {"id": "3", "url": "u3", "view_count": 90000, "duration": 4}, {"id": "4", "url": "u4", "view_count": 10, "duration": 30},
+              {"id": "5", "url": "u5", "view_count": 7000, "duration": 30}]
+        self.assertEqual([e["id"] for e in cs.twitch_picks(es, {"tw:5"}, 300)], ["2", "1"])
+
+    def test_moments_are_the_replay_peaks_after_the_intro(self):
+        from worker import clip_scout as cs
+        heat = [{"start_time": i * 10.0, "end_time": i * 10.0 + 10, "value": v} for i, v in
+                enumerate([1.0, .9, .2, .2, .2, .2, .2, .2, .2, .2, .3, .8, .7, .2, .2, .2, .2, .2, .2, .2, .2, .2, .2, .2, .2, .2, .2, .2, .2, .6])]
+        self.assertEqual(cs.moments(heat, 300, 2), [(86, 144), (255, 300)])     # the intro peak is left out
+        self.assertEqual(cs.moments([], 300), [])
+
+    def test_geminis_moments_are_kept_inside_the_video(self):
+        from worker import clip_scout as cs
+        raw = {"is_game": True, "moments": [{"start": 100, "end": 400}, {"start": 150, "end": 170}, {"start": 590, "end": 640},
+                                            {"start": 900, "end": 950}, "x"]}
+        self.assertEqual(cs.clean_moments(raw, 600, 3), [(100, 175)])            # too long is trimmed; overlap, tail and out-of-range dropped
+        self.assertEqual(cs.clean_moments(dict(raw, is_game=False), 600, 3), [])
+        self.assertEqual(cs.clean_moments(None, 600, 3), [])
+
+    def test_videos_must_be_the_game_and_not_a_compilation(self):
+        from worker import clip_scout as cs
+        ok = {"title": "I robbed a bank in GTA 6", "duration": 900, "view_count": 80000}
+        skip = ["meme", "compilation"]
+        self.assertTrue(cs.video_ok(ok, self.NAMES, skip, 50000))
+        self.assertFalse(cs.video_ok(dict(ok, title="GTA 6 memes"), self.NAMES, skip, 50000))
+        self.assertFalse(cs.video_ok(dict(ok, title="GTA 5 heist"), self.NAMES, skip, 50000))
+        self.assertFalse(cs.video_ok(dict(ok, view_count=100), self.NAMES, skip, 50000))
+        self.assertFalse(cs.video_ok(dict(ok, live_status="is_live"), self.NAMES, skip, 50000))
+
+    def test_a_full_inbox_fetches_nothing(self):
+        from worker import clip_scout as cs
+        with tempfile.TemporaryDirectory() as d:
+            with patch.object(clips, "STATE", Path(d) / "clips.json"), patch.object(clips, "inbox", lambda **k: [1, 2, 3]), \
+                    patch.object(cs.Scout, "twitch", side_effect=AssertionError), patch.object(cs.Scout, "youtube", side_effect=AssertionError):
+                self.assertEqual(cs.Scout(lambda m: None).run(dict(cs.DEFAULTS, stock=3), now=1000.0), 0)
+                st = clips.wv.load_state(clips.STATE)
+                on = dict(cs.DEFAULTS, start_date="")
+                self.assertFalse(cs.Scout().due(on, st, 1000.0 + 600))
+                self.assertTrue(cs.Scout().due(on, st, 1000.0 + 1801))
+                self.assertFalse(cs.Scout().due(dict(on, start_date="2999-01-01"), st, 1000.0 + 1801))   # not before launch
 
 
 if __name__ == "__main__":

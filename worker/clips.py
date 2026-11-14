@@ -1,8 +1,8 @@
 """Game clips: gameplay clips (GTA 6 at launch) cut into vertical shorts and posted to the videos' TikTok and
 Instagram accounts, in the gaps between the daily "what if" videos (worker/viral.py).
 
-Clips come from one folder, ~/Movies/Jarvis Clips/inbox: anything dropped there (your own gameplay, footage a
-streamer's clipping campaign hands out, clips you saved) is used oldest first, one per time slot.
+Clips come from one folder, ~/Movies/Jarvis Clips/inbox, used oldest first, one per time slot. The scout
+(worker/clip_scout.py) fills it from Twitch and YouTube; anything you drop there yourself is used the same way.
 Name a file "@streamer anything.mp4" (or put the name in a .txt beside it) to credit the streamer on screen.
 
 Each clip:
@@ -105,6 +105,22 @@ def credit_for(src: Path) -> str:
     return m.group(1).strip(".") if m else ""
 
 
+SITES = {"twitch": ("twitch.tv/{}", "Twitch"), "youtube": ("youtube.com/@{}", "YouTube")}
+NOTES = (".txt", ".json")               # files that may sit beside a clip: your credit note, the scout's note
+
+
+def source_for(src: Path) -> tuple[str, str]:
+    """(who to credit, which site) - from the scout's "<clip>.json" when there is one, else credit_for + Twitch."""
+    try:
+        note = json.loads(src.with_suffix(".json").read_text())
+        name = re.sub(r"[^A-Za-z0-9_.]", "", str(note.get("credit") or ""))[:30]
+        if name:
+            return name, note.get("site") if note.get("site") in SITES else "twitch"
+    except (OSError, ValueError, AttributeError):
+        pass
+    return credit_for(src), "twitch"
+
+
 def fingerprint(src: Path) -> str:
     """Size plus a hash of the first megabyte: the same clip dropped in twice is posted once."""
     with open(src, "rb") as f:
@@ -202,8 +218,8 @@ def clean_plan(raw: dict, duration: float, cfg: dict) -> dict:
             "caption": re.sub(r"\s+", " ", str(raw.get("caption") or title)).strip()[:300], "hashtags": tags[:9]}
 
 
-def caption_for(plan: dict, credit: str) -> str:
-    by = f" (clip: {credit} on Twitch)" if credit else ""
+def caption_for(plan: dict, credit: str, site: str = "twitch") -> str:
+    by = f" (clip: {credit} on {SITES[site][1]})" if credit else ""
     return f"{plan['caption']}{by} " + " ".join("#" + t for t in plan["hashtags"])
 
 
@@ -231,7 +247,7 @@ def wrap_title(words: list[str], width_of: Callable[[str], float], max_w: float)
     return lines + ([cur] if cur else [])
 
 
-def overlay(plan: dict, credit: str, out: Path, tall: bool = False) -> Path:
+def overlay(plan: dict, credit: str, out: Path, tall: bool = False, site: str = "twitch") -> Path:
     """The see-through layer over the whole frame: the hook title above the picture (key words yellow) and the
     streamer's credit under it. `tall` = the clip already fills the frame, so the title sits on the footage."""
     from PIL import Image, ImageDraw
@@ -258,7 +274,7 @@ def overlay(plan: dict, credit: str, out: Path, tall: bool = False) -> Path:
         y += line_h
     if credit:
         f2 = _font(SMALL_FONT, 44)
-        text = f"clip: twitch.tv/{credit}"
+        text = "clip: " + SITES[site][0].format(credit)
         tw = d.textlength(text, font=f2)
         cy = PICTURE_Y + PICTURE_H + 26 if not tall else 1440
         d.rounded_rectangle(((W - tw) / 2 - 26, cy, (W + tw) / 2 + 26, cy + 70), radius=35, fill=(0, 0, 0, 170))
@@ -329,13 +345,13 @@ def make(src: Path, cfg: Optional[dict] = None, log: Callable = print, plan_with
     if raw is None:
         raise Busy("Gemini couldn't watch the clip")
     plan = clean_plan(raw, info["duration"], cfg)
-    credit = credit_for(src)
+    credit, site = source_for(src)
     OUT.mkdir(parents=True, exist_ok=True)
     slug = re.sub(r"[^a-z0-9]+", "-", plan["title"].lower()).strip("-")[:50]
     out = OUT / f"{datetime.now():%Y%m%d-%H%M%S}-{slug}.mp4"
     layer, voice_file = out.with_suffix(".png"), out.with_suffix(".wav")
     try:
-        overlay(plan, credit, layer, tall=info["h"] > info["w"])
+        overlay(plan, credit, layer, tall=info["h"] > info["w"], site=site)
         voice = hook_voice(plan["hook"], voice_file, log) if cfg["voice_hook"] and plan["hook"] else None
         voice_s = wav_seconds(voice) if voice else 0
         if voice and voice_s > (plan["end"] - plan["start"]) * .6:   # a line that long would talk over the moment
@@ -347,7 +363,7 @@ def make(src: Path, cfg: Optional[dict] = None, log: Callable = print, plan_with
         layer.unlink(missing_ok=True)
         voice_file.unlink(missing_ok=True)
     log(f"clips: cut \"{plan['title']}\" ({plan['end'] - plan['start']:.0f}s from {src.name})")
-    return {"path": str(out), "title": plan["title"], "caption": caption_for(plan, credit), "credit": credit,
+    return {"path": str(out), "title": plan["title"], "caption": caption_for(plan, credit, site), "credit": credit, "site": site,
             "src": str(src), "key": fingerprint(src), "voiced": bool(voice), "made": time.time()}
 
 
@@ -361,6 +377,8 @@ class ClipService:
         self._stop = threading.Event()
         self._busy = threading.Lock()
         self._poster = wv.ViralService(log, notify)        # the daily videos' own posting, texting and retries
+        from worker.clip_scout import Scout
+        self.scout = Scout(log)
 
     def start(self) -> None:
         threading.Thread(target=self._run, daemon=True, name="game-clips").start()
@@ -381,6 +399,8 @@ class ClipService:
         if not cfg["enabled"] or time.time() < st.get("busy_until", 0) or not self._busy.acquire(blocking=False):
             return ""
         try:
+            self._scout(st)
+            st = wv.load_state(STATE)
             now = now or datetime.now()
             today = now.date().isoformat()
             done = st["slots"].get(today, [])
@@ -416,13 +436,24 @@ class ClipService:
         finally:
             self._busy.release()
 
+    def _scout(self, st: dict) -> None:
+        """Top the inbox up from Twitch and YouTube when it's time (worker/clip_scout.py)."""
+        from worker import clip_scout
+        try:
+            scfg = clip_scout.settings()
+            if self.scout.due(scfg, st, time.time()):
+                self.scout.run(scfg)
+        except Exception as exc:
+            self.log(f"clips: the scout's pass failed: {exc!r}")
+
     def _set_aside(self, src: Path, why: str) -> None:
         SKIPPED.mkdir(parents=True, exist_ok=True)
         try:
             shutil.move(str(src), str(SKIPPED / src.name))
-            note = src.with_suffix(".txt")
-            if note.exists():
-                shutil.move(str(note), str(SKIPPED / note.name))
+            for ext in NOTES:
+                note = src.with_suffix(ext)
+                if note.exists():
+                    shutil.move(str(note), str(SKIPPED / note.name))
         except OSError as exc:
             self.log(f"clips: couldn't move {src.name} aside: {exc}")
         self.log(f"clips: skipped {src.name}: {why}")
@@ -438,7 +469,8 @@ class ClipService:
             src = Path(rec["src"])
             if src.parent == INBOX:
                 src.unlink(missing_ok=True)
-                src.with_suffix(".txt").unlink(missing_ok=True)
+                for ext in NOTES:
+                    src.with_suffix(ext).unlink(missing_ok=True)
         elif Path(rec["src"]).parent == INBOX:              # made (and texted) but not up: never cut it a second time
             self._set_aside(Path(rec["src"]), "made but not posted everywhere")
         return tt
