@@ -72,7 +72,7 @@ DEFAULTS = {"enabled": True,
             "sources": 2,                               # new gameplay videos added to the footage library per day (after launch)
             "footage_search": "{game} gameplay no commentary"}
 WPM = 165                                               # the narrator at speed 1.08
-SHOT = 6.0
+SHOT = 2.5                                              # a new shot every 2-3 s, like the reference list videos (user, 11-14)
 LIB = ROOT / "memory" / "guides_library"                # the footage catalogue (index.json) + downloaded stretches
 LIB_MAX_BYTES = 2_500_000_000                           # the Mac's disk is nearly full: old stretches are dropped past this
 SIZES = {"guide": (1920, 1080), "short": (1080, 1920)}
@@ -94,8 +94,9 @@ def settings() -> dict:
 
 
 # ── 1. the script ────────────────────────────────────────────────────────────
-SCRIPT_PROMPT = """You write long-form YouTube videos for a gaming channel about {game}: clear, fast, useful guides
-and explainers narrated over real gameplay. Today is {today}.
+SCRIPT_PROMPT = """You write long-form YouTube videos for a gaming channel about {game}: fast numbered-list videos
+("15 Things You NEED To Do On Day 1", "10 Details You Missed") narrated by one confident, enthusiastic fan over
+quick-cut footage of the game. They cut to the chase and every item is specific. Today is {today}.
 {when}
 
 {topic_line}
@@ -109,22 +110,28 @@ shorter true script beats a longer padded one.
 
 Then write the script as ONE JSON object and nothing else:
 {{"topic": "the topic in a few words",
- "title": "the YouTube title, under 70 characters: specific, searchable, says what the viewer gets. No ALL CAPS words, no emojis",
+ "title": "the YouTube title, under 70 characters, in the form '{game} - 12 Things You NEED To Do On Day 1': the game's name, the exact count of items, what the viewer gets. One or two words in CAPS for punch, no emojis",
  "thumbnail": "2-4 words for the thumbnail, different from the title",
  "description": "2-3 plain sentences on what the video covers",
  "tags": ["8-12 search phrases"],
  "sections": [
-   {{"heading": "", "say": "THE HOOK, 2-4 sentences: the single most useful or surprising thing in the video, stated
-      straight away, then what the rest covers. No greeting, no 'in this video', no 'welcome back'.",
+   {{"heading": "", "say": "THE HOOK, 3-4 sentences, under 25 seconds: one bold line about the game, the problem
+      the viewer has (too much to do, too much they missed), then the promise with the exact count ('these are the
+      12 things...'). No greeting, no 'welcome back'.",
      "show": "what the footage should show, 3-8 words"}},
-   {{"heading": "a short chapter name, 2-5 words", "say": "this section's narration, 4-9 sentences", "show": "..."}}
+   {{"heading": "1. the item in 2-5 words", "say": "this item's narration, 3-6 sentences (20-40 seconds)", "show": "..."}}
  ],
  "sources": ["the URLs the facts came from"]}}
 
 Rules for the narration ("say"):
-- About {words} words in total across 5-9 sections. Spoken English: short sentences, contractions, no lists read
-  aloud, no "firstly/secondly", numbers written the way they're said.
-- Each section delivers something the viewer can use or repeat; open each with its point, not a wind-up.
+- About {words} words in total: the hook, then {items} numbered items (heading "1. ...", "2. ..." in order), one
+  section each. Fewer items if the facts run out; never pad the count with weak ones. Save the best item for last
+  and say early that it's coming.
+- Spoken English in the first person of a fan who can't wait ("the first thing I'm doing is..."): short
+  sentences, contractions, numbers written the way they're said. Say each item's number out loud ("Number four").
+- Items flow into each other like one plan (get a car, then tune it, then take it to...), not a shuffled list.
+- Each item opens with its point and gives a concrete detail the viewer can use or repeat: a name, a place, a
+  number, how it works.
 - No asking for likes or subscribes until one short line at the very end.
 - "show" describes ordinary gameplay that would exist in any playthrough footage (driving at night, a shootout,
   the map screen, a car garage), not a specific rare moment."""
@@ -272,9 +279,10 @@ def write_script(topic: str, cfg: dict, history: list, ask: Callable = _claude_w
         return clean_short(wv._json_from(text))
     prompt = SCRIPT_PROMPT.format(game=cfg["game"], today=datetime.now().strftime("%B %d, %Y"), when=when_line(cfg),
                                   topic_line=(f"The topic: {topic}" if topic else
-                                              "Pick the topic yourself: search for what players are asking about the game "
-                                              "this week and choose the one question the most people need answered."),
-                                  history="; ".join(history[-25:]) or "none yet", words=int(minutes_for(cfg) * WPM))
+                                              "Pick the topic yourself: search for what players are asking about and excited "
+                                              "for in the game this week and choose the list the most people would click."),
+                                  history="; ".join(history[-25:]) or "none yet", words=int(minutes_for(cfg) * WPM),
+                                  items=max(5, round(minutes_for(cfg) * 60 / 32)))
     text = ask(prompt, effort=cfg["claude_effort"])
     if not text:
         raise Busy("Claude isn't available to write the script")
@@ -949,20 +957,21 @@ def make(topic: str = "", cfg: Optional[dict] = None, log: Callable = print, res
     out = OUT / f"{datetime.now():%Y%m%d-%H%M%S}-{slug}.mp4"
     subs = Path(tempfile.gettempdir()) / f"jarvis-guide-{int(time.time() * 1000)}.ass"
     inputs = ["-f", "concat", "-safe", "0", "-i", str(job / "shots.txt"), "-i", str(voice)]
-    if short:
-        write_ass_short(chunks, [(a, b, s["heading"]) for s, a, b in zip(sections, starts, ends)], subs)
-        bed = job / "music.wav"                                 # a tense, driving bed under the voice
+    bed = job / "music.wav"                                     # a driving bed under the voice, quieter in long videos
+    if True:
         x = wv.music_drive(total, seed=int(time.time()) % 97)
         with wave.open(str(bed), "wb") as w:
             w.setnchannels(1); w.setsampwidth(2); w.setframerate(wv.SR)
             w.writeframes((np.clip(x / max(1e-6, float(np.abs(x).max())), -1, 1) * 32767 * .9).astype("<i2").tobytes())
         inputs += ["-i", str(bed)]
+    if short:
+        write_ass_short(chunks, [(a, b, s["heading"]) for s, a, b in zip(sections, starts, ends)], subs)
         audio = ("[0:a]volume=0.05[g];[1:a]aresample=48000,pan=stereo|c0=c0|c1=c0[n];[2:a]aresample=48000,pan=stereo|c0=c0|c1=c0,volume=0.20[m];"
                  "[g][n][m]amix=inputs=3:duration=shortest:normalize=0,alimiter=limit=0.8[a]")
     else:
         write_ass(chunks, [(t, s["heading"]) for s, t in zip(sections, starts)], subs)
-        audio = ("[0:a]volume=0.10[g];[1:a]aresample=48000,pan=stereo|c0=c0|c1=c0[n];"
-                 "[g][n]amix=inputs=2:duration=shortest:normalize=0,alimiter=limit=0.8[a]")
+        audio = ("[0:a]volume=0.08[g];[1:a]aresample=48000,pan=stereo|c0=c0|c1=c0[n];[2:a]aresample=48000,pan=stereo|c0=c0|c1=c0,volume=0.12[m];"
+                 "[g][n][m]amix=inputs=3:duration=shortest:normalize=0,alimiter=limit=0.8[a]")
     try:
         done = subprocess.run(
             [wv.ffmpeg(), "-loglevel", "error", "-y"] + inputs +
@@ -1020,11 +1029,11 @@ def vertical_copy(job: Path, shots: list, audio_of: dict, sections: list, starts
                            Path(tempfile.gettempdir()) / f"jarvis-guide-tall-{int(time.time() * 1000)}.ass")
     try:
         done = subprocess.run(
-            [wv.ffmpeg(), "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(job / "shots_v.txt"), "-i", str(voice),
-             "-filter_complex", f"[0:v]subtitles=f={subs}:fontsdir=/System/Library/Fonts/Supplemental,format=yuv420p[v];"
-             "[0:a]volume=0.10[g];[1:a]aresample=48000,pan=stereo|c0=c0|c1=c0[n];[g][n]amix=inputs=2:duration=shortest:normalize=0,alimiter=limit=0.8[a]",
-             "-map", "[v]", "-map", "[a]", "-t", f"{total:.2f}", "-c:v", "libx264", "-preset", "medium", "-crf", "23",
-             "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(tall)], capture_output=True, text=True, timeout=7200)
+            [wv.ffmpeg(), "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(job / "shots_v.txt"), "-i", str(out),
+             "-filter_complex", f"[0:v]subtitles=f={subs}:fontsdir=/System/Library/Fonts/Supplemental,format=yuv420p[v]",
+             "-map", "[v]", "-map", "1:a", "-t", f"{total:.2f}", "-c:v", "libx264", "-preset", "medium", "-crf", "23",
+             "-c:a", "copy",                                # the long video's finished sound (voice, game, music)
+             "-movflags", "+faststart", str(tall)], capture_output=True, text=True, timeout=7200)
     finally:
         subs.unlink(missing_ok=True)
     if done.returncode or not tall.exists():

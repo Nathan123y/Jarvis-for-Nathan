@@ -251,7 +251,8 @@ class ScoutTests(unittest.TestCase):
                 on = dict(cs.DEFAULTS, start_date="")
                 self.assertFalse(cs.Scout().due(on, st, 1000.0 + 600))
                 self.assertTrue(cs.Scout().due(on, st, 1000.0 + 1801))
-                self.assertFalse(cs.Scout().due(dict(on, start_date="2999-01-01"), st, 1000.0 + 1801))   # not before launch
+                self.assertFalse(cs.Scout().due(dict(on, start_date="2999-01-01", prelaunch=False), st, 1000.0 + 1801))   # not before launch
+                self.assertTrue(cs.Scout().due(dict(on, start_date="2999-01-01"), st, 1000.0 + 1801))    # ...unless streamers' own videos are wanted
 
 
 if __name__ == "__main__":

@@ -32,6 +32,10 @@ from worker import viral as wv
 NS = "clip_scout"
 DEFAULTS = {"enabled": True,
             "start_date": "2026-11-19",      # launch day: before it, "GTA 6 gameplay" online is fakes and mods
+            # ...so until then only the listed streamers' own videos about the game are clipped (their reactions
+            # to the trailers and the Extended Look, like the user's reference, Fanum's "REACTING TO GTA 6..")
+            "prelaunch": True,
+            "prelaunch_skip": "leak,rumor,news,compilation,meme,gta 5,gta v ",
             "every_min": 30,
             "stock": 6,                      # stop fetching once this many clips wait in the inbox
             # Twitch files clips under the game's exact name; YouTube titles are matched on any of these
@@ -39,7 +43,9 @@ DEFAULTS = {"enabled": True,
             "twitch": ("kaicenat,caseoh_,xqc,jynxzi,summit1g,lirik,shroud,zackrawrr,nmplol,sodapoppin,hasanabi,"
                        "plaqueboymax,agent00,fanum,stableronaldo,lacy,sketch,tarik,forsen,moistcr1tikal,"
                        "timthetatman,nickmercs,cloakzy,ludwig,pokimane"),
-            "youtube": "@IShowSpeed,@TypicalGamer,@TimTheTatman,@jacksepticeye,@Markiplier,@penguinz0,@CaseOh_,@KaiCenatLive",
+            # streamers' YouTube channels (their stream uploads); each handle checked to exist on 11-14
+            "youtube": ("@FanumLive,@KaiCenatLive,@IShowSpeed,@xQcOW,@Agent00,@CaseOh_,@TypicalGamer,@SilkyLive,@jynxzi,"
+                        "@TimTheTatman,@jacksepticeye,@Markiplier"),
             "youtube_search": "gta 6 gameplay",   # also this week's most-watched videos for this search ("" = off)
             "twitch_min_views": 300,              # a day-old clip with a few hundred views is already a hit
             "youtube_min_views": 50000,
@@ -214,9 +220,13 @@ class Scout:
         self.log = log
 
     def due(self, cfg: dict, st: dict, now: float) -> bool:
-        if time.strftime("%Y-%m-%d", time.localtime(now)) < str(cfg.get("start_date") or ""):
+        if self.before_launch(cfg, now) and not cfg.get("prelaunch"):
             return False
         return bool(cfg["enabled"]) and now - st.get("scout_at", 0) >= float(cfg["every_min"]) * 60
+
+    @staticmethod
+    def before_launch(cfg: dict, now: Optional[float] = None) -> bool:
+        return time.strftime("%Y-%m-%d", time.localtime(now or time.time())) < str(cfg.get("start_date") or "")
 
     def run(self, cfg: Optional[dict] = None, now: Optional[float] = None) -> int:
         """Tops the inbox up to `stock` clips. Returns how many it fetched."""
@@ -231,10 +241,12 @@ class Scout:
         seen = set(st.get("scout_seen") or [])
         names = _list(cfg["game_names"])
         got = 0
+        early = self.before_launch(cfg, now)
         try:
-            got += self.twitch(cfg, names, seen, (room + 1) // 2)       # half each, so one site can't crowd out the other
-            got += self.youtube(cfg, names, seen, room - got)
-            if got < room:
+            if not early:
+                got += self.twitch(cfg, names, seen, (room + 1) // 2)   # half each, so one site can't crowd out the other
+            got += self.youtube(cfg, names, seen, room - got, early)
+            if got < room and not early:
                 got += self.twitch(cfg, names, seen, room - got)
         finally:
             st = wv.load_state(clips.STATE)
@@ -277,28 +289,38 @@ class Scout:
                 self.log(f"scout: couldn't fetch the Twitch clip {e['id']} ({str(exc)[:80]})")
         return got
 
-    def youtube(self, cfg: dict, names: list[str], seen: set, room: int) -> int:
+    def youtube(self, cfg: dict, names: list[str], seen: set, room: int, early: bool = False) -> int:
+        """early = before launch: only the listed streamers' own videos about the game (found with each
+        channel's search), reactions included; no site-wide search, where pre-launch "gameplay" is fake."""
         if room <= 0:
             return 0
-        skip = [s.lower() for s in _list(cfg["skip_titles"])]
+        skip = [s.lower() for s in _list(cfg["prelaunch_skip" if early else "skip_titles"])]
         found = {}
-        pages = [(f"https://www.youtube.com/{ch}/videos", 6, 0) for ch in _list(cfg["youtube"])]
-        if cfg["youtube_search"]:                               # uploaded this week, most-watched first, any channel
-            from urllib.parse import quote_plus
+        from urllib.parse import quote_plus
+        if early:
+            pages = [(f"https://www.youtube.com/{ch}/search?query={quote_plus(_list(cfg['game_names'])[-2])}", 12, int(cfg["youtube_min_views"]))
+                     for ch in _list(cfg["youtube"])]
+        else:
+            pages = [(f"https://www.youtube.com/{ch}/videos", 6, 0) for ch in _list(cfg["youtube"])]
+        if cfg["youtube_search"] and not early:                               # uploaded this week, most-watched first, any channel
             pages.append((f"https://www.youtube.com/results?search_query={quote_plus(str(cfg['youtube_search']))}&sp=CAMSBAgDEAE%253D",
                           25, int(cfg["youtube_min_views"])))
         for url, n, min_views in pages:
             try:
-                for e in listing(url, n):
+                rank = 0
+                for e in sorted(listing(url, n), key=lambda e: -(e.get("view_count") or 0)):
                     if e.get("id") and f"yt:{e['id']}" not in seen and video_ok(e, names, skip, min_views):
-                        found[e["id"]] = e
+                        found.setdefault(e["id"], dict(e, _rank=rank if early else 0))
+                        rank += 1
             except Exception as exc:
                 self.log(f"scout: couldn't list {url[24:70]} ({str(exc)[:70]})")
         got, watches = 0, int(cfg["watches_per_pass"])
         game = clips.settings()["game"]
         limit = float(cfg["watch_max_min"]) * 60                # videos Gemini can watch go first: the long ones
         order = sorted(found.values(),                          # only work once YouTube has a replay graph for them
-                       key=lambda e: ((e.get("duration") or 0) > limit, -(e.get("view_count") or 0)))
+                       key=lambda e: ((e.get("duration") or 0) > limit, e.get("_rank", 0), -(e.get("view_count") or 0)))
+        # (before launch _rank is the video's place on its own channel, so every streamer's best goes first
+        # rather than one channel's whole back catalogue)
         for e in order[:12]:
             if got >= room:
                 break
