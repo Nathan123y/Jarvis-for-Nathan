@@ -539,8 +539,8 @@ class Scout:
                     took += 1
                 seen.add(f"yt:{e['id']}")                       # only once it's fetched (or has nothing): a failed
             except Exception as exc:                            # download is tried again next pass
-                if took:                                        # ...unless one moment already came down
-                    seen.add(f"yt:{e['id']}")
+                if took or "confirm your age" in str(exc):      # ...unless one moment already came down, or the
+                    seen.add(f"yt:{e['id']}")                   # video is age-restricted (it never will come down)
                 self.log(f"scout: couldn't fetch from the YouTube video {e['id']} ({str(exc)[:80]})")
         return got
 
