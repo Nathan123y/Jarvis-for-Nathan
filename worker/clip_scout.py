@@ -44,15 +44,17 @@ DEFAULTS = {"enabled": True,
             "live_every_min": 5,
             "live_listen_min": 12,           # how much of the newest stream is listened to per look
             "live_per_look": 2,              # moments taken from one streamer per look
-            "kick": "adinross,xqc,n3on,sweatergxd,konvy,jackdoherty,lospollostv,amouranth,trainwreckstv,iceposeidon",
+            "kick": "xqc,adinross,n3on,sweatergxd,konvy,jackdoherty,lospollostv,amouranth,trainwreckstv,iceposeidon",
             "kick_min_views": 100,
             # Twitch files clips under the game's exact name; YouTube titles are matched on any of these
             "game_names": "Grand Theft Auto VI,Grand Theft Auto 6,GTA VI,GTA 6,GTA6",
-            "twitch": ("kaicenat,caseoh_,xqc,jynxzi,summit1g,lirik,shroud,zackrawrr,nmplol,sodapoppin,hasanabi,"
-                       "plaqueboymax,agent00,fanum,stableronaldo,lacy,sketch,tarik,forsen,moistcr1tikal,"
+            # the user's own picks first (11-14: xQc, Kai Cenat, IShowSpeed, MoistCr1TiKaL, Jynxzi): the lists are
+            # worked in order, so they are watched and clipped before anyone else
+            "twitch": ("xqc,kaicenat,moistcr1tikal,jynxzi,caseoh_,summit1g,lirik,shroud,zackrawrr,nmplol,sodapoppin,hasanabi,"
+                       "plaqueboymax,agent00,fanum,stableronaldo,lacy,sketch,tarik,forsen,"
                        "timthetatman,nickmercs,cloakzy,ludwig,pokimane"),
             # streamers' YouTube channels (their stream uploads); each handle checked to exist on 11-14
-            "youtube": ("@FanumLive,@KaiCenatLive,@IShowSpeed,@xQcOW,@Agent00,@CaseOh_,@TypicalGamer,@SilkyLive,@jynxzi,"
+            "youtube": ("@xQcOW,@KaiCenatLive,@IShowSpeed,@penguinz0,@jynxzi,@FanumLive,@Agent00,@CaseOh_,@TypicalGamer,@SilkyLive,"
                         "@TimTheTatman,@jacksepticeye,@Markiplier"),
             "youtube_search": "gta 6 gameplay",   # also this week's most-watched videos for this search ("" = off)
             "twitch_min_views": 300,              # a day-old clip with a few hundred views is already a hit
