@@ -1203,6 +1203,17 @@ def youtube_edit(video_id: str, description: str = "", thumb: str = "", cfg: Opt
                     notes.append("thumbnail sent")
                 except Exception:
                     notes.append("no thumbnail upload offered (the channel needs phone verification)")
+            draft = pg.get_by_role("button", name="Edit draft")
+            if public and draft.count() and draft.first.is_visible():   # never published: finish its upload dialog
+                draft.first.click(timeout=15000)
+                pg.wait_for_timeout(4000)
+                for _ in range(3):
+                    pg.locator("#next-button").first.click(timeout=30000)
+                    pg.wait_for_timeout(2500)
+                pg.locator("tp-yt-paper-radio-button[name='PUBLIC']").first.click(timeout=30000)
+                _publish(pg, "#done-button", log, wait_min=5)
+                pg.screenshot(path=str(shot))
+                return f"draft published as public (screenshot {shot})"
             if public:
                 pg.locator("ytcp-video-metadata-visibility").first.click(timeout=20000)
                 pg.wait_for_timeout(1500)
