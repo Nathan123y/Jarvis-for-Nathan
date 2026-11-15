@@ -162,7 +162,10 @@ Watch and listen to the attached clip ({duration:.0f} seconds long) and answer w
  "caption": "the post's caption: one short line, lower-key than the title, a question or a take people will answer",
  "hashtags": ["2-4 specific tags without #, e.g. the mission, the vehicle, the glitch"]}}
 
-Only describe what is really in the clip. JSON only."""
+Only describe what is really in the clip. Never call footage "leaked" and never invent a claim about the game:
+if a streamer is watching one of the publisher's official trailers or gameplay showcases, the title is about the
+streamer's reaction or about what the official footage shows. Say ok=false when the clip is about a different game.
+JSON only."""
 
 
 def gemini_plan(src: Path, info: dict, cfg: dict, log: Callable = print) -> Optional[dict]:

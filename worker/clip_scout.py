@@ -35,7 +35,9 @@ DEFAULTS = {"enabled": True,
             # ...so until then only the listed streamers' own videos about the game are clipped (their reactions
             # to the trailers and the Extended Look, like the user's reference, Fanum's "REACTING TO GTA 6..")
             "prelaunch": True,
-            "prelaunch_skip": "leak,rumor,news,compilation,meme,gta 5,gta v ",
+            "prelaunch_skip": "leak,rumor,news,compilation,meme,gta 5,gta v ,better than",
+            # ...and the title must say it's about the official footage ("GTA 6" alone also matched a Warzone video)
+            "prelaunch_need": "react,trailer,extended look,gameplay,release date,first look",
             "every_min": 30,
             "stock": 12,                     # stop fetching once this many clips wait in the inbox
             # LIVE: every few minutes each listed Twitch streamer who is live in the game is listened to through the
@@ -480,6 +482,7 @@ class Scout:
             return 0
         skip = [s.lower() for s in _list(cfg["prelaunch_skip" if early else "skip_titles"])]
         found = {}
+        need = [w.lower() for w in _list(cfg.get("prelaunch_need"))] or [""]
         from urllib.parse import quote_plus
         if early:
             pages = [(f"https://www.youtube.com/{ch}/search?query={quote_plus(_list(cfg['game_names'])[-2])}", 12, int(cfg["youtube_min_views"]))
@@ -493,6 +496,8 @@ class Scout:
             try:
                 rank = 0
                 for e in sorted(listing(url, n), key=lambda e: -(e.get("view_count") or 0)):
+                    if early and not any(w in str(e.get("title") or "").lower() for w in need):
+                        continue
                     if e.get("id") and f"yt:{e['id']}" not in seen and video_ok(e, names, skip, min_views):
                         found.setdefault(e["id"], dict(e, _rank=rank if early else 0))
                         rank += 1
