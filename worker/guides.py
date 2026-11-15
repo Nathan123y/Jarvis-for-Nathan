@@ -1076,6 +1076,29 @@ def youtube_login(wait_s: int = 900) -> bool:
     return False
 
 
+class StillChecking(RuntimeError):
+    """YouTube hadn't finished checking the video, so it is saved as private (not public)."""
+
+
+def _publish(pg, button: str, log: Callable = print, wait_min: float = 25) -> None:
+    """Presses Publish/Save. While YouTube answers "We're still checking your content" (new on 11-14; pressing on
+    risks a strike, and leaving it there saved every video as PRIVATE), goes back and tries again until the
+    checks are done. Raises StillChecking if they never finish."""
+    end = time.time() + wait_min * 60
+    while True:
+        pg.locator(button).first.click(timeout=30000)
+        pg.wait_for_timeout(6000)
+        asking = pg.get_by_text("still checking your content")
+        if not (asking.count() and asking.first.is_visible()):
+            pg.wait_for_timeout(4000)
+            return
+        pg.get_by_role("button", name="Go back").first.click(timeout=15000)
+        if time.time() > end:
+            raise StillChecking(f"YouTube was still checking the video after {wait_min:.0f} minutes: it is saved as private")
+        log("guides: YouTube is still checking the video; waiting to publish")
+        pg.wait_for_timeout(45000)
+
+
 def youtube_upload(rec: dict, cfg: Optional[dict] = None, log: Callable = print, dry_run: bool = False) -> str:
     """Uploads through YouTube Studio. Returns the video's link (or a dry-run note); raises on failure (screenshot kept)."""
     from playwright.sync_api import sync_playwright
@@ -1136,8 +1159,7 @@ def youtube_upload(rec: dict, cfg: Optional[dict] = None, log: Callable = print,
             if dry_run:
                 pg.screenshot(path=str(shot))
                 return f"dry run: ready to publish as {vis.lower()} on channel {want} ({link or 'no link yet'}; screenshot {shot})"
-            pg.locator("#done-button").first.click(timeout=30000)
-            pg.wait_for_timeout(8000)
+            _publish(pg, "#done-button", log)
             pg.screenshot(path=str(shot))
             return link or "posted"
         except Exception:
@@ -1150,8 +1172,10 @@ def youtube_upload(rec: dict, cfg: Optional[dict] = None, log: Callable = print,
             ctx.close()
 
 
-def youtube_edit(video_id: str, description: str = "", thumb: str = "", cfg: Optional[dict] = None, log: Callable = print) -> str:
-    """Changes a posted video's description and/or thumbnail in YouTube Studio. Returns what happened."""
+def youtube_edit(video_id: str, description: str = "", thumb: str = "", cfg: Optional[dict] = None, log: Callable = print,
+                 public: bool = False) -> str:
+    """Changes a posted video's description and/or thumbnail in YouTube Studio, or makes a private one public.
+    Returns what happened."""
     from playwright.sync_api import sync_playwright
     cfg = cfg or settings()
     notes = []
@@ -1179,11 +1203,17 @@ def youtube_edit(video_id: str, description: str = "", thumb: str = "", cfg: Opt
                     notes.append("thumbnail sent")
                 except Exception:
                     notes.append("no thumbnail upload offered (the channel needs phone verification)")
+            if public:
+                pg.locator("ytcp-video-metadata-visibility").first.click(timeout=20000)
+                pg.wait_for_timeout(1500)
+                pg.locator("tp-yt-paper-radio-button[name='PUBLIC']").first.click(timeout=20000)
+                pg.wait_for_timeout(800)
+                pg.locator("ytcp-video-visibility-select #save-button, #save-button").first.click(timeout=15000)
+                notes.append("set to public")
             pg.wait_for_timeout(1500)
             save = pg.locator("#save").first
             if save.get_attribute("disabled") is None and save.get_attribute("aria-disabled") != "true":
-                save.click(timeout=15000)
-                pg.wait_for_timeout(6000)
+                _publish(pg, "#save", log, wait_min=3)
                 notes.append("saved")
             pg.screenshot(path=str(shot), full_page=False)
             return "; ".join(notes) + f" (screenshot {shot})"
