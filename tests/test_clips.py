@@ -220,7 +220,7 @@ class SlotTests(unittest.TestCase):
                 patch.object(self.svc._poster, "post_instagram", return_value="posted"), \
                 patch.object(self.svc._poster, "_text_result"), \
                 patch.object(clips, "post_settings", lambda cfg: dict(cfg, instagram=True)):
-            self.assertEqual(self.svc.deliver(rec, dict(CFG)), "posted")
+            self.assertEqual(self.svc.deliver(rec, dict(CFG, youtube=False)), "posted")   # never a real upload from a test
         self.assertFalse(src.exists() or Path(rec["path"]).exists())
         self.assertTrue(clips.wv.load_state(clips.STATE)["videos"][0]["ig_posted"])
 

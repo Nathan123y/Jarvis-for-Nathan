@@ -50,6 +50,7 @@ DEFAULTS = {"enabled": True,
             # between the other videos' slots; five a day since 11-14 (user: "hundreds of short funny clips" for the
             # GTA content). Hourly posting killed views in early November, so not more on one account
             "times": "11:00,14:00,15:30,19:30,20:30",
+            "tiktok": True,                 # off = the clip skips TikTok (set off 11-15: the account's views were at zero)
             "youtube": True,                # also a YouTube Short on the GTA channel (user, 11-14: "our three accounts")
             "post": True,
             "game": "GTA 6",
@@ -548,7 +549,7 @@ class ClipService:
 
     def deliver(self, rec: dict, cfg: dict) -> str:
         pcfg = post_settings(cfg)
-        tt = self._poster._deliver_tiktok(rec, pcfg)
+        tt = self._poster._deliver_tiktok(rec, pcfg) if cfg.get("tiktok", True) else "off"
         ig = self._poster.post_instagram(rec, pcfg) if pcfg["post"] and pcfg.get("instagram") else "off"
         yt = "off"
         if pcfg["post"] and cfg.get("youtube"):                 # a Short on the GTA channel; a miss there never blocks the rest
@@ -565,8 +566,19 @@ class ClipService:
                 rec.setdefault("_why", {})["youtube"] = str(exc)[:110]
                 self.log(f"clips: the YouTube Short failed: {exc}")
         self._mark(rec, posted=tt == "posted", ig_posted=ig == "posted", youtube=rec.get("youtube", ""))
-        self._poster._text_result(rec, pcfg, tt, ig)
-        if tt == "posted" and ig in ("posted", "off") and yt in ("posted", "off"):      # up everywhere: free the space, clip and source both
+        if pcfg["post"] and not cfg.get("tiktok", True):        # YouTube (and Instagram if it's on): its own short text
+            try:
+                from core import phone_alerts
+                why = rec.get("_why", {})
+                lines = [f"YouTube: ✅ {rec.get('youtube')}" if yt == "posted" else f"YouTube: ❌ {why.get('youtube', yt)}"]
+                if ig != "off":
+                    lines.append("Instagram: ✅" if ig == "posted" else f"Instagram: ❌ {why.get('instagram', ig)}")
+                phone_alerts.send_text(f"🎮 GTA clip: \"{rec['title']}\"\n" + "\n".join(lines))
+            except Exception as exc:
+                self.log(f"clips: couldn't text the post note: {exc}")
+        else:
+            self._poster._text_result(rec, pcfg, tt, ig)
+        if tt in ("posted", "off") and ig in ("posted", "off") and yt in ("posted", "off") and "posted" in (tt, ig, yt):      # up everywhere: free the space, clip and source both
             Path(rec["path"]).unlink(missing_ok=True)
             src = Path(rec["src"])
             if src.parent == INBOX:
@@ -575,7 +587,7 @@ class ClipService:
                     src.with_suffix(ext).unlink(missing_ok=True)
         elif Path(rec["src"]).parent == INBOX:              # made (and texted) but not up: never cut it a second time
             self._set_aside(Path(rec["src"]), "made but not posted everywhere")
-        return tt
+        return tt if tt != "off" else yt
 
     def _mark(self, rec: dict, **fields) -> None:
         st = wv.load_state(STATE)

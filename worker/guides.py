@@ -54,6 +54,7 @@ DEFAULTS = {"enabled": True,
             "launch_date": "2026-11-19",                # before it: official trailers + the Extended Look only
             "time": "16:00",                            # one long video a day
             "short_times": "12:00,17:00,21:00",         # numbered-list shorts (YouTube Shorts + TikTok + Instagram)
+            "tiktok": True,                             # off = Shorts and tall copies skip TikTok (off since 11-15)
             "vertical_copy": True,                      # the long video is also cut tall for TikTok and Instagram, so
                                                         # every account gets it (user, 11-13: "every social media account")
             "official": "@RockstarGames",               # channels whose footage of the game is official
@@ -997,7 +998,7 @@ def make(topic: str = "", cfg: Optional[dict] = None, log: Callable = print, res
         thumbnail(frame, script["thumbnail"], thumb)
         rec["thumb"] = str(thumb)
         rec["description"] = describe(script, starts, credits)
-    if not short and cfg.get("vertical_copy"):
+    if not short and cfg.get("vertical_copy") and (cfg.get("tiktok", True) or wv.settings().get("instagram")):
         try:
             rec["vertical"] = str(vertical_copy(job, shots, audio_of, sections, starts, ends, chunks, voice, total, out))
             tags = " ".join("#" + t for t in dict.fromkeys(["gta6", "gtavi"] + [re.sub(r"[^a-z0-9]", "", t.lower()) for t in script["tags"][:3]] + ["gaming", "fyp"]) if t)
@@ -1341,16 +1342,17 @@ class GuideService:
             link, ok = "", False
             lines.append(f"YouTube: ❌ {str(exc)[:110]}")
         tall = rec if short else dict(rec, path=rec["vertical"]) if rec.get("vertical") and Path(rec["vertical"]).exists() else None
-        if tall:                                                # the Short (or the long video's tall copy) on TikTok and Instagram
-            pcfg = clips.post_settings(dict(cfg, ai_label=False))
-            tt = self._poster._deliver_tiktok(tall, pcfg)
+        pcfg = clips.post_settings(dict(cfg, ai_label=False))
+        if tall and (cfg.get("tiktok", True) or pcfg.get("instagram")):   # the Short (or the tall copy) on TikTok and Instagram
+            tt = self._poster._deliver_tiktok(tall, pcfg) if cfg.get("tiktok", True) else "off"
             ig = self._poster.post_instagram(tall, pcfg) if pcfg.get("instagram") else "off"
             rec.setdefault("_why", {}).update(tall.get("_why", {}))
             why = rec.get("_why", {})
-            lines.append("TikTok: ✅" if tt == "posted" else f"TikTok: ❌ {why.get('tiktok', tt)}")
+            if tt != "off":
+                lines.append("TikTok: ✅" if tt == "posted" else f"TikTok: ❌ {why.get('tiktok', tt)}")
             if ig != "off":
                 lines.append("Instagram: ✅" if ig == "posted" else f"Instagram: ❌ {why.get('instagram', ig)}")
-            ok = ok and tt == "posted" and ig in ("posted", "off")
+            ok = ok and tt in ("posted", "off") and ig in ("posted", "off")
         st = wv.load_state(STATE)
         for v in st["videos"]:
             if v.get("path") == rec["path"]:
