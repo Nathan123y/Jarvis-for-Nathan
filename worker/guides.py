@@ -112,7 +112,7 @@ shorter true script beats a longer padded one.
 Then write the script as ONE JSON object and nothing else:
 {{"topic": "the topic in a few words",
  "title": "the YouTube title, under 70 characters, in the form '{game} - 12 Things You NEED To Do On Day 1': the game's name, the exact count of items, what the viewer gets. One or two words in CAPS for punch, no emojis",
- "thumbnail": "2-4 words for the thumbnail, different from the title",
+ "thumbnail": "2-3 short words for the thumbnail, different from the title; the last word is the punch (e.g. 'WATCH THIS FIRST', 'THIS LOOKS REAL')",
  "description": "2-3 plain sentences on what the video covers",
  "tags": ["8-12 search phrases"],
  "sections": [
@@ -138,30 +138,31 @@ Rules for the narration ("say"):
   the map screen, a car garage), not a specific rare moment."""
 
 
-SHORT_PROMPT = """You write viral numbered-list Shorts about {game} (YouTube Shorts, TikTok, Reels): one fast narrator over
-real footage, about 60 seconds. Today is {today}.
+SHORT_PROMPT = """You write viral Shorts about {game} for YouTube, in the style of the biggest GTA news channels (TGG's
+"The GTA 6 Fuel System Has Another Useful Feature", "GTA 6 Police Will Not Fall for This"): ONE fact per Short, about
+30 seconds, one fast confident narrator over real footage. Today is {today}.
 {when}
 
 {topic_line}
 Shorts already made (pick something different): {history}
 
-RESEARCH FIRST. Use web search. Every item must be true and checkable; say "reportedly" for anything not
-official. Pick the items a fan would repeat to a friend: specific, surprising, concrete. Nothing generic
-("better graphics") and nothing everybody already knows.
+RESEARCH FIRST. Use web search. Pick ONE specific, surprising, checkable thing about the game that a fan would
+repeat to a friend: a single feature, detail, change from the last game, or piece of news. Not a list, nothing
+generic ("better graphics"), nothing everybody already knows. Say "reportedly" for anything not official.
 
 Then write ONE JSON object and nothing else:
 {{"topic": "a few words",
- "title": "the Short's title, under 70 characters, like '5 Crazy Things In GTA 6 You Can't Do In GTA 5'",
- "headline": "the same promise in 4-8 words for the screen",
- "hook": "ONE spoken sentence that says the title's promise outright (e.g. 'Here's five crazy things you can do in GTA 6 that you could never do in GTA 5.')",
- "items": [{{"headline": "2-4 words", "say": "starts 'Number one.' then 2-3 punchy spoken sentences, 22-34 words, explaining exactly what it is and why it's wild", "show": "footage to show, 3-8 words"}}],
- "outro": "one short question to the viewer, then the words 'And in case you missed it...' so the video loops into its start",
- "caption": "the post's caption: one line that makes people comment",
- "hashtags": ["4-6 tags without #"],
+ "title": "the Short's title, under 60 characters: a plain curiosity statement about that one thing, Title Case, no numbers, no emojis, no hashtags (like 'GTA 6 Police Will Not Fall for This')",
+ "headline": "the same idea in 3-5 words for the screen; the LAST two words are the punch (shown in colour)",
+ "hook": "the first spoken sentence, under 14 words: straight into the tension, as if mid-conversation (e.g. 'GTA 6 won't let you just respray a stolen car and walk away.')",
+ "beats": [{{"say": "1-2 spoken sentences, 15-25 words, the next step of explaining it", "show": "footage to show, 3-8 words"}}],
+ "outro": "one short closing line: the payoff or why it matters; no question, no 'follow for more'",
+ "caption": "one short plain sentence about the video",
+ "hashtags": ["1-2 specific tags without #"],
  "sources": ["URLs"]}}
 
-Exactly 5 items unless the topic gives fewer true ones (minimum 3). Spoken English, contractions, no filler, no
-'in this video'. The whole narration is 150-185 words."""
+Exactly 3 beats. Spoken English, contractions, first person where natural ("I think"), no filler, no 'in this
+video'. The whole narration (hook + beats + outro) is 75-100 words."""
 
 
 def _claude_web(prompt: str, timeout_s: float = 1800, effort: str = "medium") -> str:
@@ -227,27 +228,28 @@ def clean_short(raw) -> dict:
     if not isinstance(raw, dict):
         raise ValueError("no script")
     tidy = lambda v: re.sub(r"\s+", " ", str(v or "")).strip()
-    items = [i for i in raw.get("items") or [] if isinstance(i, dict) and tidy(i.get("say"))]
+    listed = not raw.get("beats")                           # the older numbered-list shape is still understood
+    items = [i for i in raw.get("items" if listed else "beats") or [] if isinstance(i, dict) and tidy(i.get("say"))]
     title, hook = tidy(raw.get("title")), tidy(raw.get("hook"))
     if len(items) < 3 or not title or not hook:
         raise ValueError(f"the short's script is too thin ({len(items)} items)")
     sections = [{"heading": (tidy(raw.get("headline")) or title).upper()[:60], "say": hook, "show": tidy(items[0].get("show")) or "gameplay"}]
     for n, it in enumerate(items[:7], 1):
-        sections.append({"heading": f"{n}. {tidy(it.get('headline')).upper()[:28]}", "say": tidy(it["say"]),
+        sections.append({"heading": f"{n}. {tidy(it.get('headline')).upper()[:28]}" if listed else "", "say": tidy(it["say"]),
                          "show": tidy(it.get("show"))[:80] or "gameplay"})
     if tidy(raw.get("outro")):
         sections.append({"heading": "", "say": tidy(raw["outro"]), "show": "the most exciting action"})
     words = sum(len(x["say"].split()) for x in sections)
-    if not 90 <= words <= 260:
-        raise ValueError(f"the short's narration is {words} words, not about a minute")
+    if not 55 <= words <= 260:
+        raise ValueError(f"the short's narration is {words} words, not 30-60 seconds")
     tags, seen = [], set()
-    for t in list(raw.get("hashtags") or []) + ["gta6", "gtavi", "gta", "gaming", "fyp"]:
+    for t in list(raw.get("hashtags") or []) + ["gta6", "gta", "gaming"]:
         t = re.sub(r"[^a-z0-9]", "", str(t).lower())
         if t and t not in seen:
             seen.add(t)
             tags.append(t)
     return {"topic": tidy(raw.get("topic")) or title, "title": title[:90], "thumbnail": "", "description": tidy(raw.get("caption")) or title,
-            "caption": tidy(raw.get("caption")) or title, "hashtags": tags[:9], "tags": tags[:9], "sections": sections,
+            "caption": tidy(raw.get("caption")) or title, "hashtags": tags[:4], "tags": tags[:4], "sections": sections,
             "sources": [str(u)[:300] for u in raw.get("sources") or [] if str(u).startswith("http")][:8]}
 
 
@@ -759,47 +761,51 @@ def write_ass_short(chunks: list[tuple], headings: list[tuple], out: Path) -> Pa
         if not t:
             continue
         m = re.match(r"(\d+\.)\s*(.*)", t)
-        text = f"{{\\c&H0021DEFF&}}{m.group(1)} {{\\c&H00FFFFFF&}}{_safe(m.group(2))}" if m else _safe(t)
+        if m:
+            text = f"{{\\c&H0021DEFF&}}{m.group(1)} {{\\c&H00FFFFFF&}}{_safe(m.group(2))}"
+        else:                                               # the opening headline: its last two words in green
+            w = _safe(t).split()
+            cut = max(1, len(w) - 2)
+            text = " ".join(w[:cut]) + (f" {{\\c&H0014FF39&}}" + " ".join(w[cut:]) if w[cut:] else "")
         lines.append(f"Dialogue: 1,{clips._ass_time(a)},{clips._ass_time(b)},Head,,0,0,0,,{{\\fad(120,0)}}{text}")
     out.write_text(ASS_HEAD.format(w=1080, h=1920, styles=styles) + "\n".join(lines) + "\n")
     return out
 
 
+GREEN = (57, 255, 20, 255)
+
+
 def thumbnail(frame: Path, text: str, out: Path) -> Path:
-    """1280x720: the still, punched up, with 2-4 huge words stacked on the left (yellow and white, heavy black
-    edge) over a dark fade, and a yellow bar down the left side."""
+    """1280x720, in the style of the most-watched GTA 6 videos: the still filling the frame, bright and saturated,
+    with 2-3 huge words across the top (white, the last one green, heavy black edge)."""
     from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
     img = Image.open(frame).convert("RGB")
     w, h = img.size
     side = min(w, int(h * 16 / 9))
     img = img.crop(((w - side) // 2, 0, (w - side) // 2 + side, h)).resize((1280, 720), Image.LANCZOS)
-    img = ImageEnhance.Color(ImageEnhance.Contrast(img).enhance(1.18)).enhance(1.22)
-    img = ImageEnhance.Sharpness(img).enhance(1.6)
-    shade = Image.new("RGBA", (1280, 720), (0, 0, 0, 0))
-    ds = ImageDraw.Draw(shade)
-    for x in range(860):                                    # dark on the left, under the words
-        ds.line([(x, 0), (x, 720)], fill=(0, 0, 0, int(225 * (1 - x / 860) ** 1.2)))
-    img = Image.alpha_composite(img.convert("RGBA"), shade)
-    words = text.upper().split()[:4] or ["GTA 6"]
+    img = ImageEnhance.Brightness(img).enhance(1.06)
+    img = ImageEnhance.Color(ImageEnhance.Contrast(img).enhance(1.2)).enhance(1.5)
+    img = ImageEnhance.Sharpness(img).enhance(1.6).convert("RGBA")
+    words = text.upper().split()[:3] or ["GTA 6"]
     probe = ImageDraw.Draw(img)
-    size = 250
-    while size > 80:
+    size = 190
+    while size > 70:
         f = clips._font(clips.TITLE_FONT, size)
-        if all(probe.textlength(wd, font=f) <= 760 for wd in words) and len(words) * size * 1.0 <= 650:
+        if probe.textlength(" ".join(words), font=f) <= 1190:
             break
-        size -= 8
-    edge = max(10, size // 9)
+        size -= 6
+    edge = max(9, size // 10)
     layer = Image.new("RGBA", (1280, 720), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
-    y = (720 - len(words) * size) / 2 - size * .06
+    x, y, space = (1280 - d.textlength(" ".join(words), font=f)) / 2, 22, d.textlength(" ", font=f)
     for i, wd in enumerate(words):
-        d.text((64, y), wd, font=f, fill=clips.YELLOW if i % 2 == 0 else clips.WHITE, stroke_width=edge, stroke_fill=(0, 0, 0, 255))
-        y += size
-    glow = layer.filter(ImageFilter.GaussianBlur(14))       # a soft dark halo so the words lift off any background
+        d.text((x, y), wd, font=f, fill=GREEN if i == len(words) - 1 and len(words) > 1 else clips.WHITE,
+               stroke_width=edge, stroke_fill=(0, 0, 0, 255))
+        x += d.textlength(wd, font=f) + space
+    glow = layer.filter(ImageFilter.GaussianBlur(16))       # a soft dark halo so the words lift off any background
     dark = Image.new("RGBA", (1280, 720), (0, 0, 0, 0))
-    dark.putalpha(glow.getchannel("A").point(lambda v: min(255, int(v * .8))))
+    dark.putalpha(glow.getchannel("A").point(lambda v: min(255, int(v * .9))))
     img = Image.alpha_composite(Image.alpha_composite(img, dark), layer)
-    ImageDraw.Draw(img).rectangle((0, 0, 22, 720), fill=clips.YELLOW)
     img.convert("RGB").save(out, quality=93)
     return out
 

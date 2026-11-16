@@ -23,7 +23,7 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(p["highlight"], ["jet", "the", "yacht"])
         self.assertEqual(p["hashtags"][:3], ["jet", "gta6", "yachtparty"])
         self.assertEqual(p["hashtags"].count("gta6"), 1)
-        self.assertIn("fyp", p["hashtags"])
+        self.assertLessEqual(len(p["hashtags"]), 4)
 
     def test_window_is_kept_inside_the_clip_and_the_limits(self):
         p = clips.clean_plan(dict(RAW, start=5, end=300), 60, CFG)
@@ -129,7 +129,7 @@ class EditTests(unittest.TestCase):
             self.assertEqual(img.size, (1080, 1920))
             box = img.getbbox()
             self.assertGreaterEqual(box[1], 200)            # under TikTok's top bar
-            self.assertLess(box[3], 1500)                   # above the caption area
+            self.assertLess(box[3], 1700)                   # the credit sits just under the picture
             self.assertEqual(img.crop((0, clips.PICTURE_Y + 5, 1080, clips.PICTURE_Y + clips.PICTURE_H - 5)).getbbox(), None)
 
 

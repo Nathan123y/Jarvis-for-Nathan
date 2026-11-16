@@ -115,7 +115,11 @@ class ShortTests(unittest.TestCase):
         s = g.clean_short(self.RAW)
         self.assertEqual([x["heading"] for x in s["sections"]][:3], ["5 CRAZY THINGS IN GTA 6", "1. SIX STARS", "2. SIX STARS"])
         self.assertEqual(s["sections"][-1]["heading"], "")
-        self.assertEqual(s["hashtags"][:3], ["gta6", "sixstars", "gtavi"])
+        self.assertEqual(s["hashtags"], ["gta6", "sixstars", "gta", "gaming"])
+        one = g.clean_short({"title": "GTA 6 Police Will Not Fall for This", "headline": "cops remember you", "hook": "GTA 6 won't let you respray a stolen car.",
+                             "beats": [{"say": "The cops remember your plates and the colour of the car now. " * 2, "show": "police chase"}] * 3,
+                             "outro": "So ditch the car instead.", "caption": "c", "hashtags": []})
+        self.assertEqual([x["heading"] for x in one["sections"]], ["COPS REMEMBER YOU", "", "", "", ""])
         with self.assertRaises(ValueError):
             g.clean_short(dict(self.RAW, items=self.RAW["items"][:2]))
         with self.assertRaises(ValueError):

@@ -45,7 +45,9 @@ STATE = ROOT / "memory" / "clips.json"
 NS = "game_clips"
 VIDEO = (".mp4", ".mov", ".mkv", ".webm", ".m4v")
 W, H = 1080, 1920
-PICTURE_Y, PICTURE_H = 600, 720         # where a widescreen clip sits in the tall frame
+# where a widescreen clip sits in the tall frame: zoomed in to a square over half the screen (its sides cropped), like the
+# big clip channels; at a third of the screen with dark space around it the Shorts got no views (11-16)
+PICTURE_Y, PICTURE_H = 470, 1080
 DEFAULTS = {"enabled": True,
             # between the other videos' slots; five a day since 11-14 (user: "hundreds of short funny clips" for the
             # GTA content). Hourly posting killed views in early November, so not more on one account
@@ -59,7 +61,7 @@ DEFAULTS = {"enabled": True,
             "youtube": True,                # also a YouTube Short on the GTA channel (user, 11-14: "our three accounts")
             "post": True,
             "game": "GTA 6",
-            "hashtags": "gta6,gtavi,gta,gaming,fyp",
+            "hashtags": "gta6,gta,gaming",          # few tags, like the big channels (a wall of tags reads as spam)
             "min_seconds": 15,
             "max_seconds": 30,              # 15-30 s clips hold viewers best on all three apps
             "captions": True,               # what the streamer says, word by word, in yellow over the picture
@@ -228,7 +230,7 @@ def clean_plan(raw: dict, duration: float, cfg: dict) -> dict:
             tags.append(t)
     return {"start": round(start, 2), "end": round(end, 2), "title": title[:80], "highlight": sorted(words)[:6],
             "hook": re.sub(r"\s+", " ", str(raw.get("hook") or "")).strip()[:200],
-            "caption": re.sub(r"\s+", " ", str(raw.get("caption") or title)).strip()[:300], "hashtags": tags[:9]}
+            "caption": re.sub(r"\s+", " ", str(raw.get("caption") or title)).strip()[:300], "hashtags": tags[:4]}
 
 
 def caption_for(plan: dict, credit: str, site: str = "twitch") -> str:
@@ -267,7 +269,7 @@ def overlay(plan: dict, credit: str, out: Path, tall: bool = False, site: str = 
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     words = plan["title"].upper().split()
-    top, bottom = (230, 560) if not tall else (230, 620)        # clear of TikTok's top bar; ends above the picture
+    top, bottom = (215, PICTURE_Y - 20) if not tall else (230, 620)        # clear of TikTok's top bar; ends above the picture
     size = 132
     while True:                                                  # the biggest size that fits the space
         f = _font(TITLE_FONT, size)
@@ -573,7 +575,7 @@ class ClipService:
             try:
                 from worker import guides
                 tags = [t.lstrip("#") for t in re.findall(r"#\w+", rec["caption"])]
-                link = guides.youtube_upload(dict(rec, title=rec["title"][:90] + " #shorts", tags=tags,
+                link = guides.youtube_upload(dict(rec, title=rec["title"][:95], tags=tags,
                                                   description=rec["caption"]), guides.settings(), self.log)
                 rec["youtube"] = link
                 yt = "posted"
