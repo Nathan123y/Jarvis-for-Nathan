@@ -99,27 +99,13 @@ HYPE = OPTIONSBOTS / "data" / "hype" / "latest.json"
 
 
 def trading_summary(run=subprocess.run) -> Optional[str]:
-    """The day's paper results, options and memecoins, in the bots' own words, plus the best and
-    worst options bot today. None when the bots aren't installed."""
-    if not BOTS.exists():
+    """The day's paper options results from the trade database (optionsbots/scripts/daily_summary.py): every trade with its
+    P&L, the account, open-drive vs its backtest, and why signals were refused. None when the bots aren't installed."""
+    script = OPTIONSBOTS / "scripts" / "daily_summary.py"
+    if not script.exists():
         return None
-    out = run([sys.executable, str(BOTS), "portfolio", "--jarvis"], capture_output=True, text=True, timeout=150)
-    text = " ".join((out.stdout or "").split())
-    from core.away import optionsbots_brief
-    try:
-        trades = (optionsbots_brief().get("today") or {}).get("closed_trades") or []
-    except Exception:
-        trades = []
-    by_bot: dict = {}
-    for t in trades:
-        try:
-            by_bot[t.get("bot_id")] = by_bot.get(t.get("bot_id"), 0.0) + float(t["pnl"])
-        except (KeyError, TypeError, ValueError):
-            pass
-    if len(by_bot) >= 2:
-        best = max(by_bot, key=by_bot.get)
-        worst = min(by_bot, key=by_bot.get)
-        text += f" Best bot: {best} ({by_bot[best]:+,.0f}). Worst: {worst} ({by_bot[worst]:+,.0f})."
+    out = run([sys.executable, str(script)], capture_output=True, text=True, timeout=60)
+    text = (out.stdout or "").strip()
     return text or None
 
 
