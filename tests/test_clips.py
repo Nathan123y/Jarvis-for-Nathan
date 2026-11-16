@@ -159,6 +159,36 @@ class LoudTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             cs.cut_playlist(text, "https://x/a/", 500, 520)
 
+    def test_a_moment_in_a_live_recording_is_placed_in_its_pieces_and_taken_once(self):
+        self.assertEqual(cs.place([20, 19, 20], 0), (0, 0))
+        self.assertEqual(cs.place([20, 19, 20], 25), (1, 5))
+        self.assertEqual(cs.place([20, 19, 20], 39), (2, 0))
+        names = [f"{i:06d}.ts" for i in range(10, 20)]
+        levels = {n: [-40.0 + (i % 3) * .5 for i in range(20)] for n in names}
+        levels[names[5]][3:6] = [-12.0] * 3                  # a scream 4 s into the sixth piece (second 104 of the run)
+        got = cs.tap_moments(names, levels, -1e9, 2)
+        self.assertEqual(got, [(4, 5, 2, 32, 14 * cs.SEG + 2)])              # starts 22 s earlier, in the fifth piece
+        self.assertEqual(cs.tap_moments(names, levels, got[0][4], 2), [])    # not cut a second time on the next look
+
+    def test_a_live_stream_is_recorded_with_its_sound(self):
+        v = lambda h, a="mp4a": {"protocol": "m3u8_native", "height": h, "vcodec": "avc1", "acodec": a, "url": f"v{h}"}
+        self.assertEqual(cs.tap_inputs({"formats": [v(1080), v(720), v(360)]}), ["v720"])
+        sound = {"protocol": "m3u8_native", "vcodec": "none", "acodec": "mp4a", "abr": 128, "url": "snd"}
+        self.assertEqual(cs.tap_inputs({"formats": [v(1080, "none"), v(480, "none"), sound]}), ["v480", "snd"])
+        with self.assertRaises(RuntimeError):
+            cs.tap_inputs({"formats": []})
+
+    def test_live_moments_post_right_away_but_spaced_and_capped(self):
+        now = datetime(2026, 11, 19, 16, 0)
+        cfg = dict(clips.DEFAULTS)
+        self.assertTrue(clips.live_ok(cfg, {}, now))
+        t = now.timestamp()
+        self.assertFalse(clips.live_ok(cfg, {"live_posts": {"2026-11-19": [t - 600]}}, now))
+        self.assertTrue(clips.live_ok(cfg, {"live_posts": {"2026-11-19": [t - 3600]}}, now))
+        self.assertFalse(clips.live_ok(cfg, {"live_posts": {"2026-11-19": [t - 3600 * i for i in range(1, 13)]}}, now))
+        self.assertTrue(clips.live_ok(cfg, {"live_posts": {"2026-11-18": [t - 60]}}, now))
+        self.assertFalse(clips.live_ok(dict(cfg, live_now=False), {}, now))
+
 
 class SlotTests(unittest.TestCase):
     def setUp(self):
@@ -192,6 +222,23 @@ class SlotTests(unittest.TestCase):
             self.assertEqual(deliver.call_count, 1)
             self.assertEqual(self.svc.run_once(datetime(2026, 11, 19, 15, 31)), "empty")   # a.mp4 again: already posted
         self.assertTrue((self.inbox / "skipped" / "a.mp4").exists())
+
+    def test_a_live_moment_posts_between_the_set_times_and_an_ordinary_clip_waits(self):
+        between = datetime(2026, 11, 19, 12, 40)
+        (self.inbox / "a.mp4").write_bytes(b"aaa")
+        with patch.object(clips, "make", side_effect=lambda src, cfg, log: self._rec(src)), \
+                patch.object(self.svc, "deliver", return_value="posted") as deliver:
+            st = clips.wv.load_state(clips.STATE)
+            st["slots"] = {"2026-11-19": ["11:00"]}
+            clips.wv.save_state(st, clips.STATE)
+            self.assertEqual(self.svc.run_once(between), "")                # an ordinary clip waits for its time
+            (self.inbox / "@kai live-1-50.mp4").write_bytes(b"live1")
+            (self.inbox / "@kai live-1-900.mp4").write_bytes(b"live2")
+            self.assertEqual(self.svc.run_once(between), "posted")
+            self.assertEqual(Path(deliver.call_args[0][0]["src"]).name, "@kai live-1-50.mp4")
+            self.assertEqual(self.svc.run_once(datetime(2026, 11, 19, 12, 50)), "")       # the next one is spaced out
+            self.assertEqual(deliver.call_count, 1)
+        self.assertEqual(clips.wv.load_state(clips.STATE)["slots"], {"2026-11-19": ["11:00"]})
 
     def test_empty_inbox_keeps_the_slot_open(self):
         self.assertEqual(self.svc.run_once(self.noon), "empty")

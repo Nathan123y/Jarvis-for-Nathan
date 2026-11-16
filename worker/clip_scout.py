@@ -8,6 +8,11 @@ clip bot's inbox (worker/clips.py), which cuts and posts them.
            A video too new to have that graph is watched by Gemini through its link (up to 40 minutes long),
            which names the best moments; longer ones are looked at again on later passes.
 
+  Live     From launch day, every few minutes: a listed streamer who is live in the game is listened to and the loud
+           moments (screams, laughing) are cut while the stream is still running. Twitch through the stream's own
+           running recording; Kick and YouTube by recording the stream as it goes (the newest minutes only).
+           These "live-" clips are posted first, and straight away (worker/clips.py, live_now).
+
 Each download gets a "<clip>.json" beside it with who to credit and where it came from. Nothing is fetched twice,
 and the scout stops once enough clips are waiting.
 
@@ -15,8 +20,11 @@ and the scout stops once enough clips are waiting.
 """
 from __future__ import annotations
 
+import atexit
 import json
+import os
 import re
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -43,9 +51,12 @@ DEFAULTS = {"enabled": True,
             # LIVE: every few minutes each listed Twitch streamer who is live in the game is listened to through the
             # stream's own running recording; the loudest moments (screams, laughing) are cut out while still live
             "live": True,
-            "live_every_min": 5,
+            "live_every_min": 3,
             "live_listen_min": 12,           # how much of the newest stream is listened to per look
             "live_per_look": 2,              # moments taken from one streamer per look
+            # Kick and YouTube keep no recording to rewind while live, so a streamer live in the game there is recorded
+            # as they go (only the newest minutes are kept on disk) and that recording is listened to the same way
+            "live_taps": 4,                  # how many such streams are recorded at once
             "kick": "xqc,adinross,n3on,sweatergxd,konvy,jackdoherty,lospollostv,amouranth,trainwreckstv,iceposeidon",
             "kick_min_views": 100,
             # Twitch files clips under the game's exact name; YouTube titles are matched on any of these
@@ -302,6 +313,119 @@ def loudness(audio: Path) -> list[float]:
     return [float(v) for v in 20 * np.log10(rms + 1e-5)]
 
 
+# ── live streams with nothing to rewind (Kick, YouTube): record them as they go ──
+SEG = 20                                 # seconds per recorded piece
+LIVE_DIR = clips.INBOX.parent / "live"
+
+
+def tap_inputs(info: dict, height: int = 720) -> list[str]:
+    """The addresses to record a live stream from: the picture nearest `height`, plus the sound when the site
+    sends it separately (YouTube does)."""
+    formats = [f for f in info.get("formats") or [] if "m3u8" in str(f.get("protocol"))]
+    video = sorted([f for f in formats if f.get("height") and f.get("vcodec") != "none"],
+                   key=lambda f: (f["height"] > height, abs(f["height"] - height)))
+    if not video:
+        raise RuntimeError("the stream has no picture to record")
+    urls = [video[0]["url"]]
+    if video[0].get("acodec") == "none":
+        sound = sorted([f for f in formats if f.get("vcodec") == "none" and f.get("acodec") != "none"],
+                       key=lambda f: -(f.get("abr") or f.get("tbr") or 0))
+        if not sound:
+            raise RuntimeError("the stream has no sound to record")
+        urls.append(sound[0]["url"])
+    return urls
+
+
+class Tap:
+    """One live stream being recorded into 20-second pieces."""
+
+    def __init__(self, folder: Path, urls: list[str]):
+        import subprocess
+        self.folder = folder
+        shutil.rmtree(folder, ignore_errors=True)
+        folder.mkdir(parents=True, exist_ok=True)
+        cmd = [wv.ffmpeg(), "-loglevel", "error", "-y"]
+        for u in urls:
+            cmd += ["-i", u]
+        if len(urls) > 1:
+            cmd += ["-map", "0:v:0", "-map", "1:a:0"]
+        cmd += ["-c", "copy", "-f", "segment", "-segment_time", str(SEG), "-segment_format", "mpegts", str(folder / "%06d.ts")]
+        self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.heard = -1e9                # the stream second of the last moment taken
+        self.levels: dict[str, list[float]] = {}
+
+    def alive(self) -> bool:
+        return self.proc.poll() is None
+
+    def pieces(self, keep: int) -> list[Path]:
+        """The finished pieces, oldest first, after deleting all but the newest `keep`."""
+        files = sorted(self.folder.glob("*.ts"))
+        if self.alive():
+            files = files[:-1]           # the last one is still being written
+        for f in files[:-keep] if keep else []:
+            f.unlink(missing_ok=True)
+            self.levels.pop(f.name, None)
+        return files[-keep:] if keep else files
+
+    def stop(self) -> None:
+        try:
+            self.proc.terminate()
+            self.proc.wait(timeout=10)
+        except Exception:
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
+        shutil.rmtree(self.folder, ignore_errors=True)
+
+
+def place(lengths: list[int], i: int) -> tuple[int, int]:
+    """Which piece second `i` of the joined-up loudness falls in, and how far into it. (piece, seconds)."""
+    for k, n in enumerate(lengths):
+        if i < n:
+            return k, i
+        i -= n
+    return len(lengths) - 1, lengths[-1] if lengths else 0
+
+
+def tap_moments(names: list[str], levels: dict, heard: float, count: int) -> list[tuple]:
+    """The loud moments in a run of recorded pieces that weren't taken before.
+    [(first piece, last piece, seconds into the first, length, the stream second it starts at)]."""
+    lengths = [len(levels.get(n) or []) for n in names]
+    spans = loud_moments([v for n in names for v in levels.get(n) or []], count)
+    out = []
+    for a, b in sorted(spans):
+        ka, oa = place(lengths, a)
+        kb, _ = place(lengths, b)
+        at = int(Path(names[ka]).stem) * SEG + oa
+        if at > heard + 30:
+            out.append((ka, kb, oa, b - a, at))
+    return out
+
+
+def tap_cut(files: list[Path], offset: float, length: float, dest: Path) -> Path:
+    import subprocess
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="jarvis-tap-") as tmp:
+        joined = Path(tmp) / "joined.ts"
+        with joined.open("wb") as out:
+            for f in files:
+                out.write(f.read_bytes())
+        done = subprocess.run([wv.ffmpeg(), "-loglevel", "error", "-y", "-ss", f"{offset:.2f}", "-i", str(joined), "-t", f"{length:.2f}",
+                               "-c", "copy", "-movflags", "+faststart", str(dest)], capture_output=True, text=True, timeout=300)
+    if done.returncode or not dest.exists():
+        raise RuntimeError(f"couldn't cut the recording ({done.stderr.strip()[-120:]})")
+    return dest
+
+
+def _running(pid: str) -> bool:
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 def video_ok(e: dict, names: list[str], skip: list[str], min_views: int) -> bool:
     title = e.get("title") or ""
     return (is_game(title, names) and not any(s in title.lower() for s in skip)
@@ -317,6 +441,15 @@ def write_note(clip: Path, credit: str, site: str, url: str, title: str = "") ->
 class Scout:
     def __init__(self, log: Callable[[str], None] = print):
         self.log = log
+        self.taps: dict[str, Tap] = {}
+        for d in LIVE_DIR.iterdir() if LIVE_DIR.is_dir() else []:      # recordings left by a worker that has gone
+            if not _running(d.name):
+                shutil.rmtree(d, ignore_errors=True)
+        atexit.register(self.stop_taps)
+
+    def stop_taps(self) -> None:
+        for key in list(self.taps):
+            self.taps.pop(key).stop()
 
     def due(self, cfg: dict, st: dict, now: float) -> bool:
         if self.before_launch(cfg, now) and not cfg.get("prelaunch"):
@@ -435,6 +568,7 @@ class Scout:
         wv.save_state(st, clips.STATE)
         room = int(cfg["stock"]) * 2 - len(clips.inbox(settle_s=0)) if room is None else room   # live clips may overfill: they're the freshest
         names, got = _list(cfg["game_names"]), 0
+        on_twitch = set()
         clips.INBOX.mkdir(parents=True, exist_ok=True)
         for ch in _list(cfg["twitch"]):
             if got >= room:
@@ -452,6 +586,7 @@ class Scout:
                 chapter = (info.get("chapters") or [{}])[-1]        # what they're playing now
                 if info.get("live_status") != "is_live" or not is_game(chapter.get("title"), names):
                     continue
+                on_twitch.add(ch.lower())
                 vid = str(info.get("id") or vods[0]["id"])
                 start = max(float(heard.get(vid, 0)), length - float(cfg["live_listen_min"]) * 60, float(chapter.get("start_time") or 0))
                 end = length - 20                                   # the last seconds aren't written yet
@@ -473,6 +608,58 @@ class Scout:
         st = wv.load_state(clips.STATE)
         st["live_heard"] = dict(list(heard.items())[-60:])
         wv.save_state(st, clips.STATE)
+        try:
+            got += self.taps_look(cfg, names, room - got, on_twitch)
+        except Exception as exc:
+            self.log(f"scout: the Kick/YouTube live look failed: {exc!r}")
+        return got
+
+    def taps_look(self, cfg: dict, names: list[str], room: int, skip: set = frozenset()) -> int:
+        """One look at the listed Kick and YouTube streamers: whoever is live in the game is recorded from now on
+        (up to `live_taps` at once), and what has been recorded since the last look is listened to for moments."""
+        wanted = [("kick", ch, f"https://kick.com/{ch}") for ch in _list(cfg.get("kick"))] \
+            + [("youtube", h.lstrip("@"), f"https://www.youtube.com/{h}/live") for h in _list(cfg.get("youtube"))]
+        keep, got = max(6, int(float(cfg["live_listen_min"]) * 60 / SEG)), 0
+        for site, ch, url in wanted:
+            key = f"{site}-{ch}"
+            tap = self.taps.get(key)
+            try:
+                info = details(url)                                 # raises when the channel isn't live
+                on = info.get("live_status") == "is_live" and ch.lower() not in skip and (
+                    is_game(info.get("title"), names) or any(is_game(c, names) for c in info.get("categories") or []))
+            except Exception:
+                info, on = {}, False
+            if tap and not (on and tap.alive()):
+                self.taps.pop(key).stop()
+                self.log(f"scout: stopped recording {ch} on {clips.SITES[site][1]}")
+                tap = None
+            if not on:
+                continue
+            if not tap:
+                if len(self.taps) < int(cfg["live_taps"]):
+                    try:
+                        self.taps[key] = Tap(LIVE_DIR / str(os.getpid()) / key, tap_inputs(info))
+                        self.log(f"scout: {ch} is live in the game on {clips.SITES[site][1]}: recording")
+                    except Exception as exc:
+                        self.log(f"scout: couldn't record {ch} on {clips.SITES[site][1]} ({str(exc)[:80]})")
+                continue
+            try:
+                files = tap.pieces(keep)
+                for f in files:
+                    if f.name not in tap.levels:
+                        tap.levels[f.name] = loudness(f)
+                who = info.get("uploader_id") if site == "kick" else ch
+                for ka, kb, off, length, at in tap_moments([f.name for f in files], tap.levels, tap.heard, int(cfg["live_per_look"])):
+                    tap.heard = max(tap.heard, at)
+                    if got >= room:
+                        continue
+                    dest = clips.INBOX / f"@{who or ch} live-{site}{info.get('id') or ''}-{at}.mp4"
+                    tap_cut(files[ka:kb + 1], off, length, dest)
+                    write_note(dest, str(who or ch).lstrip("@"), site, url.removesuffix("/live"), info.get("title") or "")
+                    self.log(f"scout: LIVE moment from {ch} on {clips.SITES[site][1]}")
+                    got += 1
+            except Exception as exc:
+                self.log(f"scout: couldn't listen to {ch} on {clips.SITES[site][1]} ({str(exc)[:80]})")
         return got
 
     def youtube(self, cfg: dict, names: list[str], seen: set, room: int, early: bool = False) -> int:
@@ -553,6 +740,18 @@ def main(argv: list[str]) -> int:
         if "--only" in argv:
             cfg["twitch"] = argv[argv.index("--only") + 1]
         print("live moments:", Scout().live(dict(cfg, start_date=""), room=2))
+        return 0
+    if argv and argv[0] == "tap":                               # record one Kick/YouTube stream and listen: tap kick <channel> [minutes]
+        site, ch = argv[1], argv[2]
+        cfg.update(kick=ch if site == "kick" else "", youtube=ch if site == "youtube" else "", live_per_look=1)
+        sc, names = Scout(), _list(cfg["game_names"])
+        until = time.time() + float(argv[3] if len(argv) > 3 and not argv[3].startswith("-") else 4) * 60
+        got = 0
+        while time.time() < until and not got:
+            got += sc.taps_look(cfg, names, 1)
+            time.sleep(30)
+        sc.stop_taps()
+        print("live moments:", got)
         return 0
     if "--stock" in argv:
         cfg["stock"] = int(argv[argv.index("--stock") + 1])

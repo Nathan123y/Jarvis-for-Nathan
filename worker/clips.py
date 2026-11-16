@@ -51,6 +51,11 @@ DEFAULTS = {"enabled": True,
             # GTA content). Hourly posting killed views in early November, so not more on one account
             "times": "11:00,14:00,15:30,19:30,20:30",
             "tiktok": True,                 # off = the clip skips TikTok (set off 11-15: the account's views were at zero)
+            # a moment caught on a live stream doesn't wait for the next time above: it's cut and posted as soon as
+            # it's in (user, 11-16: "right away clip it"), but spaced out and capped so the account isn't flooded
+            "live_now": True,
+            "live_gap_min": 30,
+            "live_max_day": 12,
             "youtube": True,                # also a YouTube Short on the GTA channel (user, 11-14: "our three accounts")
             "post": True,
             "game": "GTA 6",
@@ -453,6 +458,13 @@ def make(src: Path, cfg: Optional[dict] = None, log: Callable = print, plan_with
             "src": str(src), "key": fingerprint(src), "voiced": bool(voice), "captioned": bool(subs), "made": time.time()}
 
 
+def live_ok(cfg: dict, st: dict, now: datetime) -> bool:
+    """May a live moment be posted right now, outside the set times? Not too soon after the last, not too many a day."""
+    sent = (st.get("live_posts") or {}).get(now.date().isoformat(), [])
+    return (bool(cfg.get("live_now")) and len(sent) < int(cfg["live_max_day"])
+            and (not sent or now.timestamp() - max(sent) >= float(cfg["live_gap_min"]) * 60))
+
+
 # ── 3. the daily slots ───────────────────────────────────────────────────────
 class ClipService:
     PASS_SECONDS = 60
@@ -491,11 +503,14 @@ class ClipService:
             today = now.date().isoformat()
             done = st["slots"].get(today, [])
             due = wv.due_slots(cfg["times"], done, now, late_ok_h=2)
+            waiting = sorted(inbox(), key=lambda f: " live-" not in f.name)   # moments from live streams go first: they date fastest
             if not due:
-                return ""
+                waiting = [f for f in waiting if " live-" in f.name] if live_ok(cfg, st, now) else []
+                if not waiting:
+                    return ""
             seen = {v.get("key") for v in st["videos"]}
             src = None
-            for f in sorted(inbox(), key=lambda f: " live-" not in f.name):   # moments from live streams go first: they date fastest
+            for f in waiting:
                 if fingerprint(f) in seen:                  # the same clip dropped in again
                     self._set_aside(f, "already posted")
                     continue
@@ -516,6 +531,8 @@ class ClipService:
                 return "skipped"                            # the slot stays open: the next pass takes the next clip
             st = wv.load_state(STATE)
             st["slots"] = {today: done + due}               # several due at once = one clip
+            if " live-" in src.name:
+                st["live_posts"] = {today: (st.get("live_posts") or {}).get(today, []) + [now.timestamp()]}
             st["videos"] = (st["videos"] + [rec])[-300:]
             wv.save_state(st, STATE)
             return self.deliver(rec, cfg)
