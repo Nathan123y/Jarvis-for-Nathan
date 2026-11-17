@@ -74,6 +74,10 @@ function softTex() {
 // ── the kit ──────────────────────────────────────────────────────────────────
 export async function boot(data, sceneUrl) {
   await Promise.all([loadHumans(), loadDinos()]);
+  const prints = {};                                    // pictures a scene may print on a shirt: K.person({print: name})
+  for (const [name, url] of Object.entries(data.prints || {})) {
+    prints[name] = await new THREE.TextureLoader().loadAsync(url); prints[name].colorSpace = THREE.SRGBColorSpace;
+  }
   Math.random = mulberry(data.seed || 7);
   const noise = new ImprovedNoise();
   const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, logarithmicDepthBuffer: true });
@@ -101,7 +105,7 @@ export async function boot(data, sceneUrl) {
   const beats = data.beats || [];
   const GLOW = glowTex(), SOFT = softTex();
 
-  const K = {
+  const K = { prints,
     THREE, scene, camera, renderer, bloom, ease, noise, W, H,
     beats, duration: data.duration,
     rand: (a = 0, b = 1) => a + Math.random() * (b - a),
