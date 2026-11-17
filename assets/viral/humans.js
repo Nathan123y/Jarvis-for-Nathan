@@ -89,7 +89,7 @@ function bodyMaterial(src, o) {
     uSleeve: { value: { none: 0, short: 1, long: 2 }[o.sleeves] ?? 1 },
     uPants: { value: new THREE.Color(o.pants ?? 0x2b2b35) }, uLong: { value: o.legs === 'shorts' ? 0 : 1 },
     uShoes: { value: new THREE.Color(o.shoes ?? 0x1c1c1c) }, uGloves: { value: new THREE.Color(o.gloves ?? 0xffffff) }, uGlovesOn: { value: o.gloves ? 1 : 0 },
-    uSkin: { value: new THREE.Color(o.skinTint) }, uPrint: { value: o.number != null ? printTex(o.number, o.numberColor) : null }, uPrintOn: { value: o.number != null ? 1 : 0 },
+    uSkin: { value: new THREE.Color(o.skinTint) }, uPrint: { value: o.printMap || (o.number != null ? printTex(o.number, o.numberColor) : null) }, uPrintOn: { value: o.printMap ? 2 : o.number != null ? 1 : 0 },
     uTrim: { value: new THREE.Color(o.trim ?? o.shirt ?? 0xffffff) },
   };
   m.map = o.skinMap;
@@ -119,10 +119,12 @@ float clothMask; `)
   col = mix(col, uShirt * fold, shirt * (1. - step(.98, pants) * step(vBind.y, .93)));
   col = mix(col, uShoes * (.7 + .3 * fold), shoes);
   col = mix(col, uGloves * fold, gloves);
-  if (uPrintOn > .5 && shirt > .5 && abs(vBind.x) < .15 && vBind.y > 1.08 && vBind.y < 1.40) {
-    vec2 st = vec2((vBind.z > 0. ? vBind.x : -vBind.x) / .30 + .5, (vBind.y - 1.08) / .32);
+  // 1 = a jersey number (front and back); 2 = a product's design: bigger, on the chest only
+  float pw = uPrintOn > 1.5 ? .19 : .15, py = uPrintOn > 1.5 ? 1.0 : 1.08, ph = uPrintOn > 1.5 ? .44 : .32;
+  if (uPrintOn > .5 && shirt > .5 && abs(vBind.x) < pw && vBind.y > py && vBind.y < py + ph && (uPrintOn < 1.5 || vBind.z > 0.)) {
+    vec2 st = vec2((vBind.z > 0. ? vBind.x : -vBind.x) / (2. * pw) + .5, (vBind.y - py) / ph);
     vec4 p = texture2D(uPrint, st);
-    col = mix(col, p.rgb * fold, p.a);
+    col = mix(col, p.rgb * (uPrintOn > 1.5 ? mix(fold, 1., .6) : fold), p.a);    // a product's print stays bright enough to read
   }
   clothMask = max(max(shirt, pants), max(shoes, gloves));
   diffuseColor.rgb = col;
@@ -369,6 +371,7 @@ export function humanKit(K, updaters) {
    * p.aimArm('l'|'r', [x,y,z] world dir, amount) points an arm; p.bone(name) / p.handPos('r') for attaching things.
    */
   K.person = (pos, o = {}) => {
+    if (o.print && K.prints && K.prints[o.print]) o = Object.assign({}, o, { printMap: K.prints[o.print] });
     const { sex, skinMap, skinTint } = dress(o);
     const lib = LIB[sex];
     const root = SkeletonUtils.clone(lib.gltf.scene);

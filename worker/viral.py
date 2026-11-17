@@ -1297,6 +1297,17 @@ the kit draws the yellow word-by-word captions (at 62-68% of the height), the br
 - Bright, clean, saturated daylight look. No fades to black, no slow intros; the first frame already has action.
 - The video ends on the last sentence's shot (the final score card is drawn by the kit); just hold it."""
 
+PRODUCT_RULES = """
+THIS VIDEO SHOWS OFF A REAL SHIRT. The hero wears it in every shot they are in:
+  K.person(pos, {{print: 'product', shirt: {shirt}, sleeves: 'short', ...}}) prints the shop's actual design (it reads
+  "{says}" over a knitted Christmas tree) large on the chest. Only the hero wears it; nobody else has a print or number.
+- The shirt is the star: at least every third shot is the hero from the FRONT, waist-up or closer (camera 2.4-3.5 m
+  in front of them at y 1.35-1.5, looking at the chest, y 1.25; fov 30-38), standing or walking toward the camera, so
+  the words on the chest can be read. The very first shot is one of these.
+- Never cover the chest: no arms crossed over it, no prop, sign or other person in front of it, hero never with
+  their back to the camera for a whole shot. Keep the chest above the captions (which sit at 62-68% of the height).
+- No close-up nearer than 2.2 m (the print blurs)."""
+
 SCENE_PROMPT = """{api}
 
 The video, beat by beat (times in seconds; total {duration}s):
@@ -1517,6 +1528,13 @@ def make(topic: str = "", log: Callable = print, ask: Callable = ask_claude, his
         for i, (d, b, v) in enumerate(zip(data["beats"], script["beats"], voice)):
             d.update(card=b.get("card"), score=b.get("score"),
                      chunks=caption_chunks(b["say"], d["start"], len(v) / SR, d["end"], first=i == 0))
+    product = None
+    if (job / "print_product.png").exists():           # a product video: the hero wears the shop's real design
+        data["prints"] = {"product": "http://stage.local/job/print_product.png"}
+        try:
+            product = json.loads((job / "product.json").read_text())
+        except (OSError, ValueError):
+            product = {}
     (job / "data.json").write_text(json.dumps(data, indent=1))
     btxt = beats_text(script, times)
     api = KIT_API
@@ -1525,6 +1543,8 @@ def make(topic: str = "", log: Callable = print, ask: Callable = ask_claude, his
                      "- The end card covers the last ~2.6 s, so the final shot can simply hold."):
             api = api.replace(line, "")
         api += "\n" + NARRATED_RULES
+    if product is not None:
+        api += "\n" + PRODUCT_RULES.format(shirt=product.get("shirt", "0x16161c"), says=product.get("slogan", ""))
 
     if keep_scene and (job / "scene.js").exists():
         log("viral: keeping the scene that's already written")
