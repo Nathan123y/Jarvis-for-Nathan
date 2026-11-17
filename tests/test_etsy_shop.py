@@ -161,7 +161,8 @@ class ListingTests(_Base):
         self.assertEqual([b["blueprint_id"] for _, _, b in created], [12, 478, 400])
         tee = created[0][2]
         self.assertEqual([v["id"] for v in tee["variants"]], [1])                      # White S only: no XS, no Black
-        self.assertTrue(tee["title"].endswith("T-Shirt"))
+        self.assertIn("T-Shirt", tee["title"])                                         # Etsy: keywords first, then the joke
+        self.assertLessEqual(len(tee["title"]), 140)
         self.assertIn("AI", tee["description"])
         self.assertEqual([v["id"] for v in created[1][2]["variants"]], [10])           # the 11oz mug
         mug = created[1][2]["print_areas"][0]["placeholders"][0]["images"]
@@ -348,7 +349,8 @@ class ListingTests(_Base):
         self.assertTrue(any("on eBay" in d for d in done))
         ebay = [b for m, p, b in c.calls if m == "POST" and p == "shops/5/products.json"]
         self.assertEqual(len(ebay), 3)
-        self.assertTrue(all(len(b["title"]) <= 80 and b["title"].endswith(("T-Shirt", "Mug", "Sticker")) for b in ebay))
+        self.assertTrue(all(len(b["title"]) <= 80 and any(k in b["title"] for k in ("T-Shirt", "Mug", "Sticker"))
+                            and "," not in b["title"] for b in ebay))                 # eBay: plain keywords, no punctuation
         self.assertFalse([p for m, p, b in c.calls if p.startswith("shops/3/")])           # not a sales channel
         rec = ws.load_state(self.dir / "s.json")["designs"][0]
         self.assertEqual(set(rec["channels"]["ebay"]), {"tee", "mug", "sticker"})
@@ -525,6 +527,144 @@ class ListingTests(_Base):
         self.assertEqual(s.new_orders(), ["📦 Your Etsy order (Plant Lover T-Shirt) has shipped: USPS https://t.co/9400."])
         c.orders[0]["status"] = "canceled"                                              # baseline orders update too
         self.assertEqual(s.new_orders(), ["📦 Your Etsy order (Old order) was canceled."])
+
+
+class ShippingClients(FakeClients):
+    """Printify with US postage for the tee, and a listed product that can be read back."""
+
+    def printify(self, method, path, body=None):
+        if path.endswith("/shipping.json"):
+            self.calls.append((method, path, body))
+            return {"profiles": [{"countries": ["US"], "first_item": {"cost": 399}},
+                                 {"countries": ["US"], "first_item": {"cost": 495}},
+                                 {"countries": ["REST_OF_THE_WORLD"], "first_item": {"cost": 1039}}]}
+        if method == "GET" and "/products/" in path:
+            self.calls.append((method, path, body))
+            return {"variants": [{"id": 1, "cost": 1129, "price": 2299, "is_enabled": True},
+                                 {"id": 2, "cost": 1129, "price": 2299, "is_enabled": False}]}
+        return super().printify(method, path, body)
+
+
+class MarketplaceTitleTests(_Base):
+    REC = {"title": "Wienercore Christmas, Funny Dachshund Christmas", "slogan": "WIENERCORE CHRISTMAS", "style": "pet",
+           "tags": ["dachshund christmas", "wiener dog christmas", "dachshund mom gift", "ugly xmas sweater",
+                    "funny christmas shir", "white elephant gift"]}
+
+    def test_etsy_leads_with_what_buyers_search_then_the_joke(self):
+        t = ws.channel_title(self.REC, "T-Shirt", "etsy")
+        self.assertTrue(t.startswith("Dachshund Christmas T-Shirt, Wienercore Christmas, "))
+        self.assertLessEqual(len(t), 140)
+        self.assertNotIn("Shir,", t + ",")                 # a tag cut mid-word at 20 characters stays out
+
+    def test_ebay_is_plain_keywords_with_no_word_twice_outside_the_joke(self):
+        t = ws.channel_title(self.REC, "T-Shirt", "ebay")
+        self.assertLessEqual(len(t), 80)
+        self.assertTrue(t.startswith("Funny Dachshund Christmas T-Shirt Wienercore Christmas"))
+        self.assertNotIn(",", t)
+        tail = t.split("Wienercore Christmas", 1)[1].split()
+        self.assertEqual(len(tail), len(set(tail)))
+
+    def test_tiktok_is_short_joke_first(self):
+        t = ws.channel_title(self.REC, "T-Shirt", "tiktok")
+        self.assertLessEqual(len(t), 80)
+        self.assertTrue(t.startswith("Wienercore Christmas "))
+        self.assertIn("Dachshund Mom Gift", t)
+
+    def test_a_product_named_in_the_search_phrase_is_said_once(self):
+        self.assertTrue(ws.channel_title(self.REC, "Christmas Ornament", "etsy").startswith("Dachshund Christmas Ornament,"))
+        rec = dict(self.REC, style="sweater")
+        self.assertTrue(ws.channel_title(rec, "Ugly Christmas Sweater", "etsy").startswith("Ugly Christmas Sweater, "))
+
+    def test_our_own_shop_keeps_the_designs_title(self):
+        self.assertEqual(ws.channel_title(self.REC, "Mug", "popup"), ws.listing_title(self.REC["title"], "Mug", 140))
+
+    def test_new_listings_get_their_marketplaces_title(self):
+        c = FakeClients(shops=[{"id": 5, "sales_channel": "ebay"}, {"id": 4, "sales_channel": "tiktok"}])
+        s = self.shop(c, tiktok_products=["tee"])
+        s.make_design(only=["tee"])
+        s.list_pending()
+        made = {p: b["title"] for m, p, b in c.calls if m == "POST" and p.endswith("/products.json")}
+        self.assertNotIn(",", made["shops/5/products.json"])
+        self.assertLessEqual(len(made["shops/4/products.json"]), 80)
+        self.assertTrue(made["shops/4/products.json"].startswith("I Promise I Have Enough Plants"))
+
+    def test_listed_products_are_retitled_once_a_few_a_pass(self):
+        c = FakeClients(shops=[{"id": 5, "sales_channel": "ebay"}])
+        s = self.shop(c, retitle_per_pass=1)
+        s.make_design(only=["tee", "mug"])
+        s.list_pending()
+        st = ws.load_state(self.dir / "s.json")
+        for prod in st["designs"][0]["channels"]["ebay"].values():
+            prod.pop("tuned")                              # as listed before marketplace titles existed
+        ws.save_state(st, self.dir / "s.json")
+        svc = ws.ShopService(log=lambda m: None, notify=lambda k, t: None)
+        before = len(c.calls)
+        self.assertEqual(svc.retitle(s), 1)
+        puts = [(p, b) for m, p, b in c.calls[before:] if m == "PUT"]
+        self.assertEqual(len(puts), 1)
+        self.assertEqual(list(puts[0][1]), ["title"])       # the title only: no prices touched without free shipping
+        pub = [b for m, p, b in c.calls[before:] if p.endswith("/publish.json")][0]
+        self.assertTrue(pub["title"])
+        self.assertFalse(pub["images"] or pub["variants"])
+        self.assertEqual(svc.retitle(s), 1)                 # the other product, next pass
+        self.assertEqual(svc.retitle(s), 0)                 # and then nothing is left to do
+
+    def test_tiktok_listings_are_not_retitled_by_default(self):
+        c = FakeClients(shops=[{"id": 4, "sales_channel": "tiktok"}])
+        s = self.shop(c, tiktok_products=["tee"])
+        s.make_design(only=["tee"])
+        s.list_pending()
+        st = ws.load_state(self.dir / "s.json")
+        st["designs"][0]["channels"]["tiktok"]["tee"].pop("tuned")
+        ws.save_state(st, self.dir / "s.json")
+        self.assertEqual(ws.ShopService(log=lambda m: None, notify=lambda k, t: None).retitle(s), 0)
+
+    def test_ebay_free_shipping_puts_the_postage_in_the_price(self):
+        plain = self.shop(FakeClients(shops=[{"id": 5, "sales_channel": "ebay"}]))
+        plain.make_design(only=["tee"])
+        plain.list_pending()
+        base = ws.load_state(self.dir / "s.json")["designs"][0]["channels"]["ebay"]["tee"]["price"]
+        (self.dir / "s.json").unlink()
+        c = ShippingClients(shops=[{"id": 5, "sales_channel": "ebay"}, {"id": 9, "sales_channel": "etsy"}])
+        s = self.shop(c, ebay_free_shipping=True)
+        s.make_design(only=["tee"])
+        s.list_pending()
+        rec = ws.load_state(self.dir / "s.json")["designs"][0]
+        ebay, etsy = ws.products_in(rec, "ebay")["tee"], ws.products_in(rec, "etsy")["tee"]
+        self.assertEqual(ebay["price"], ws.price_for(1129 + 495, ws.PRODUCTS["tee"]["profit"]))   # the dearest US rate
+        self.assertGreater(ebay["price"], base)
+        self.assertEqual(etsy["price"], base)                                      # other shops: unchanged
+        self.assertEqual(ebay["tuned"], f"t{ws.TITLE_V}+ship")
+
+    def test_turning_free_shipping_on_reprices_listed_ebay_products_and_keeps_disabled_variants_off(self):
+        c = ShippingClients(shops=[{"id": 5, "sales_channel": "ebay"}])
+        cfg = {}
+        s = self.shop(c, **cfg)
+        s.make_design(only=["tee"])
+        s.list_pending()
+        s2 = self.shop(c, ebay_free_shipping=True)
+        svc = ws.ShopService(log=lambda m: None, notify=lambda k, t: None)
+        before = len(c.calls)
+        self.assertEqual(svc.retitle(s2), 1)
+        body = [b for m, p, b in c.calls[before:] if m == "PUT"][0]
+        want = ws.price_for(1129 + 495, ws.PRODUCTS["tee"]["profit"])
+        self.assertEqual(body["variants"], [{"id": 1, "price": want, "is_enabled": True},
+                                            {"id": 2, "price": 2299, "is_enabled": False}])
+        self.assertTrue([b for m, p, b in c.calls[before:] if p.endswith("/publish.json")][0]["variants"])
+
+    def test_with_approval_on_etsy_waits_for_the_users_yes_and_the_free_shops_do_not(self):
+        c = FakeClients(shops=[{"id": 9, "sales_channel": "etsy"}, {"id": 5, "sales_channel": "ebay"}])
+        s = self.shop(c, etsy_approval=True)
+        s.make_design(only=["tee"])
+        done = s.list_pending()
+        self.assertTrue(done and all("on eBay" in d for d in done))
+        self.assertEqual(len([t for k, t in self.sent if "waiting for your OK" in t]), 1)
+        self.assertEqual(s.list_pending(), [])              # asked once, not every pass
+        self.assertEqual(len([t for k, t in self.sent if "waiting for your OK" in t]), 1)
+        st = ws.load_state(self.dir / "s.json")
+        st["designs"][0]["approved"] = True
+        ws.save_state(st, self.dir / "s.json")
+        self.assertTrue(any("on Etsy" in d for d in s.list_pending()))
 
 
 class PrintQualityTests(_Base):

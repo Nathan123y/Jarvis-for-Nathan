@@ -23,12 +23,13 @@ PLUGIN = {
         "'what have the shop's agents learned' / 'what's trending for the shop' / 'what's selling' (agents), "
         "'connect Jarvis to Etsy' for the extra listing photos (connect_etsy), and when the user pastes the "
         "localhost address Etsy sent them to (finish_etsy, url=that address). "
-        "Actions: status, make_now, pause, resume, per_day, recent, agents, connect_etsy, finish_etsy."
+        "When the user says to approve or reject the design waiting for Etsy: approve / reject. "
+        "Actions: status, make_now, pause, resume, per_day, recent, agents, connect_etsy, finish_etsy, approve, reject."
     ),
     "parameters": {
         "type": "OBJECT",
         "properties": {
-            "action": {"type": "STRING", "enum": ["status", "make_now", "pause", "resume", "per_day", "recent", "agents", "connect_etsy", "finish_etsy"]},
+            "action": {"type": "STRING", "enum": ["status", "make_now", "pause", "resume", "per_day", "recent", "agents", "connect_etsy", "finish_etsy", "approve", "reject"]},
             "url": {"type": "STRING", "description": "For finish_etsy: the whole https://localhost:3003/callback?... address"},
             "value": {"type": "INTEGER", "description": "For per_day: designs a day (0-5); for make_now: how many new designs (1-20)"},
             "products": {"type": "ARRAY", "items": {"type": "STRING", "enum": ["tee", "hoodie", "mug", "youth_tee", "toddler_tee",
@@ -117,6 +118,19 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
             what = " and ".join(ws.PRODUCTS[k]["name"].lower() + "s" for k in only) or "products"
             return (f"On it: {n} new design{'s' if n != 1 else ''} as {what}, one about every five minutes. "
                     "I'll text you as each one is listed.")
+        if action in ("approve", "reject"):
+            st = ws.load_state()
+            waiting = [d for d in st["designs"] if d.get("approval_asked") and "approved" not in d]
+            if not waiting:
+                return "No design is waiting for your OK."
+            for d in waiting:
+                d["approved"] = action == "approve"
+                if action == "reject":
+                    d["etsy"], d["etsy_kinds"] = False, []
+            ws.save_state(st)
+            names = ", ".join(f'"{ws.slogan_case(d.get("slogan") or d["title"][:40])}"' for d in waiting)
+            return (f"Approved for Etsy: {names}. It lists on the next pass." if action == "approve"
+                    else f"Kept off Etsy: {names}. It stays on the free shops.")
         if action == "agents":
             from worker import shop_agents
             return ("The shop runs itself with four agents: a Trend Scout reads Know Your Meme, Reddit and Bluesky each morning, a "

@@ -263,7 +263,7 @@ CHRISTMAS_ROTATION = NICHE_ROTATION + GIFT_ROTATION
 # Sales channels connected in Printify that designs are listed on. eBay titles stop at 80 characters. The
 # Printify Pop-Up Store charges nothing to list, so it gets every design and comes first on the site's buy links.
 CHANNELS = {"popup": {"name": "our shop", "title_max": 140}, "etsy": {"name": "Etsy", "title_max": 140},
-            "ebay": {"name": "eBay", "title_max": 80}, "tiktok": {"name": "TikTok Shop", "title_max": 140}}
+            "ebay": {"name": "eBay", "title_max": 80}, "tiktok": {"name": "TikTok Shop", "title_max": 80}}
 # TikTok Shop rejects listings that swear (2026-11-08), so designs whose words do stay off it
 PROFANE = re.compile(r"(?<![a-z])(f+u+c+k|sh[i1]t|b[i1]tch|ass(hole)?|damn|dick|cunt|piss|wtf|stfu|bastard)", re.I)
 # Printify renders dozens of product photos but sends Etsy one or two, and only says what they are when the
@@ -309,6 +309,14 @@ DEFAULTS = {"enabled": True, "designs_per_day": 1, "time": "06:00",  # live befo
             "ebay_rotate": False,
             # every daily design riffs on a design that sold, not one in two (2026-11-06, user: focus on what sold)
             "winner_focus": True,
+            # eBay "Free shipping" (2026-11-16): prices carry Printify's US postage. Turn on only together with free
+            # shipping in Printify's eBay settings, or buyers pay postage twice
+            "ebay_free_shipping": False,
+            # the user's OK before a design is listed on Etsy (the one shop that charges per listing); off = automatic
+            "etsy_approval": False,
+            # listed products on these shops get their marketplace's own title, a few a pass (TikTok re-reviews an
+            # edited listing and the shop is on probation, so its live listings are left alone)
+            "retitle_channels": ["ebay", "etsy"], "retitle_per_pass": 6,
             "video_times": ""}                 # e.g. "11:00,15:00,19:00", one video at each; empty = no videos (off: user prefers the photos)
 
 BLOCKED = re.compile(r"(?<![a-z])(" + "|".join([
@@ -358,7 +366,10 @@ Rules, all required:
 - Title: the slogan first, in Title Case, then what buyers type into Etsy search (e.g. "funny sarcastic shirt",
   "meme shirt", "gen z humor"); if the notes above say what the title must lead with, lead with that and put the
   slogan right after. 60-120 characters, no product type (we add "T-Shirt" etc.).
-- Exactly 13 tags, each 20 characters or fewer, lowercase, what buyers search for.
+- Exactly 13 tags, each 20 characters or fewer, lowercase, two or three words each, what buyers type into search.
+  Put the most-searched phrase for this exact design FIRST (it leads the listing titles), e.g. "dachshund christmas",
+  "nurse christmas gift". Mix who it's for (persona), the occasion, the look (aesthetic) and gift phrases; no word
+  in more than three tags, no tag that only reorders another.
 - Don't repeat the theme or joke of these recent designs; pick a different topic: {recent}
 - "niche" names the meme or trend you riffed on, or the topic if none fit.
 
@@ -808,6 +819,79 @@ def listing_title(base: str, product: str, limit: int) -> str:
     if len(base) > room:
         base = base[:room].rsplit(" ", 1)[0].rstrip(" ,-|&")
     return f"{base} {product}"
+
+
+TITLE_V = 2                        # bump when channel_title changes, so listed products get the new title once
+SMALL = {"a", "an", "the", "of", "for", "and", "to", "in", "on", "my", "your", "with", "from", "is", "at"}
+
+
+def _tc(text: str) -> str:
+    """Title Case that keeps I'm / Mom's whole and an acronym as written."""
+    return " ".join(w if w.isupper() and len(w) > 1 and len(text.split()) > 1 and not text.isupper() else w.capitalize()
+                    for w in str(text).split())
+
+
+def _stem(word: str) -> str:
+    w = re.sub(r"[^a-z0-9]", "", word.lower())
+    w = {"xmas": "christmas", "tee": "shirt", "tshirt": "shirt", "tees": "shirt", "shirts": "shirt"}.get(w, w)
+    return w[:-1] if len(w) > 3 and w.endswith("s") and not w.endswith("ss") else w
+
+
+def channel_title(rec: dict, product: str, channel: str) -> str:
+    """One listing title per marketplace, built from what the design already knows (its search tags, its slogan):
+    - Etsy (140): what a buyer types first ("Dachshund Christmas T-Shirt"), then the joke, then more search phrases,
+      comma separated; phrases that add no new word are skipped.
+    - eBay (80): plain keywords, no punctuation, no word twice: eBay's search matches words, and repeats waste room.
+    - TikTok (80): read on a phone in a feed: the joke, the product, one gift phrase.
+    Other channels (our own shop) keep the design's title."""
+    limit = CHANNELS.get(channel, {}).get("title_max", 140)
+    # a 20-character tag from before 2026-11-10 may be cut mid-word ("funny christmas shir"): not title material
+    tags = [t for t in rec.get("tags") or [] if t and len(t) < 20]
+    slogan = slogan_case(rec.get("slogan") or "").rstrip(".!,")
+    if channel not in ("etsy", "ebay", "tiktok") or not tags:
+        return listing_title(rec["title"], product, limit)
+    pwords = {_stem(w) for w in product.split()}
+
+    def without_product(phrase: str) -> str:              # "dachshund christmas" for a Christmas Ornament -> "dachshund"
+        return " ".join(w for w in GARMENT_WORDS.sub(" ", phrase).split() if _stem(w) not in pwords)
+
+    if rec.get("style") == "sweater":
+        lead = without_product("Ugly Christmas Sweater")
+    else:
+        lead = next((x for x in (without_product(t) for t in tags) if x and x.lower() != "funny"), "")
+    head = f"{_tc(lead)} {product}".strip()
+    if channel == "tiktok":
+        limit = min(limit, 80)
+        gift = next((_tc(t) for t in tags if "gift" in t), "")
+        funny = "" if "funny" in gift.lower() else "Funny "
+        base = f"{slogan} {head}" if slogan else head
+        for extra in (f" | {funny}{gift}" if gift else "", f" | {gift}" if gift else "", ""):
+            if len(base + extra) <= limit:
+                return base + extra
+        return listing_title(slogan or rec["title"], product, limit)
+    if channel == "ebay":
+        clean = lambda w: w if w in product.split() else re.sub(r"[^A-Za-z0-9'&-]", "", w)
+        first = [w for w in (clean(x) for x in f"{head} {slogan}".split()) if w]     # the product and the joke, word for word
+        if "funny" not in {w.lower() for w in first}:
+            first = ["Funny"] + first
+        title = " ".join(first)
+        if len(title) > limit:
+            return listing_title(slogan or rec["title"], product, limit)
+        seen = {_stem(w) for w in first}
+        for tag in tags:                                   # then each search phrase's new words, whole or not at all
+            new = [w.capitalize() for w in tag.split() if _stem(w) not in seen and w not in SMALL and len(w) > 2]
+            if new and len(new) == len({_stem(w) for w in new}) and len(f"{title} {' '.join(new)}") <= limit:
+                title += " " + " ".join(new)
+                seen |= {_stem(w) for w in new}
+        return title
+    parts, seen = [head], {_stem(w) for w in head.split()}
+    for phrase in ([slogan] if slogan else []) + [_tc(t) for t in tags]:
+        new = {_stem(w) for w in phrase.split() if w.lower() not in SMALL} - seen
+        if not new or len(", ".join(parts + [phrase])) > limit:
+            continue
+        parts.append(phrase)
+        seen |= new
+    return ", ".join(parts)
 
 
 def products_in(rec: dict, channel: str) -> dict:
@@ -1266,7 +1350,8 @@ class Shop:
             ups[key] = up["id"]
         return ups[key], size
 
-    def create(self, rec: dict, kind: str, shop_id: int, image_id: str, title_max: int = 140) -> dict:
+    def create(self, rec: dict, kind: str, shop_id: int, image_id: str, title_max: int = 140,
+               channel: str = "") -> dict:
         p = PRODUCTS[kind]
         ids, (pw, ph) = self.variants(kind)
         art_size = rec["size"]
@@ -1275,20 +1360,71 @@ class Shop:
         if p.get("art") in ("tile", "backdrop"):
             image_id, art_size = self.upload_sheet(rec, p["art"], (pw, ph))
         if p.get("art") == "sweater":
-            return self.create_sweater(rec, kind, shop_id, ids, title_max)
-        body = {"title": listing_title(rec["title"], p["name"], title_max),
+            return self.create_sweater(rec, kind, shop_id, ids, title_max, channel)
+        body = {"title": channel_title(rec, p["name"], channel) if channel else listing_title(rec["title"], p["name"], title_max),
                 "description": listing_text(rec, self.facts(kind)), "tags": rec["tags"], "blueprint_id": p["blueprint"],
                 "print_provider_id": p["provider"],
                 "variants": [{"id": i, "price": 2999, "is_enabled": True} for i in ids],
                 "print_areas": self.print_areas(rec, kind, image_id, art_size)}
         product = self.c.printify("POST", f"shops/{shop_id}/products.json", body)
         extra = self.save_photos(rec, kind, product.get("images") or [])
-        priced = [{"id": v["id"], "price": price_for(int(v.get("cost") or 0), p["profit"]), "is_enabled": True}
-                  for v in product.get("variants") or [] if v["id"] in ids]
+        priced = self.priced(kind, product, ids, channel)
         if priced and all(v.get("cost") for v in product["variants"] if v["id"] in ids):
             self.c.printify("PUT", f"shops/{shop_id}/products/{product['id']}.json", {"variants": priced})
         return {"id": product["id"], "shop": shop_id, "price": min((v["price"] for v in priced), default=2999),
-                "published": False, "extra_photos": extra, "art": variant_key(rec, kind) or "main"}
+                "published": False, "extra_photos": extra, "art": variant_key(rec, kind) or "main",
+                "tuned": self.tune_mark(channel)}
+
+    def shipping_cents(self, kind: str) -> int:
+        """What Printify charges to ship one of these inside the US (its dearest US rate, so the margin holds)."""
+        cache = self.__dict__.setdefault("_ship", {})
+        if kind not in cache:
+            p = PRODUCTS[kind]
+            got = self.c.printify("GET", f"catalog/blueprints/{p['blueprint']}/print_providers/{p['provider']}/shipping.json") or {}
+            us = [int((x.get("first_item") or {}).get("cost") or 0) for x in got.get("profiles") or []
+                  if "US" in (x.get("countries") or [])]
+            if not us:
+                raise RuntimeError(f"Printify gave no US shipping cost for the {p['name']}")
+            cache[kind] = max(us)
+        return cache[kind]
+
+    def free_shipping(self, channel: str) -> bool:
+        """eBay with free shipping: the listing says "Free shipping" and the price carries the postage."""
+        return channel == "ebay" and bool(self.cfg().get("ebay_free_shipping"))
+
+    def tune_mark(self, channel: str) -> str:
+        """What a listed product's title and price were last made with; a different mark = due for an update."""
+        return f"t{TITLE_V}" + ("+ship" if self.free_shipping(channel) else "")
+
+    def priced(self, kind: str, product: dict, ids, channel: str = "") -> list:
+        ship = self.shipping_cents(kind) if self.free_shipping(channel) else 0
+        return [{"id": v["id"], "price": price_for(int(v.get("cost") or 0) + ship, PRODUCTS[kind]["profit"]),
+                 "is_enabled": True}
+                for v in product.get("variants") or [] if v["id"] in ids and v.get("cost")] if ship else \
+            [{"id": v["id"], "price": price_for(int(v.get("cost") or 0), PRODUCTS[kind]["profit"]), "is_enabled": True}
+             for v in product.get("variants") or [] if v["id"] in ids]
+
+    def tune(self, rec: dict, kind: str, prod: dict, channel: str) -> str:
+        """Give one listed product the title written for its marketplace (and, on eBay with free shipping, prices that
+        carry the postage), then push just those to the live listing. Returns the new title."""
+        path = f"shops/{prod['shop']}/products/{prod['id']}.json"
+        title = channel_title(rec, PRODUCTS[kind]["name"], channel)
+        body = {"title": title}
+        if self.free_shipping(channel):
+            live = self.c.printify("GET", path) or {}
+            on = [v["id"] for v in live.get("variants") or [] if v.get("is_enabled")]
+            priced = self.priced(kind, live, on, channel)
+            if priced:
+                body["variants"] = priced + [{"id": v["id"], "price": v["price"], "is_enabled": False}
+                                             for v in live.get("variants") or [] if not v.get("is_enabled")]
+                prod["price"] = min(v["price"] for v in priced)
+        self.c.printify("PUT", path, body)
+        if prod.get("published"):
+            self.c.printify("POST", f"shops/{prod['shop']}/products/{prod['id']}/publish.json",
+                            {"title": True, "description": False, "images": False, "variants": "variants" in body,
+                             "tags": False, "keyFeatures": False, "shipping_template": False})
+        prod["tuned"] = self.tune_mark(channel)
+        return title
 
     def print_areas(self, rec: dict, kind: str, image_id: str, art_size) -> list:
         """A product's print areas: the design placed in each shape of area its variants have (one for most; a round
@@ -1335,7 +1471,7 @@ class Shop:
         with Image.open(rec["file"]) as art:
             return art.convert("RGBA")
 
-    def create_sweater(self, rec: dict, kind: str, shop_id: int, ids: list, title_max: int) -> dict:
+    def create_sweater(self, rec: dict, kind: str, shop_id: int, ids: list, title_max: int, channel: str = "") -> dict:
         """The all-over-print sweater: every panel (front, back, sleeves, cuffs, collar, waistband) is its own image."""
         from PIL import Image
         from worker import sweater
@@ -1362,12 +1498,11 @@ class Shop:
                 "print_areas": [{"variant_ids": ids, "placeholders": holders}]}
         product = self.c.printify("POST", f"shops/{shop_id}/products.json", body)
         extra = self.save_photos(rec, kind, product.get("images") or [])
-        priced = [{"id": v["id"], "price": price_for(int(v.get("cost") or 0), p["profit"]), "is_enabled": True}
-                  for v in product.get("variants") or [] if v["id"] in ids]
+        priced = self.priced(kind, product, ids, channel)
         if priced and all(v.get("cost") for v in product["variants"] if v["id"] in ids):
             self.c.printify("PUT", f"shops/{shop_id}/products/{product['id']}.json", {"variants": priced})
         return {"id": product["id"], "shop": shop_id, "price": min((v["price"] for v in priced), default=5999),
-                "published": False, "extra_photos": extra, "art": "main"}
+                "published": False, "extra_photos": extra, "art": "main", "tuned": self.tune_mark(channel)}
 
     def save_photos(self, rec: dict, kind: str, images: list) -> list:
         """Download the chosen extra photos (of the first variant) to memory/etsy_shop/photos/, plus the
@@ -1499,6 +1634,15 @@ class Shop:
                         picks = [k for k in (cfg.get("etsy_products") or kinds) if k in kinds]
                         rec["etsy_kinds"] = live or (picks[:cfg.get("etsy_per_design", 3)] if self.on_etsy(rec, st) else [])
                     kinds = [k for k in kinds if k in live or k in rec["etsy_kinds"]]
+                    if cfg.get("etsy_approval") and not live and rec["etsy_kinds"] and not rec.get("approved"):
+                        if not rec.get("approval_asked"):   # Etsy charges per listing: this one waits for the user's yes
+                            rec["approval_asked"] = self.clock()
+                            self.notify("shop", f"🛍️ New design waiting for your OK before it goes on Etsy ($0.20 a "
+                                                f"listing): \"{slogan_case(rec.get('slogan') or rec['title'][:40])}\". "
+                                                "Tell Jarvis \"approve the design\" or \"reject the design\". "
+                                                "It's already on the free shops.")
+                            save_state(st, self.state_path)
+                        continue
                 if channel == "tiktok":
                     kinds = [k for k in kinds if k in cfg["tiktok_products"]]
                 for kind in kinds:
@@ -1526,7 +1670,7 @@ class Shop:
                         if prod is None or prod.get("shop") != shop["id"]:
                             rec["upload_id"] = self.upload(rec)
                             prod = listed[kind] = self.create(rec, kind, shop["id"], rec["upload_id"],
-                                                              CHANNELS[channel]["title_max"])
+                                                              CHANNELS[channel]["title_max"], channel)
                             save_state(st, self.state_path)
                         if not prod["published"]:
                             self.publish(prod)
@@ -1717,6 +1861,7 @@ class ShopService:
             self.notify("shop", "🛍️ Just listed: " + "; ".join(listed[:6]) +
                         (f"; and {len(listed) - 6} more" if len(listed) > 6 else "") + ".")
         self.repair_art(shop)
+        self.retitle(shop)
         for line in shop.new_orders():
             self.notify("shop", line)
         self.storefront(shop, today, force=bool(listed))
@@ -1750,6 +1895,33 @@ class ShopService:
                     except Exception as exc:
                         prod["art"] = "unfixed"
                         self.log(f"shop: couldn't redraw {rec.get('id')} {kind} on {channel}: {str(exc)[:400]}")
+                    save_state(st, shop.state_path)
+        return n
+
+    def retitle(self, shop: "Shop") -> int:
+        """Listed products whose title (or eBay price) was made the old way get their marketplace's own, a few a pass,
+        designs that sold and their spin-offs first, then newest. One that fails waits six hours."""
+        cfg = shop.cfg()
+        limit, n = int(cfg.get("retitle_per_pass", 6)), 0
+        st = load_state(shop.state_path)
+        sold = {i for x in st.get("sales_log") or [] for i in x.get("designs") or []}
+        order = sorted(st["designs"], key=lambda d: (not (d.get("id") in sold or d.get("spinoff_of") in sold), -d.get("made", 0)))
+        for rec in order:
+            for channel in cfg.get("retitle_channels") or []:
+                for kind, prod in products_in(rec, channel).items():
+                    if n >= limit:
+                        return n
+                    if kind not in PRODUCTS or not prod.get("id") or not prod.get("published") \
+                            or prod.get("tuned") == shop.tune_mark(channel) \
+                            or shop.clock() - prod.get("tune_tried", 0) < self.REPAIR_RETRY:
+                        continue
+                    n += 1
+                    prod["tune_tried"] = shop.clock()
+                    try:
+                        title = shop.tune(rec, kind, prod, channel)
+                        self.log(f"shop: retitled on {CHANNELS[channel]['name']}: {title}")
+                    except Exception as exc:
+                        self.log(f"shop: couldn't retitle {rec.get('id')} {kind} on {channel}: {str(exc)[:300]}")
                     save_state(st, shop.state_path)
         return n
 
