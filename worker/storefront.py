@@ -196,9 +196,60 @@ def _product_page(rec: dict, prod: dict, out_dir: Path, url: str, cfg: dict, whe
         _page(f"{title} | {cfg['name']}", body, cfg, desc, url + local[0]).replace(
             'href="feed.xml"', 'href="../feed.xml"').replace('href="./"', 'href="../"'))
     page = f"{url}p/{slug}.html"
+    pin = f"img/{slug}-pin.jpg"                           # the Pin's picture: tall, with the joke on it
+    if not ((out_dir / pin).exists() or pin_image(out_dir / local[0], rec.get("slogan", ""), name, out_dir / pin,
+                                                  rec.get("season", ""))):
+        pin = local[0]
     return (f"<item><title>{_e(title)}</title><link>{page}</link><guid>{page}</guid><pubDate>{when}</pubDate>"
             f"<description>{_e(desc)}</description>"
-            f'<enclosure url="{url}{local[0]}" type="image/jpeg" length="0"/></item>')
+            f'<enclosure url="{url}{pin}" type="image/jpeg" length="0"/></item>')
+
+
+PIN_SIZE = (1000, 1500)                    # Pinterest's own recommended 2:3: tall Pins fill a phone's feed column,
+                                           # a square product photo gets about a third less room and no words
+
+
+def pin_image(photo: Path, slogan: str, product: str, out: Path, season: str = "") -> bool:
+    """A tall Pin for one product: the joke in big letters, the product photo, what it is. False if it can't be drawn."""
+    try:
+        from PIL import Image, ImageDraw
+        from worker import lettering
+        w, h = PIN_SIZE
+        band, ink, accent = ((122, 22, 28), (250, 243, 226), (246, 201, 76)) if season == "christmas" else \
+            ((24, 32, 48), (250, 243, 226), (246, 201, 76))
+        pin = Image.new("RGB", (w, h), band)
+        shot = Image.open(photo).convert("RGB").resize((w, w))
+        top = 300
+        pin.paste(shot, (0, top))
+        d = ImageDraw.Draw(pin)
+
+        def fit(text, face, box_w, box_h, start):
+            size = start
+            while size > 24:
+                f = lettering.font(face, size)
+                l, t, r, b = d.textbbox((0, 0), text, font=f)
+                if r - l <= box_w and b - t <= box_h:
+                    return f, (l, t, r, b)
+                size -= 4
+            return f, (l, t, r, b)
+
+        words = (slogan or product).upper().split()
+        lines = [" ".join(words)] if len(words) <= 3 else [" ".join(words[:(len(words) + 1) // 2]),
+                                                             " ".join(words[(len(words) + 1) // 2:])]
+        each = (top - 60) // len(lines)
+        for n, line in enumerate(lines):
+            f, (l, t, r, b) = fit(line, "block", w - 100, each - 16, 170)
+            d.text(((w - (r - l)) / 2 - l, 30 + n * each + (each - (b - t)) / 2 - t), line, font=f, fill=ink)
+        foot = top + w
+        f, (l, t, r, b) = fit(f"FUNNY {product.upper()}", "heavy", w - 120, 80, 76)
+        d.text(((w - (r - l)) / 2 - l, foot + 34 - t), f"FUNNY {product.upper()}", font=f, fill=accent)
+        f, (l, t, r, b) = fit("tap to see sizes and colours", "heavy", w - 200, 46, 44)
+        d.text(((w - (r - l)) / 2 - l, foot + 128 - t), "tap to see sizes and colours", font=f, fill=ink)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        pin.save(out, "JPEG", quality=88)
+        return True
+    except Exception:
+        return False
 
 
 def _git(*args: str, cwd: Path = REPO_DIR, timeout: float = 120) -> subprocess.CompletedProcess:
