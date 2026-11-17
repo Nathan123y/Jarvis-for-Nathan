@@ -194,6 +194,29 @@ def _claude_web(prompt: str, timeout_s: float = 1800, effort: str = "medium") ->
     return result
 
 
+def _gemini_web(prompt: str, effort: str = "medium") -> str:
+    """The same turn on Gemini with Google Search, for when Claude's usage limit is used up (free, so a slot
+    still gets a video instead of being skipped). "" on failure."""
+    from core import gemini
+    from google.genai import types
+    cfg = types.GenerateContentConfig(tools=[types.Tool(google_search=types.GoogleSearch())])
+    c = gemini.client(timeout_ms=300000)                    # kept in a name: a dropped client closes itself
+    for model in ("gemini-3.5-flash", "gemini-3.5-flash-lite"):
+        try:
+            r = c.models.generate_content(model=model, contents=prompt, config=cfg)
+            if (r.text or "").strip():
+                return r.text.strip()
+            print(f"[guides] {model}: empty answer")
+        except Exception as exc:
+            print(f"[guides] {model}: {str(exc)[:120]}")
+    return ""
+
+
+def _write(prompt: str, effort: str) -> str:
+    """Claude first; Gemini when Claude can't (usage limit, timeout)."""
+    return _claude_web(prompt, effort=effort) or _gemini_web(prompt, effort)
+
+
 def clean_script(raw, minutes: float) -> dict:
     """Claude's script made safe to build from. Raises ValueError when there isn't a usable script in it."""
     if not isinstance(raw, dict):
@@ -271,14 +294,14 @@ def minutes_for(cfg: dict, today: Optional[str] = None) -> float:
     return float(cfg["minutes_prelaunch"] if before and cfg.get("minutes_prelaunch") else cfg["minutes"])
 
 
-def write_script(topic: str, cfg: dict, history: list, ask: Callable = _claude_web, kind: str = "guide") -> dict:
+def write_script(topic: str, cfg: dict, history: list, ask: Callable = _write, kind: str = "guide") -> dict:
     if kind == "short":
         prompt = SHORT_PROMPT.format(game=cfg["game"], today=datetime.now().strftime("%B %d, %Y"), when=when_line(cfg),
                                      topic_line=(f"The topic: {topic}" if topic else "Pick the topic yourself: the list fans would most want to see this week."),
                                      history="; ".join(history[-40:]) or "none yet")
         text = ask(prompt, effort=cfg["claude_effort"])
         if not text:
-            raise Busy("Claude isn't available to write the script")
+            raise Busy("neither Claude nor Gemini could write the script")
         return clean_short(wv._json_from(text))
     prompt = SCRIPT_PROMPT.format(game=cfg["game"], today=datetime.now().strftime("%B %d, %Y"), when=when_line(cfg),
                                   topic_line=(f"The topic: {topic}" if topic else
@@ -288,7 +311,7 @@ def write_script(topic: str, cfg: dict, history: list, ask: Callable = _claude_w
                                   items=max(5, round(minutes_for(cfg) * 60 / 32)))
     text = ask(prompt, effort=cfg["claude_effort"])
     if not text:
-        raise Busy("Claude isn't available to write the script")
+        raise Busy("neither Claude nor Gemini could write the script")
     return clean_script(wv._json_from(text), minutes_for(cfg))
 
 
@@ -729,6 +752,31 @@ def shot_command(s: dict, out: Path, has_audio: bool, size: tuple = (W, H)) -> l
                   "-video_track_timescale", "15360", str(out)]
 
 
+SHORT_LEAD = 1.2        # seconds of the footage's own sound before the narrator speaks (a voice over silence reads as AI)
+
+
+def short_mix(lead: float) -> str:
+    """Shorts: the footage's sound at full strength alone for `lead` seconds, then ducked under the voice (not muted);
+    only a faint music bed, and it starts with the voice."""
+    ms = int(lead * 1000)
+    return (f"[0:a]apad=pad_dur={lead},volume=0.75[g0];"
+            f"[1:a]aresample=48000,pan=stereo|c0=c0|c1=c0,adelay={ms}|{ms},asplit=2[n][nsc];"
+            "[g0][nsc]sidechaincompress=threshold=0.06:ratio=4:attack=20:release=400:makeup=1[g];"
+            f"[2:a]aresample=48000,pan=stereo|c0=c0|c1=c0,volume=0.10,adelay={ms}|{ms}[m];"
+            "[g][n][m]amix=inputs=3:duration=longest:normalize=0,alimiter=limit=0.8[a]")
+
+
+def shift_ass(path: Path, secs: float) -> None:
+    """Push every caption in an .ass file `secs` later (the narration was delayed by that much)."""
+    def t(h, m, sec):
+        return int(h) * 3600 + int(m) * 60 + float(sec)
+    def fix(m):
+        a, b = t(*m.group(2).split(":")) + secs, t(*m.group(3).split(":")) + secs
+        return f"{m.group(1)}{clips._ass_time(a)},{clips._ass_time(b)},"
+    txt = Path(path).read_text()
+    Path(path).write_text(re.sub(r"(?m)^(Dialogue: \d+,)(\d+:\d\d:[\d.]+),(\d+:\d\d:[\d.]+),", fix, txt))
+
+
 ASS_HEAD = ("[Script Info]\nScriptType: v4.00+\nPlayResX: {w}\nPlayResY: {h}\nWrapStyle: 0\n\n[V4+ Styles]\n"
             "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, "
             "Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, "
@@ -971,10 +1019,13 @@ def make(topic: str = "", cfg: Optional[dict] = None, log: Callable = print, res
             w.setnchannels(1); w.setsampwidth(2); w.setframerate(wv.SR)
             w.writeframes((np.clip(x / max(1e-6, float(np.abs(x).max())), -1, 1) * 32767 * .9).astype("<i2").tobytes())
         inputs += ["-i", str(bed)]
+    lead, vpre = 0.0, ""
     if short:
         write_ass_short(chunks, [(a, b, s["heading"]) for s, a, b in zip(sections, starts, ends)], subs)
-        audio = ("[0:a]volume=0.05[g];[1:a]aresample=48000,pan=stereo|c0=c0|c1=c0[n];[2:a]aresample=48000,pan=stereo|c0=c0|c1=c0,volume=0.20[m];"
-                 "[g][n][m]amix=inputs=3:duration=shortest:normalize=0,alimiter=limit=0.8[a]")
+        lead = SHORT_LEAD                                       # the footage's own sound plays alone first; then the narrator
+        shift_ass(subs, lead)
+        vpre = f"tpad=stop_mode=clone:stop_duration={lead},"
+        audio = short_mix(lead)
     else:
         write_ass(chunks, [(t, s["heading"]) for s, t in zip(sections, starts)], subs)
         audio = ("[0:a]volume=0.08[g];[1:a]aresample=48000,pan=stereo|c0=c0|c1=c0[n];[2:a]aresample=48000,pan=stereo|c0=c0|c1=c0,volume=0.12[m];"
@@ -982,8 +1033,8 @@ def make(topic: str = "", cfg: Optional[dict] = None, log: Callable = print, res
     try:
         done = subprocess.run(
             [wv.ffmpeg(), "-loglevel", "error", "-y"] + inputs +
-            ["-filter_complex", f"[0:v]subtitles=f={subs}:fontsdir=/System/Library/Fonts/Supplemental,format=yuv420p[v];" + audio,
-             "-map", "[v]", "-map", "[a]", "-t", f"{total:.2f}", "-c:v", "libx264", "-preset", "medium", "-crf", "20" if short else "22",
+            ["-filter_complex", f"[0:v]{vpre}subtitles=f={subs}:fontsdir=/System/Library/Fonts/Supplemental,format=yuv420p[v];" + audio,
+             "-map", "[v]", "-map", "[a]", "-t", f"{total + lead:.2f}", "-c:v", "libx264", "-preset", "medium", "-crf", "20" if short else "22",
              "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(out)], capture_output=True, text=True, timeout=7200)
     finally:
         subs.unlink(missing_ok=True)
