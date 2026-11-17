@@ -161,7 +161,8 @@ class ListingTests(_Base):
         self.assertEqual([b["blueprint_id"] for _, _, b in created], [12, 478, 400])
         tee = created[0][2]
         self.assertEqual([v["id"] for v in tee["variants"]], [1])                      # White S only: no XS, no Black
-        self.assertTrue(tee["title"].endswith("T-Shirt"))
+        self.assertIn("T-Shirt", tee["title"])                                         # Etsy: keywords first, then the joke
+        self.assertLessEqual(len(tee["title"]), 140)
         self.assertIn("AI", tee["description"])
         self.assertEqual([v["id"] for v in created[1][2]["variants"]], [10])           # the 11oz mug
         mug = created[1][2]["print_areas"][0]["placeholders"][0]["images"]
@@ -348,7 +349,8 @@ class ListingTests(_Base):
         self.assertTrue(any("on eBay" in d for d in done))
         ebay = [b for m, p, b in c.calls if m == "POST" and p == "shops/5/products.json"]
         self.assertEqual(len(ebay), 3)
-        self.assertTrue(all(len(b["title"]) <= 80 and b["title"].endswith(("T-Shirt", "Mug", "Sticker")) for b in ebay))
+        self.assertTrue(all(len(b["title"]) <= 80 and any(k in b["title"] for k in ("T-Shirt", "Mug", "Sticker"))
+                            and "," not in b["title"] for b in ebay))                 # eBay: plain keywords, no punctuation
         self.assertFalse([p for m, p, b in c.calls if p.startswith("shops/3/")])           # not a sales channel
         rec = ws.load_state(self.dir / "s.json")["designs"][0]
         self.assertEqual(set(rec["channels"]["ebay"]), {"tee", "mug", "sticker"})
