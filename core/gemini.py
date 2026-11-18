@@ -399,6 +399,11 @@ def _live_call(contents, config, timeout_ms: int, key: str):
     return _Reply(text) if text else None
 
 
+# The Claude Code default became Fable 5.2, which needs paid usage credits and fails on the membership: name a model it covers.
+import os as _os
+_CLAUDE_MODEL = _os.environ.get("JARVIS_CLAUDE_MODEL", "opus")
+
+
 def _claude_bin() -> str:
     """The Claude Code CLI. The app may start with launchd's bare PATH, so the
     installer's usual places are checked too."""
@@ -484,7 +489,7 @@ def _claude_call(contents, config, timeout_ms: int):
                 return None
             env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}   # the membership, never a metered key
             r = subprocess.run(
-                [exe, "-p", "--output-format", "json", "--system-prompt", system,
+                [exe, "-p", "--model", _CLAUDE_MODEL, "--output-format", "json", "--system-prompt", system,
                  "--tools", "Read" if files else "", "--strict-mcp-config", "--setting-sources", "",
                  "--no-session-persistence", "--disable-slash-commands"],
                 input=prompt, capture_output=True, text=True, cwd=tmp, env=env,

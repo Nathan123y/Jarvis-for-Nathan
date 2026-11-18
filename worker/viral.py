@@ -63,7 +63,7 @@ DEFAULTS = {"enabled": True,
             # Haaland video on 2026-11-05), so the narration is sent bare
             "tts_model": "gemini-3.8-flash-tts",
             "ai_label": True,
-            "claude_model": "fable",                # the strongest Claude on the membership writes the script + 3D scene
+            "claude_model": "opus",                 # Fable 5.2 needs paid credits (fails on the membership); Opus is covered
             "claude_effort": "medium",              # high (11-05) made scenes pass 30 min and hit the weekly
                                                     # Claude limit on 11-07; medium finished in ~15 min before
             "instagram": True,
