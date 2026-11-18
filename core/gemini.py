@@ -141,6 +141,15 @@ _CLAUDE_SLOTS = threading.BoundedSemaphore(2)
 _CLAUDE_SLOT_WAIT = 60.0
 _CLAUDE_LIMIT_COOLDOWN_S = 1800            # usage limit reached: Gemini answers for half an hour
 
+# A rung that means "ask Codex", through the Codex CLI on the user's ChatGPT Plus
+# login (2026-11-18). No API key and no new bill: `codex exec` signs in with the
+# subscription, like Claude does. It sits right behind Claude on SMART, so when
+# Claude's usage limit is used up the work moves to ChatGPT before it falls to
+# Gemini's free tier. Text only (no images), read-only sandbox, throwaway folder.
+CODEX = "codex"
+_CODEX_SLOTS = threading.BoundedSemaphore(2)
+_CODEX_LIMIT_COOLDOWN_S = 1800
+
 # The REST text models. The 2.5 generation was retired for this key in October
 # 2026 (404 "no longer available to new users") and every side call fell through
 # to the Live rung or failed outright. Measured 2026-10-13, one short prompt:
@@ -153,7 +162,7 @@ LITE_MODEL = "gemini-3.1-flash-lite"
 
 _LADDERS = {
     FAST: (LIVE, LITE_MODEL, TEXT_MODEL),
-    SMART: (CLAUDE, LIVE, TEXT_MODEL, LITE_MODEL),
+    SMART: (CLAUDE, CODEX, LIVE, TEXT_MODEL, LITE_MODEL),
     # Grounded search needs response.candidates[...].grounding_metadata, which a
     # Live turn does not produce. REST only, and it says so rather than silently
     # returning an answer with no sources behind it.
@@ -508,6 +517,77 @@ def _claude_call(contents, config, timeout_ms: int):
     return _Reply(result)
 
 
+def _codex_bin() -> str:
+    """The Codex CLI: on PATH, or the copy the ChatGPT VS Code extension ships."""
+    import glob
+    import os
+    import shutil
+
+    found = shutil.which("codex")
+    if found:
+        return found
+    pats = [str(Path.home() / ".vscode/extensions/openai.chatgpt-*/bin/macos-aarch64/codex"),
+            "/Applications/Codex.app/Contents/Resources/codex"]
+    for pat in pats:
+        for p in sorted(glob.glob(pat), reverse=True):
+            if os.access(p, os.X_OK):
+                return p
+    return ""
+
+
+def _codex_call(contents, config, timeout_ms: int):
+    """One `codex exec` turn on the ChatGPT login. Raises so the ladder moves on."""
+    import os
+    import subprocess
+    import tempfile
+
+    argv0 = sys.argv[0] if sys.argv else ""
+    if os.environ.get("JARVIS_NO_CLAUDE") or "unittest" in argv0 or "pytest" in sys.modules:   # tests never spend the subscription
+        raise RuntimeError("Codex is switched off here")      # (config/claude_paused deliberately does not stop it: that is how Claude's usage is freed up)
+    if _config_value(config, "tools"):
+        raise RuntimeError("Gemini tools (search grounding) were asked for")
+    exe = _codex_bin()
+    if not exe:
+        raise RuntimeError("the Codex CLI is not installed")
+    texts = []
+    for part in _to_live_parts(contents):
+        if "text" in part:
+            texts.append(part["text"])
+        else:
+            raise RuntimeError("Codex rung is text only")
+    prompt = "\n\n".join(texts)
+    if not prompt.strip():
+        return None
+    system = _ONE_SHOT_SYSTEM
+    extra = _config_value(config, "system_instruction")
+    if extra:
+        system += f"\n\n{extra}"
+    if _config_value(config, "response_mime_type") == "application/json" or _config_value(config, "response_schema"):
+        system += "\n\nReply with only valid JSON."
+    prompt = system + "\n\n" + prompt + "\n\nAnswer directly. Do not run commands or read files."
+
+    if not _CODEX_SLOTS.acquire(timeout=_CLAUDE_SLOT_WAIT):
+        raise RuntimeError("two Codex calls are already running")
+    try:
+        with tempfile.TemporaryDirectory(prefix="jarvis-codex-") as tmp:
+            out = Path(tmp) / "reply.txt"
+            env = {k: v for k, v in os.environ.items() if k not in ("OPENAI_API_KEY", "CODEX_API_KEY")}   # the subscription, never a metered key
+            r = subprocess.run(
+                [exe, "exec", "--skip-git-repo-check", "--sandbox", "read-only", "--ephemeral",
+                 "-o", str(out), "-"],
+                input=prompt, capture_output=True, text=True, cwd=tmp, env=env,
+                timeout=max(_CLAUDE_TIMEOUT_S, timeout_ms / 1000.0))
+            result = out.read_text(encoding="utf-8").strip() if out.exists() else ""
+    finally:
+        _CODEX_SLOTS.release()
+    if r.returncode != 0 or not result:
+        blob = (r.stderr or r.stdout or "")[-200:]
+        if "limit" in blob.lower() or "quota" in blob.lower():
+            _cool(CODEX, _CODEX_LIMIT_COOLDOWN_S)
+        raise RuntimeError(f"Codex: exit {r.returncode}: {blob[-140:] or 'empty reply'}")
+    return _Reply(result)
+
+
 def claude_text(prompt: str, timeout_s: float = _CLAUDE_TIMEOUT_S) -> str:
     """Claude alone, no Gemini behind it: for callers with their own Gemini
     ladder (the website designer). "" when Claude is cooling off or failed."""
@@ -542,13 +622,13 @@ def call(contents, tier: str = FAST, config=None,
 
     resolved_key = key or api_key()
     if not resolved_key:
-        ladder = tuple(m for m in ladder if m == CLAUDE)
+        ladder = tuple(m for m in ladder if m in (CLAUDE, CODEX))
         if not ladder:
             print("[Gemini] no Gemini API key is configured")
             return None
 
     cl = None
-    tried = [m for m in ladder if not _cooling(m)] or [m for m in ladder if m != CLAUDE] or list(ladder)
+    tried = [m for m in ladder if not _cooling(m)] or [m for m in ladder if m not in (CLAUDE, CODEX)] or list(ladder)
     for model in tried:
         try:
             if model == CLAUDE:
@@ -556,6 +636,11 @@ def call(contents, tier: str = FAST, config=None,
                 if reply is not None:
                     return reply
                 raise RuntimeError("the Claude turn came back empty")
+            if model == CODEX:
+                reply = _codex_call(contents, config, timeout_ms)
+                if reply is not None:
+                    return reply
+                raise RuntimeError("the Codex turn came back empty")
             if model == LIVE:
                 reply = _live_call(contents, config, timeout_ms, resolved_key)
                 if reply is not None:
