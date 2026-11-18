@@ -379,3 +379,23 @@ class KitRenderTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StoryPlugTests(unittest.TestCase):
+    def test_narrated_prompt_gets_real_slogans_and_the_pitch_rules(self):
+        seen = []
+        def ask(prompt, timeout_s=0):
+            seen.append(prompt)
+            return json.dumps({"title": "Could X beat Y?", "beats": [{"say": f"Line {i}."} for i in range(12)], "plug": "TINSEL"})
+        with patch.object(wv, "shop_slogans", return_value=["LOSING MY TINSEL AGAIN", "NEEDLESSLY STRESSED"]), \
+                patch.object(wv, "settings", return_value={"product_plug": True}):
+            script = wv.write_script([], "", ask=ask, style="narrated")
+        self.assertIn('"LOSING MY TINSEL AGAIN"', seen[0])
+        self.assertIn("THE ENDING PITCH", seen[0])
+        self.assertEqual(script["plug"], "TINSEL")
+
+    def test_no_pitch_when_switched_off_or_nothing_listed(self):
+        with patch.object(wv, "shop_slogans", return_value=["A"]):
+            self.assertEqual(wv.plug_text({"product_plug": False}), "")
+        with patch.object(wv, "shop_slogans", return_value=[]):
+            self.assertEqual(wv.plug_text({"product_plug": True}), "")
