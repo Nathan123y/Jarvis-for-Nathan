@@ -22,6 +22,7 @@ starts from "now" the first time, so turning this on never texts a backlog.
   morning    once a day   at morning_time (can differ by weekday): weather, calendar, Canvas, fantasy, packages, overnight news
   trading    weekdays     at trading_time: the day's paper results
   tonight    once a day   at tonight_time: Canvas work due later today
+  ceo        once a day   at ceo_time: one text across the shop, videos, internships and paper money
   weekly     Sundays      at weekly_time: trading, memecoins, sales, spending, workouts, grades, the week ahead
 """
 from __future__ import annotations
@@ -398,6 +399,8 @@ class Scanner:
             return self.morning(force=True)
         if what == "weekly":
             return self.weekly(force=True)
+        if what == "ceo":
+            return self.ceo(force=True)
         if what == "fantasy":
             text = sources.fantasy_summary()
             return self.alerts.scheduled("fantasy", "🏈 Fantasy this week:\n" + (text or "No league is connected."),
@@ -636,6 +639,16 @@ class Scanner:
         self._put(sales_seen=seen[-300:], sales_week=week)
         return n
 
+    # ── the CEO page: every business in one text ─────────────────────────────
+    def ceo(self, force: bool = False) -> str:
+        if not force:
+            if not self._time_for("ceo_day", self.cfg()["ceo_time"], (7, 30)):
+                return ""
+            if not self._wants("ceo"):
+                return "off"
+        from worker import ceo
+        return self.alerts.scheduled("ceo", ceo.page(self.clock()), force=force)
+
     # ── the Sunday recap ─────────────────────────────────────────────────────
     def weekly(self, gather=None, force: bool = False) -> str:
         now = datetime.fromtimestamp(self.clock())
@@ -754,6 +767,7 @@ class AlertService:
         self._step("on request", self.scanner.on_request)
         self._step("morning", self.scanner.morning)          # before flush: it carries the overnight news
         self._step("trading", self.scanner.trading_daily)
+        self._step("ceo", self.scanner.ceo)
         self._step("tonight", self.scanner.canvas_tonight)
         self._step("weekly", self.scanner.weekly)
         self._step("flush", self.alerts.flush)

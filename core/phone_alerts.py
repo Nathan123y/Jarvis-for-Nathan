@@ -63,6 +63,7 @@ DEFAULTS = {
     "vip": [],                # email addresses, domains or names that always get a text
     "city": "San Jose",       # for the morning weather
     "morning_time": "07:00",
+    "ceo_time": "07:30",      # the all-businesses CEO page
     "trading_time": "13:30",  # weekdays, after the 1:00 PM Pacific close
     "calendar_minutes": 15,
     "tonight_time": "20:00",  # "due tonight" check
