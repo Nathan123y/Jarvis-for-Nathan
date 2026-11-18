@@ -526,10 +526,11 @@ final-score line. Then add 3 more beats (about 8 seconds), which override "the f
      exactly this situation. Funny and short, never salesy or shouting.
   3. "Link in bio." (nothing after it).
 Pick the slogan that fits the story best from this list of our real, live products (never invent one, never
-change a word of it). If none fits even loosely, skip the pitch and end on the score as before:
+change a word of it). EVERY story gets a pitch (user, 11-18): pick the closest fit and make the turn into it the
+joke ("a stretch, but still"), never skip it:
 {slogans}
-Put the chosen slogan in "plug" (null if you skipped it). The caption still ends in a question; add "Shirt in
-our shop, link in bio." before the question only when you pitched. Count the 3 pitch beats inside the sentence limit.
+Put the chosen slogan in "plug". The caption still ends in a question; add "Shirt in
+our shop, link in bio." before the question. Count the 3 pitch beats inside the sentence limit.
 
 """
 
@@ -557,6 +558,84 @@ def plug_text(cfg: Optional[dict] = None) -> str:
     if not cfg.get("product_plug") or not slogans:
         return ""
     return PLUG_RULES.format(slogans="\n".join(f'  - "{x}"' for x in slogans))
+
+
+def plug_design(slogan: str) -> Optional[dict]:
+    """The listed design behind a pitched slogan (its photos, and the TikTok Shop product ids)."""
+    try:
+        designs = json.loads((ROOT / "memory" / "etsy_shop.json").read_text()).get("designs") or []
+    except (OSError, ValueError):
+        return None
+    for d in reversed(designs):
+        if str(d.get("slogan") or "").strip().lower() == str(slogan or "").strip().lower() and (d.get("channels") or {}).get("tiktok"):
+            return d
+    return None
+
+
+def plug_photo(design: dict) -> Optional[Path]:
+    """The nicest local photo of the product: a worn/hanging mockup first, then the design art."""
+    photos = [Path(x) for k in ("tiktok", "popup", "ebay") for v in (design.get("channels", {}).get(k) or {}).values()
+              for x in (v.get("extra_photos") or [])]
+    for want in ("hanging-1", "folded", "design"):
+        for ph in photos:
+            if want in ph.name and ph.exists():
+                return ph
+    art = Path(design.get("file") or "")
+    return art if art.exists() else None
+
+
+def product_card(design: dict, slogan: str, out: Path, size=(1080, 1920)) -> Optional[Path]:
+    """A full-frame 'our shirt' card: the product photo, its slogan and where to get it."""
+    from PIL import Image, ImageDraw, ImageFont
+    photo = plug_photo(design)
+    if not photo:
+        return None
+    w, h = size
+    img = Image.new("RGB", size, (14, 14, 20))
+    pic = Image.open(photo).convert("RGB")
+    pic.thumbnail((w - 120, int(h * .55)))
+    img.paste(pic, ((w - pic.width) // 2, 250))
+    d = ImageDraw.Draw(img)
+    big = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Black.ttf", 84)
+    mid = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Black.ttf", 60)
+    d.text((w // 2, 130), "OUR SHIRT", font=mid, fill=(255, 214, 0), anchor="mm")
+    y = 250 + pic.height + 110
+    words, lines, cur = slogan.upper().split(), [], ""
+    for wd in words:
+        t = (cur + " " + wd).strip()
+        if d.textlength(t, font=big) > w - 140 and cur:
+            lines.append(cur)
+            cur = wd
+        else:
+            cur = t
+    lines.append(cur)
+    for ln in lines[:3]:
+        d.text((w // 2, y), ln, font=big, fill=(255, 255, 255), anchor="mm")
+        y += 100
+    d.rounded_rectangle((140, y + 50, w - 140, y + 170), 60, fill=(255, 214, 0))
+    d.text((w // 2, y + 110), "SHOP LINK IN BIO", font=mid, fill=(14, 14, 20), anchor="mm")
+    img.save(out)
+    return out
+
+
+def append_card(video: Path, card: Path, seconds: float = 3.0, log: Callable = print) -> bool:
+    """Tack the product card onto the end of the finished video (silent, same size and frame rate)."""
+    out = video.with_name(video.stem + "-card.mp4")
+    cmd = [ffmpeg(), "-loglevel", "error", "-y", "-i", str(video), "-loop", "1", "-framerate", str(FPS), "-t", str(seconds),
+           "-i", str(card), "-f", "lavfi", "-t", str(seconds), "-i", f"anullsrc=r=44100:cl=stereo",
+           "-filter_complex",
+           f"[0:v]fps={FPS},scale=1080:1920,setsar=1,format=yuv420p[a];[1:v]scale=1080:1920,setsar=1,format=yuv420p[b];"
+           f"[0:a]aresample=44100,aformat=channel_layouts=stereo[x];[2:a]aformat=channel_layouts=stereo[y];"
+           f"[a][x][b][y]concat=n=2:v=1:a=1[v][o]",
+           "-map", "[v]", "-map", "[o]", "-c:v", "libx264", "-preset", "medium", "-crf", "19", "-c:a", "aac", "-b:a", "192k",
+           "-movflags", "+faststart", str(out)]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0 or not out.exists():
+        log(f"viral: couldn't add the product card: {r.stderr[-200:]}")
+        out.unlink(missing_ok=True)
+        return False
+    out.replace(video)
+    return True
 
 
 def write_script(history: list, topic: str = "", ask: Callable = ask_claude, style: str = "captions") -> dict:
@@ -1643,9 +1722,17 @@ def make(topic: str = "", log: Callable = print, ask: Callable = ask_claude, his
     log("viral: rendering")
     t0 = time.time()
     render(job, data, audio, out, log)
+    plug = None
+    if cfg.get("product_plug") and script.get("plug"):
+        design = plug_design(script["plug"])
+        card = product_card(design, script["plug"], job / "product_card.png") if design else None
+        if card and append_card(out, card, log=log):
+            plug = {"slogan": script["plug"], "design": design.get("id")}
+            duration += 3.0
+            log(f"viral: added the product card for \"{script['plug']}\"")
     log(f"viral: done in {time.time() - t0:.0f}s -> {out}")
     rec = {"title": script["title"], "topic": script["topic"], "path": str(out), "job": str(job), "made": time.time(),
-           "duration": duration, "caption": caption_for(script), "posted": False}
+           "duration": duration, "caption": caption_for(script), "posted": False, "plug": plug}
     st = load_state()
     st["videos"].append(rec)
     save_state(st)
