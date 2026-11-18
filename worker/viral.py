@@ -63,6 +63,7 @@ DEFAULTS = {"enabled": True,
             # Haaland video on 2026-11-05), so the narration is sent bare
             "tts_model": "gemini-3.8-flash-tts",
             "ai_label": True,
+            "product_plug": True,                   # end each story with a short pitch for one of the shop's real products (user, 11-17)
             "claude_model": "opus",                 # Fable 5.2 needs paid credits (fails on the membership); Opus is covered
             "claude_effort": "medium",              # high (11-05) made scenes pass 30 min and hit the weekly
                                                     # Claude limit on 11-07; medium finished in ~15 min before
@@ -263,7 +264,7 @@ escalates past the point of sense (the SIUUU shifts the tectonic plates and trig
 Edgy and inappropriate-adjacent is GOOD; the joke lands on the situation and the star's struggle, never on punching
 down at a group (the underdog side wins and looks great, like the blind footballers).
 Real people only in harmless, fun situations (never insulting, sexual or defamatory).
-{topic_line}
+{plug}{topic_line}
 Don't repeat these recent videos:
 {history}
 
@@ -311,7 +312,7 @@ Reply with only this JSON:
 {{"format": "versus", "topic": "...", "title": "<sentence 0, the hook question>", "highlight": ["..."], "set": "stadium", "music": "drive",
   "beats": [{{"say": "...", "card": null, "score": null, "ambience": "keep", "level": 1, "sfx": "none", "sfx2": [],
              "scene": "..."}}],
-  "caption": "...", "hashtags": ["..."]}}"""
+  "plug": "<the exact slogan you pitched, or null>", "caption": "...", "hashtags": ["..."]}}"""
 
 
 def _json_from(text: str):
@@ -513,7 +514,49 @@ def clean_script(s: dict, library: Optional[dict] = None, style: str = "captions
             "set": s.get("set") if s.get("set") in SETS else "backyard",
             "music": s.get("music") if s.get("music") in ("tension", "drive") else "none",
             "beats": beats, "end_fact": str(s.get("end_fact") or "")[:160],
-            "caption": str(s.get("caption") or s["title"])[:150], "hashtags": [t for t in tags if t][:6]}
+            "plug": str(s.get("plug") or "")[:80], "caption": str(s.get("caption") or s["title"])[:150], "hashtags": [t for t in tags if t][:6]}
+
+
+PLUG_RULES = """THE ENDING PITCH: the best story reels hold people to the very end with a funny tale, THEN slip in the
+creator's own product in the last few seconds, tied to the story's own joke (a deadpan "...which is why we sell
+this."). Do the same. Tell the whole story first, exactly as above, ending on the
+final-score line. Then add 3 more beats (about 8 seconds), which override "the final score is the LAST sentence":
+  1. A deadpan turn from the joke into the shirt ("Anyway." / "Which is why we made this shirt.").
+  2. The pitch in one sentence, naming the shirt's slogan EXACTLY as written below, as the thing you'd wear in
+     exactly this situation. Funny and short, never salesy or shouting.
+  3. "Link in bio." (nothing after it).
+Pick the slogan that fits the story best from this list of our real, live products (never invent one, never
+change a word of it). If none fits even loosely, skip the pitch and end on the score as before:
+{slogans}
+Put the chosen slogan in "plug" (null if you skipped it). The caption still ends in a question; add "Shirt in
+our shop, link in bio." before the question only when you pitched. Count the 3 pitch beats inside the sentence limit.
+
+"""
+
+
+def shop_slogans(limit: int = 12) -> list:
+    """Slogans of designs that are really listed on the TikTok Shop (newest first): the products a video may pitch."""
+    try:
+        designs = json.loads((ROOT / "memory" / "etsy_shop.json").read_text()).get("designs") or []
+    except (OSError, ValueError):
+        return []
+    out = []
+    for d in reversed(designs):
+        slogan = str(d.get("slogan") or "").strip()
+        if slogan and (d.get("channels") or {}).get("tiktok") and slogan not in out:
+            out.append(slogan)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def plug_text(cfg: Optional[dict] = None) -> str:
+    """The pitch rules with our real slogans filled in, or "" when pitching is off or there is nothing to pitch."""
+    cfg = settings() if cfg is None else cfg
+    slogans = shop_slogans()
+    if not cfg.get("product_plug") or not slogans:
+        return ""
+    return PLUG_RULES.format(slogans="\n".join(f'  - "{x}"' for x in slogans))
 
 
 def write_script(history: list, topic: str = "", ask: Callable = ask_claude, style: str = "captions") -> dict:
@@ -524,7 +567,7 @@ def write_script(history: list, topic: str = "", ask: Callable = ask_claude, sty
     for _ in range(2):
         try:
             return clean_script(_json_from(ask(prompt.format(topic_line=topic_line, history=hist,
-                                                             sounds=sounds_text()), timeout_s=420)), style=style)
+                                                             sounds=sounds_text(), plug=plug_text() if style == "narrated" else ""), timeout_s=420)), style=style)
         except ClaudeBusy:
             raise
         except Exception as exc:                 # one more try on a malformed reply
