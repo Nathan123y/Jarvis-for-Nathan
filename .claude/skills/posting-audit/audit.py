@@ -37,6 +37,8 @@ for fname, label, plats in SOURCES:
             continue
         miss = []
         for p, ok in plats.items():
+            if p == "Instagram" and "ig_posted" not in v:
+                continue                      # never attempted (Instagram posting wasn't on yet), not a failure
             made[(t.date(), p)] += 1
             if ok(v):
                 posted[(t.date(), p)] += 1
