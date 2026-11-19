@@ -123,3 +123,7 @@ memory/canvas_profile/
 memory/canvas_profile.lock
 memory/canvas_cache.json
 memory/canvas_cache.tmp
+
+# Collab Studio: customer requests, uploads, generated images, admin password and session secret
+data/collab_studio/
+!collab_studio/.env.example
