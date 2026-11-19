@@ -209,13 +209,17 @@ def front(slogan: str = "BUCKET GETTER", number: str = "10", seed: int = 7) -> I
     return img
 
 
-def back(name: str = "YOUR NAME", number: str = "10", seed: int = 7) -> Image.Image:
-    """The jersey's back panel: the buyer's name over a big number."""
-    name, number = clean_name(name) or "YOUR NAME", clean_number(number) or "10"
+def back(name: str = "", number: str = "10", seed: int = 7) -> Image.Image:
+    """The jersey's back panel: a big number, with the buyer's name above it when one is given (none by default)."""
+    name, number = clean_name(name), clean_number(number) or "10"
     rnd = random.Random(seed + 23)
     img = ground(seed, back=True)
-    font = _fit(name, COLLEGE, 2250, 520, minimum=200)
-    _stamp(img, name, font, CX, 2900, 54, rnd, spacing=30, arch=60)
-    font = _fit(number, IMPACT, 2100 if len(number) > 1 else 1400, 1900, minimum=700)
-    _stamp(img, number, font, CX, 4350, 70, rnd, spacing=40)
+    if name:
+        font = _fit(name, COLLEGE, 2250, 520, minimum=200)
+        _stamp(img, name, font, CX, 2900, 54, rnd, spacing=30, arch=60)
+        top = 4350
+    else:
+        top = 3950
+    font = _fit(number, IMPACT, 2300 if len(number) > 1 else 1500, 2200 if not name else 1900, minimum=700)
+    _stamp(img, number, font, CX, top, 70, rnd, spacing=40)
     return img

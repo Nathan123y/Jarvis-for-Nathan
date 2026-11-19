@@ -20,33 +20,24 @@ BLUEPRINT, PROVIDER = 1209, 83               # Unisex Basketball Jersey (AOP), S
 PROFIT = 15.0
 SEED = 7
 TITLES = {
-    "etsy": "Personalized Basketball Jersey, Custom Name and Number, Navy Red Sports Jersey, Birthday Gift for Basketball Player, Team Jersey for Men Women Kids",
-    "popup": "Personalized Basketball Jersey, Custom Name and Number, Navy Red Sports Jersey, Birthday Gift for Basketball Player",
-    "ebay": "Custom Basketball Jersey Personalized Name Number Navy Red Men Women Youth Gift",
-    "tiktok": "Custom Name Basketball Jersey, Personalized Number Unisex Sports Jersey Gift",
+    "etsy": "Basketball Jersey, Navy Red Cream Star and Flames Sports Jersey, Birthday Gift for Basketball Player, Streetwear Jersey for Men Women Teens",
+    "popup": "Basketball Jersey, Navy Red Cream Star and Flames Sports Jersey, Birthday Gift for Basketball Player",
+    "ebay": "Basketball Jersey Navy Red Cream Star Flames Unisex Streetwear Sports Jersey Gift",
+    "tiktok": "Basketball Jersey Navy Red Star Flames Unisex Streetwear Sports Jersey Gift",
 }
-TAGS = ["custom basketball jersey", "personalized jersey", "name and number", "basketball gift", "team jersey",
-        "birthday gift", "sports jersey", "custom jersey", "basketball player", "gift for him", "gift for teen",
-        "basketball fan", "jersey with name"]
-HOW = {
-    "etsy": "HOW TO PERSONALIZE: type the name (up to 14 letters) and the number (0-99) you want in the Personalization box. "
-            "If you leave it blank we'll message you before we print.",
-    "default": "HOW TO PERSONALIZE: right after you order, send us a message with the name (up to 14 letters) and the number "
-               "(0-99) you want. Your jersey is printed once we have them.",
-}
+TAGS = ["basketball jersey", "streetwear jersey", "sports jersey", "basketball gift", "gift for him",
+        "gift for teen boy", "basketball fan", "mens jersey", "womens jersey", "unisex jersey", "birthday gift",
+        "star jersey", "flame jersey"]
 
 
 def description(channel: str) -> str:
-    how = HOW["etsy"] if channel == "etsy" else HOW["default"]
     return (
-        "A personalized basketball jersey printed all over in navy, red, sky blue and cream, with a star and flames. "
-        "The front says BUCKET GETTER with a number; the back has YOUR name over your number.\n\n"
-        f"{how}\n\n"
-        "Photos show the name 'YOUR NAME' and number 10 as an example.\n\n"
+        "A basketball jersey printed all over in navy, red, sky blue and cream, with a big star outline and flames. "
+        "The front says BUCKET GETTER over a number 10, and the back has a big 10.\n\n"
         "The details:\n"
         "- 100% recycled moisture-wicking polyester mesh, light (4.8 oz), a standard unisex fit\n"
         "- Ribbed black collar and armholes, sewn-in size label\n"
-        "- Sizes XS to 4XL (check the size chart: it runs like a regular basketball jersey)\n"
+        "- Sizes XS to 4XL (it runs like a regular basketball jersey)\n"
         "- Printed to order after you buy, so allow about 1-2 weeks including shipping\n\n"
         "This is an original design. It is not made by, licensed by or connected to any team, league or player."
     )
