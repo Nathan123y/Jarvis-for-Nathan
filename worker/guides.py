@@ -1055,7 +1055,7 @@ def make(topic: str = "", cfg: Optional[dict] = None, log: Callable = print, res
         thumbnail(frame, script["thumbnail"], thumb)
         rec["thumb"] = str(thumb)
         rec["description"] = describe(script, starts, credits)
-    if not short and cfg.get("vertical_copy") and (cfg.get("tiktok", True) or wv.settings().get("instagram")):
+    if not short and cfg.get("vertical_copy") and (cfg.get("tiktok", True) or (wv.settings().get("instagram") and cfg.get("instagram", True))):
         try:
             rec["vertical"] = str(vertical_copy(job, shots, audio_of, sections, starts, ends, chunks, voice, total, out))
             tags = " ".join("#" + t for t in dict.fromkeys(["gta6", "gtavi"] + [re.sub(r"[^a-z0-9]", "", t.lower()) for t in script["tags"][:3]] + ["gaming", "fyp"]) if t)

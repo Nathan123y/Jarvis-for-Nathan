@@ -52,6 +52,7 @@ DEFAULTS = {"enabled": True,
             # between the other videos' slots; five a day since 11-14 (user: "hundreds of short funny clips" for the
             # GTA content). Hourly posting killed views in early November, so not more on one account
             "times": "11:00,14:00,15:30,19:30,20:30",
+            "instagram": False,             # off = GTA clips never go to Instagram, even while the daily videos do (11-19)
             "tiktok": True,                 # off = the clip skips TikTok (set off 11-15: the account's views were at zero)
             # a moment caught on a live stream doesn't wait for the next time above: it's cut and posted as soon as
             # it's in (user, 11-16: "right away clip it"), but spaced out and capped so the account isn't flooded
@@ -91,7 +92,7 @@ def settings() -> dict:
 def post_settings(cfg: dict) -> dict:
     """The clip settings plus the accounts, which are always the daily videos' own accounts."""
     v = wv.settings()
-    return dict(cfg, instagram=v["instagram"], handle=v["handle"], ig_handle=v["ig_handle"])
+    return dict(cfg, instagram=bool(v["instagram"] and cfg.get("instagram", True)), handle=v["handle"], ig_handle=v["ig_handle"])
 
 
 # ── the inbox ────────────────────────────────────────────────────────────────
