@@ -145,7 +145,8 @@ class Jerseys:
 
     def __init__(self, shop, *, text_file: Callable[[Path, str], None] = None, text: Callable[[str], None] = None,
                  log: Callable[[str], None] = print, clock: Callable[[], float] = time.time,
-                 state_path: Path = STATE, inbox: Path = INBOX, designs_dir: Path = DESIGNS):
+                 state_path: Path = STATE, inbox: Path = INBOX, designs_dir: Path = DESIGNS,
+                 auto: Optional[Callable[[], bool]] = None):
         from core import phone_alerts
         self.shop, self.c = shop, shop.c
         self.text_file = text_file or (lambda path, note: phone_alerts.send_file(path, note))
@@ -154,6 +155,7 @@ class Jerseys:
         self.state_path, self.inbox, self.designs_dir = state_path, inbox, designs_dir
         self._variants: dict = {}
         self._facts: dict = {}
+        self._auto = auto
 
     # -- Printify helpers -----------------------------------------------------------------------------------------
     def variants(self, kind: str) -> list:
@@ -244,7 +246,7 @@ class Jerseys:
                 rec["title"] = info.get("title") or ""
                 rec["channels"] = {"popup": {"jersey": self.create(rec, "popup", stores["popup"])}}
                 rec["preview"] = str(self.preview(rec, dest))
-                rec["status"] = "awaiting"
+                rec["status"] = "approved" if self.auto_approve() else "awaiting"
             except Exception as exc:
                 self.log(f"jerseys: couldn't prepare {folder.name}: {exc}")
                 rec["status"] = "broken"
@@ -252,7 +254,9 @@ class Jerseys:
             shutil.rmtree(folder, ignore_errors=True)
             st["designs"].append(rec)
             save(st, self.state_path)
-            if rec["status"] == "awaiting":
+            if rec["status"] == "approved":
+                self.log(f"jerseys: {slug} approved on its own (auto_approve is on)")
+            elif rec["status"] == "awaiting":
                 note = (f"🏀 New jersey ready: {rec['concept'].upper()} ({KINDS[kind]['name'].lower()}, "
                         f"${rec['channels']['popup']['jersey']['price'] / 100:.2f} + shipping). Front and back below. "
                         f"To post it, tell Claude: approve jersey {slug}  (or: reject jersey {slug})")
@@ -416,7 +420,22 @@ class Jerseys:
             rec["status"] = "rejected"
             save(st, self.state_path)
 
+    def auto_approve(self) -> bool:
+        """The user's standing yes (2026-11-19, "when I wake up they should be up and listed"): list without asking."""
+        if self._auto is not None:
+            return self._auto()
+        try:
+            from worker.jersey_studio import settings
+            return bool(settings().get("auto_approve"))
+        except Exception:
+            return False
+
     def _say(self, msg: str) -> None:
+        from datetime import datetime
+        hour = datetime.fromtimestamp(self.clock()).hour
+        if hour >= 22 or hour < 8:                      # never buzz the phone at night; the log keeps it
+            self.log(f"jerseys (not texted at night): {msg}")
+            return
         try:
             self.text(msg)
         except Exception as exc:

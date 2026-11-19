@@ -64,10 +64,14 @@ class FakeShop:
         return True
 
 
-def make(tmp, shop, clock=lambda: 1_000_000.0):
+NOON = 1_795_118_400.0                                  # 2026-11-19 noon-ish: texts go out in the day
+
+
+def make(tmp, shop, clock=lambda: NOON, auto=False):
     texts, files = [], []
     j = js.Jerseys(shop, text_file=lambda p, n: files.append((p, n)), text=texts.append, log=lambda m: None,
-                   clock=clock, state_path=tmp / "jersey.json", inbox=tmp / "inbox", designs_dir=tmp / "designs")
+                   clock=clock, state_path=tmp / "jersey.json", inbox=tmp / "inbox", designs_dir=tmp / "designs",
+                   auto=lambda: auto)
     return j, texts, files
 
 
@@ -138,7 +142,7 @@ class JerseyTests(unittest.TestCase):
     def test_etsy_waits_its_turn(self):
         tmp_path = self.tmp
         shop = FakeShop(tmp_path)
-        now = [1_000_000.0]
+        now = [NOON]
         j, _, _ = make(tmp_path, shop, clock=lambda: now[0])
         drop(tmp_path, "starfire")
         drop(tmp_path, "violet-crown")
@@ -182,6 +186,25 @@ class JerseyTests(unittest.TestCase):
         rec = js.load(tmp_path / "jersey.json")["designs"][0]
         assert rec["status"] == "rejected"
         assert any(m == "DELETE" for m, _, _ in shop.c.calls)
+
+    def test_auto_approve_lists_without_asking(self):
+        tmp_path = self.tmp
+        shop = FakeShop(tmp_path)
+        drop(tmp_path, "starfire")
+        j, _, files = make(tmp_path, shop, auto=True)
+        j.run()                                             # drawn and approved on this pass
+        j.run()                                             # listed on the next
+        rec = js.load(tmp_path / "jersey.json")["designs"][0]
+        self.assertEqual(rec["status"], "listed")
+        self.assertEqual(files, [])                         # no approval text
+
+    def test_no_texts_at_night(self):
+        tmp_path = self.tmp
+        texts = []
+        j = js.Jerseys(FakeShop(tmp_path), text=texts.append, text_file=lambda p, n: None, log=lambda m: None,
+                       clock=lambda: NOON + 14 * 3600, state_path=tmp_path / "j.json")
+        j._say("hi")
+        self.assertEqual(texts, [])
 
     def test_pin_recs_only_listed(self):
         tmp_path = self.tmp

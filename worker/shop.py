@@ -297,6 +297,8 @@ DEFAULTS = {"enabled": True, "designs_per_day": 1, "time": "06:00",  # live befo
             # TikTok Shop (2026-11-08, user: "lets do tik tok shop"): free to list, ~6-8% a sale. New shops get
             # reviewed, so at most this many new listings a day, newest designs first
             "tiktok_per_day": 25,
+            # daily designs onto eBay at all (2026-11-19: off; the user cleared the zero-view ones for jerseys)
+            "ebay_new": True,
             # a new TikTok shop is on a probation program (2026-11-13: 100 listings in all, until its targets are met), so
             # the shop stops adding when this many are live there; raise it when Seller Center lifts the limit
             "tiktok_max": 100,
@@ -1654,6 +1656,8 @@ class Shop:
                         continue
                     prod = listed.get(kind)
                     if channel == "ebay" and prod is None:
+                        if not cfg.get("ebay_new", True):
+                            continue                       # eBay is kept for the jersey line
                         if kind in rec.get("ebay_ended", []):
                             continue                       # taken down to make room: stays off eBay
                         if on_ebay >= cfg.get("ebay_max", 250) and cfg.get("ebay_rotate") and winning(rec) \
@@ -2061,11 +2065,33 @@ class ShopService:
         try:
             from worker.jersey_shop import Jerseys
             home = Path(shop.state_path).parent                # memory/ (a test's own folder in tests)
+            if home.resolve() == (Path(__file__).resolve().parents[1] / "memory").resolve():   # never in tests
+                self.jersey_studio()
             if Jerseys(shop, log=self.log, state_path=home / "jersey.json", inbox=home / "jersey_art" / "inbox",
                        designs_dir=home / "jersey_art" / "designs").run():
                 self.storefront(shop, today, force=True)
         except Exception as exc:
             self.log(f"jerseys: {exc!r}")
+
+    def jersey_studio(self) -> None:
+        """ChatGPT draws `jerseys_per_day` new jersey concepts a day (worker/jersey_studio.py), from its time on."""
+        from worker import jersey_studio as studio
+        cfg = studio.settings()
+        if not cfg["enabled"] or int(cfg["jerseys_per_day"]) <= 0:
+            return
+        now = datetime.now()
+        h, m = (int(x) for x in str(cfg["time"]).split(":"))
+        if (now.hour, now.minute) < (h, m):
+            return
+        st = studio.load()
+        today = now.date().isoformat()
+        made = sum(1 for t in st["made"].values() if datetime.fromtimestamp(t).date().isoformat() == today)
+        tried = st.setdefault("tries", {}).get(today, 0)
+        if made >= int(cfg["jerseys_per_day"]) or tried >= int(cfg["jerseys_per_day"]) + 2:
+            return
+        st["tries"][today] = tried + 1
+        studio.save(st)
+        studio.make(studio.next_concepts(1), log=self.log)
 
     def storefront(self, shop: "Shop", today: str, force: bool = False) -> None:
         """Rebuild the public storefront (worker/storefront.py) after new listings, else once a day."""
