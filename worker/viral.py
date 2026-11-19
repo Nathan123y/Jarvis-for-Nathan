@@ -2148,6 +2148,7 @@ def ig_post(video: Path, caption: str, ai_label: bool = True, log: Callable = pr
             if "login" in pg.url:
                 raise NotLoggedIn("Instagram sent us to the login page")
             _ig_click(pg, ["Not Now", "Not now"])          # "turn on notifications" / "save login info"
+            _ig_click(pg, ["OK"])                           # "You're in sleep mode" at night covers the whole page (11-19)
             pg.locator("svg[aria-label='New post'], svg[aria-label='Create']").first.click(timeout=20000)
             pg.wait_for_timeout(1500)
             _ig_click(pg, ["Post"])                         # newer menus ask Post / Live / Ad

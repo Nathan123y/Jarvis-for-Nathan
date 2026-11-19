@@ -1189,7 +1189,11 @@ def youtube_upload(rec: dict, cfg: Optional[dict] = None, log: Callable = print,
                     pg.locator("input#file-loader[type=file], ytcp-thumbnail-uploader input[type=file]").first.set_input_files(rec["thumb"], timeout=8000)
                 except Exception:
                     log("guides: YouTube didn't take a custom thumbnail (the channel may need phone verification)")
-            pg.locator("tp-yt-paper-radio-button[name='VIDEO_MADE_FOR_KIDS_NOT_MFK']").first.click(timeout=30000)
+            kids = pg.locator("tp-yt-paper-radio-button[name='VIDEO_MADE_FOR_KIDS_NOT_MFK']").first
+            try:                                                # the hashtag suggestions can sit over this button (11-19)
+                kids.click(timeout=8000)
+            except Exception:
+                kids.evaluate("e => e.click()")
             try:                                                # tags and the altered-content answer sit under "Show more"
                 pg.locator("#toggle-button").first.click(timeout=8000)
                 pg.wait_for_timeout(1200)
