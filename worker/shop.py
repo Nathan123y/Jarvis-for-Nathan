@@ -128,6 +128,10 @@ PRODUCTS = {
     "desk_mat": {"name": "Desk Mat", "blueprint": 975, "provider": 99, "profit": 7.0, "art": "tile", "fill": 1.0},
     "can_cooler": {"name": "Can Cooler", "blueprint": 636, "provider": 99, "profit": 5.0,
                    "positions": ("front", "back"), "fill": 0.9},
+    # the jersey line (worker/jersey_shop.py, 2026-11-19): listed by that module only, never by the daily designs;
+    # here so the storefront (and its Pinterest feed) can show them
+    "jersey": {"name": "Basketball Jersey", "blueprint": 949, "provider": 47, "profit": 13.0, "art": "jersey"},
+    "soccer_jersey": {"name": "Soccer Jersey", "blueprint": 1332, "provider": 99, "profit": 13.0, "art": "jersey"},
 }
 SWEATER_PRODUCTS = ["ugly_sweater", "sweater_tee", "sweater_hoodie"]
 SWEATER_NOTE = """This one is an UGLY CHRISTMAS SWEATER design: the words are knitted in chunky sweater letters over a
@@ -1774,6 +1778,8 @@ class ShopService:
         now = now or datetime.now()
         st = load_state(shop.state_path)
         today = now.date().isoformat()
+        self.jerseys(shop, today)
+        st = load_state(shop.state_path)
         h, m = (int(x) for x in str(cfg["time"]).split(":"))
         made_today = sum(1 for d in st["designs"] if datetime.fromtimestamp(d["made"]).date().isoformat() == today
                          and (d.get("spinoff_of") or not d.get("season")))
@@ -2050,6 +2056,17 @@ class ShopService:
         if n:
             self.log(f"shop: added {n} photos to Etsy listings")
 
+    def jerseys(self, shop: "Shop", today: str) -> None:
+        """The jersey line (worker/jersey_shop.py): new art texted for approval, approved jerseys listed."""
+        try:
+            from worker.jersey_shop import Jerseys
+            home = Path(shop.state_path).parent                # memory/ (a test's own folder in tests)
+            if Jerseys(shop, log=self.log, state_path=home / "jersey.json", inbox=home / "jersey_art" / "inbox",
+                       designs_dir=home / "jersey_art" / "designs").run():
+                self.storefront(shop, today, force=True)
+        except Exception as exc:
+            self.log(f"jerseys: {exc!r}")
+
     def storefront(self, shop: "Shop", today: str, force: bool = False) -> None:
         """Rebuild the public storefront (worker/storefront.py) after new listings, else once a day."""
         st = load_state(shop.state_path)
@@ -2058,7 +2075,8 @@ class ShopService:
         st["storefront_day"] = today
         try:
             from worker import storefront
-            storefront.publish(st["designs"], shop.c.printify, self.log)    # caches each listing's link and photos
+            from worker import jersey_shop
+            storefront.publish(st["designs"] + jersey_shop.pin_recs(), shop.c.printify, self.log)  # caches links, photos
         except Exception as exc:
             self.log(f"storefront: {exc}")
         save_state(st, shop.state_path)

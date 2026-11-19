@@ -26,7 +26,8 @@ DEFAULTS = {"repo": "Nathan123y/Nathan123y.github.io", "name": "Gift Designs", "
             # designs made from this time on get a feed item (so a Pin) per product; older ones keep one per design
             # (their products were pinned by hand from a bulk upload on 2026-10-26)
             "product_pins_since": 1793044800}
-CAMERAS = {"tee": ("person-1", "front-2", "lifestyle"), "mug": ("context-1", "front"), "sticker": ("context-1", "front")}
+CAMERAS = {"tee": ("person-1", "front-2", "lifestyle"), "mug": ("context-1", "front"), "sticker": ("context-1", "front"),
+           "jersey": ("person-front", "front"), "soccer_jersey": ("person-front", "front")}
 
 
 def settings() -> dict:

@@ -1,110 +1,499 @@
-"""The personalised basketball jersey: listed on every connected shop, kept apart from the daily design pipeline.
+"""The jersey line: art the user makes in ChatGPT, listed by Jarvis after the user approves it from their phone.
 
-State lives in memory/jersey.json: {"products": {channel: {id, shop, price, published}}, "orders": {...}}.
-Nothing here publishes unless asked to (publish=True), because a buyer's name has to reach the printer: see orders().
+The flow (user, 2026-11-19):
+1. The user drops a concept's flat print art in memory/jersey_art/inbox/<concept>/: front.png and back.png (tall 2:3),
+   plus sleeve.png for a soccer jersey (no sleeve = basketball). An optional info.txt: "title: ..." and/or "soccer".
+2. Each worker pass (Runtime.jerseys) picks it up: fits the art to the jersey's print areas, makes a draft on the
+   Pop-Up Store for Printify's mockups and texts the user the front and back.
+3. The user approves or rejects it (from Claude on their phone): python3 -m worker.jersey_shop approve <concept>.
+   That only marks it; the worker lists it on its next pass, so the shop state has one writer.
+4. Approved: TikTok Shop (the best audience so far: it's at its 100-listing limit, so the oldest never-sold shirt
+   there makes room), eBay (the same: the oldest never-sold listing goes), the Pop-Up Store and so Pinterest (the
+   storefront feed pins it), and Etsy slowly: one jersey every ETSY_EVERY_DAYS.
+
+No real team marks, names or players are ever listed: the user's own made-up clubs only.
+State: memory/jersey.json {"designs": [rec, ...]}; a rec looks like a shop design (products/channels) so the
+storefront can pin it.
 """
 from __future__ import annotations
 
 import base64
 import io
 import json
+import re
+import shutil
+import time
 from pathlib import Path
-from typing import Optional
-
-from worker import jersey
-from worker.shop import CHANNELS, Clients, Shop, price_for
+from typing import Callable, Optional
 
 ROOT = Path(__file__).resolve().parents[1]
 STATE = ROOT / "memory" / "jersey.json"
-BLUEPRINT, PROVIDER = 1209, 83               # Unisex Basketball Jersey (AOP), Subliminator
-PROFIT = 15.0
-SEED = 7
-TITLES = {
-    "etsy": "Basketball Jersey, Navy Red Cream Star and Flames Sports Jersey, Birthday Gift for Basketball Player, Streetwear Jersey for Men Women Teens",
-    "popup": "Basketball Jersey, Navy Red Cream Star and Flames Sports Jersey, Birthday Gift for Basketball Player",
-    "ebay": "Basketball Jersey Navy Red Cream Star Flames Unisex Streetwear Sports Jersey Gift",
-    "tiktok": "Basketball Jersey Navy Red Star Flames Unisex Streetwear Sports Jersey Gift",
+INBOX = ROOT / "memory" / "jersey_art" / "inbox"
+DESIGNS = ROOT / "memory" / "jersey_art" / "designs"
+ETSY_EVERY_DAYS = 3
+TIKTOK_MAX = 100
+# both made and shipped in the US (Printify charges $6.39 to ship either; the first jersey tried, blueprint 1209 from
+# Subliminator, cost $20.79 to ship)
+KINDS = {
+    "basketball": {"name": "Basketball Jersey", "blueprint": 949, "provider": 47, "profit": 13.0,
+                   "areas": {"front": "front", "back": "back"}},
+    "soccer": {"name": "Soccer Jersey", "blueprint": 1332, "provider": 99, "profit": 13.0,
+               "areas": {"front": "front", "back": "back", "right_sleeve": "sleeve", "left_sleeve": "sleeve",
+                         "Collar": "sleeve"}},
 }
-TAGS = ["basketball jersey", "streetwear jersey", "sports jersey", "basketball gift", "gift for him",
-        "gift for teen boy", "basketball fan", "mens jersey", "womens jersey", "unisex jersey", "birthday gift",
-        "star jersey", "flame jersey"]
-
-
-def description(channel: str) -> str:
-    return (
-        "A basketball jersey printed all over in navy, red, sky blue and cream, with a big star outline and flames. "
-        "The front says BUCKET GETTER over a number 10, and the back has a big 10.\n\n"
-        "The details:\n"
-        "- 100% recycled moisture-wicking polyester mesh, light (4.8 oz), a standard unisex fit\n"
-        "- Ribbed black collar and armholes, sewn-in size label\n"
-        "- Sizes XS to 4XL (it runs like a regular basketball jersey)\n"
-        "- Printed to order after you buy, so allow about 1-2 weeks including shipping\n\n"
-        "This is an original design. It is not made by, licensed by or connected to any team, league or player."
-    )
+TAGS = {
+    "basketball": ["basketball jersey", "streetwear jersey", "vintage jersey", "retro jersey", "sports jersey",
+                   "y2k streetwear", "gift for him", "gift for teen boy", "basketball fan", "mens jersey",
+                   "unisex jersey", "birthday gift", "hoop jersey"],
+    "soccer": ["soccer jersey", "football shirt", "vintage jersey", "retro soccer shirt", "streetwear jersey",
+               "y2k streetwear", "sports jersey", "gift for him", "gift for teen boy", "soccer fan", "unisex jersey",
+               "birthday gift", "blokecore"],
+}
+AI_NOTE = ("Designed by us with the help of AI image tools, then printed on demand and shipped by our production "
+           "partner. Each jersey is made for you after you order.")
+ORIGINAL = "An original design for a made-up club. It is not made by, licensed by or connected to any team, league or player."
 
 
 def load(path: Path = STATE) -> dict:
     try:
-        return json.loads(path.read_text())
+        st = json.loads(path.read_text())
     except (OSError, ValueError):
-        return {"products": {}, "orders": {}}
-
-
-def save(st: dict, path: Path = STATE) -> None:
-    path.write_text(json.dumps(st, indent=1))
-
-
-def _upload(c: Clients, img, name: str) -> str:
-    buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=90)
-    return c.printify("POST", "uploads/images.json", {"file_name": name, "contents": base64.b64encode(buf.getvalue()).decode()})["id"]
-
-
-def list_everywhere(publish: bool = False, only: Optional[list] = None, log=print) -> dict:
-    """Create the jersey as a product in each connected shop (a draft unless publish=True) and remember the ids."""
-    c = Clients()
-    shop = Shop(c)
-    st = load()
-    stores = shop.stores()
-    art = st.setdefault("art", {})
-    if "front" not in art:
-        log("drawing the front and back…")
-        art["front"] = _upload(c, jersey.front(seed=SEED), "jersey-front.jpg")
-        art["back"] = _upload(c, jersey.back(seed=SEED), "jersey-back.jpg")
-        save(st)
-    variants = c.printify("GET", f"catalog/blueprints/{BLUEPRINT}/print_providers/{PROVIDER}/variants.json")["variants"]
-    ids = [v["id"] for v in variants]
-    areas = [{"variant_ids": ids, "placeholders": [
-        {"position": pos, "images": [{"id": art[pos], "x": 0.5, "y": 0.5, "scale": 1, "angle": 0}]} for pos in ("front", "back")]}]
-    for channel, store in stores.items():
-        if only and channel not in only:
-            continue
-        prod = st["products"].get(channel)
-        if not prod:
-            body = {"title": TITLES[channel][:CHANNELS[channel]["title_max"]], "description": description(channel), "tags": TAGS,
-                    "blueprint_id": BLUEPRINT, "print_provider_id": PROVIDER,
-                    "variants": [{"id": i, "price": 4199, "is_enabled": True} for i in ids], "print_areas": areas}
-            made = c.printify("POST", f"shops/{store['id']}/products.json", body)
-            cost = {v["id"]: int(v.get("cost") or 0) for v in made["variants"]}
-            priced = [{"id": i, "price": price_for(cost[i], PROFIT), "is_enabled": True} for i in ids if cost.get(i)]
-            c.printify("PUT", f"shops/{store['id']}/products/{made['id']}.json", {"variants": priced})
-            prod = st["products"][channel] = {"id": made["id"], "shop": store["id"], "price": min(p["price"] for p in priced),
-                                              "published": False}
-            save(st)
-            log(f"{CHANNELS[channel]['name']}: draft {made['id']} at ${prod['price'] / 100:.2f}")
-        if publish and not prod["published"]:
-            shop.publish(prod)
-            save(st)
-            log(f"{CHANNELS[channel]['name']}: published")
+        st = {}
+    st.setdefault("designs", [])
     return st
 
 
-def is_jersey_order(order: dict, st: Optional[dict] = None) -> bool:
-    st = st or load()
-    mine = {p["id"] for p in st["products"].values()}
-    return any(li.get("product_id") in mine for li in order.get("line_items") or [])
+def save(st: dict, path: Path = STATE) -> None:
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(st, indent=1))
+    tmp.replace(path)
+
+
+def slug_of(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "jersey"
+
+
+def find(st: dict, name: str) -> Optional[dict]:
+    want = slug_of(name)
+    return next((r for r in st["designs"] if r["slug"] == want), None)
+
+
+def fit(img, size: tuple):
+    """Cover-crop the art to the print area's shape (centred) and scale it to the area's full resolution."""
+    from PIL import Image, ImageFilter
+    img = img.convert("RGB")
+    w, h = img.size
+    tw, th = size
+    if w / h > tw / th:
+        nw = int(h * tw / th)
+        img = img.crop(((w - nw) // 2, 0, (w - nw) // 2 + nw, h))
+    else:
+        nh = int(w * th / tw)
+        img = img.crop((0, (h - nh) // 2, w, (h - nh) // 2 + nh))
+    out = img.resize(size, Image.LANCZOS)
+    return out.filter(ImageFilter.UnsharpMask(radius=3, percent=60, threshold=2)) if tw > w * 1.5 else out
+
+
+def _art_file(folder: Path, stem: str) -> Optional[Path]:
+    for ext in (".png", ".jpg", ".jpeg", ".webp"):
+        p = folder / f"{stem}{ext}"
+        if p.is_file():
+            return p
+    return None
+
+
+def read_info(folder: Path) -> dict:
+    info = {}
+    p = folder / "info.txt"
+    if p.is_file():
+        text = p.read_text(errors="replace")
+        m = re.search(r"title:\s*(.+)", text, re.I)
+        if m:
+            info["title"] = m.group(1).strip()[:140]
+        if re.search(r"\bsoccer\b|\bfootball shirt\b", text, re.I):
+            info["kind"] = "soccer"
+    return info
+
+
+def titles(rec: dict) -> dict:
+    """A title per marketplace: Etsy and the Pop-Up Store up to 140 letters, eBay and TikTok up to 80."""
+    name, kind = rec["concept"].title(), KINDS[rec["kind"]]["name"]
+    base = rec.get("title") or f"{name} {kind}, Vintage Y2K Streetwear Sports Jersey, Retro Unisex Jersey Gift for Him"
+    short = rec.get("title") or f"{name} {kind} Vintage Y2K Streetwear Retro Unisex Sports Jersey"
+
+    def cut(text: str, limit: int) -> str:
+        if len(text) <= limit:
+            return text
+        return text[:limit].rsplit(" ", 1)[0].rstrip(",")
+
+    return {"etsy": cut(base, 140), "popup": cut(base, 140), "ebay": cut(short, 80), "tiktok": cut(short, 80)}
+
+
+def description(rec: dict, facts: list) -> str:
+    kind = KINDS[rec["kind"]]["name"].lower()
+    lines = [f"{rec['concept'].upper()}: a vintage-style {kind} printed all over, front and back, in the early-2000s "
+             "streetwear look: flowing waves, warped stripes, washed colours and cracked, faded-ink lettering "
+             "(the cracks and fading are printed; the jersey is new).", ""]
+    if facts:
+        lines += ["The details:"] + [f"- {f}" for f in facts] + [""]
+    lines += ["Printed to order after you buy, so allow about 1-2 weeks including shipping.", "", ORIGINAL, "", AI_NOTE]
+    return "\n".join(lines)
+
+
+class Jerseys:
+    """The jersey line's work for one worker pass, with Printify, texting and the clock injectable for tests."""
+
+    def __init__(self, shop, *, text_file: Callable[[Path, str], None] = None, text: Callable[[str], None] = None,
+                 log: Callable[[str], None] = print, clock: Callable[[], float] = time.time,
+                 state_path: Path = STATE, inbox: Path = INBOX, designs_dir: Path = DESIGNS):
+        from core import phone_alerts
+        self.shop, self.c = shop, shop.c
+        self.text_file = text_file or (lambda path, note: phone_alerts.send_file(path, note))
+        self.text = text or (lambda msg: phone_alerts.send_text(msg))
+        self.log, self.clock = log, clock
+        self.state_path, self.inbox, self.designs_dir = state_path, inbox, designs_dir
+        self._variants: dict = {}
+        self._facts: dict = {}
+
+    # -- Printify helpers -----------------------------------------------------------------------------------------
+    def variants(self, kind: str) -> list:
+        if kind not in self._variants:
+            k = KINDS[kind]
+            self._variants[kind] = self.c.printify(
+                "GET", f"catalog/blueprints/{k['blueprint']}/print_providers/{k['provider']}/variants.json")["variants"]
+        return self._variants[kind]
+
+    def facts(self, kind: str) -> list:
+        """The maker's own facts (fabric, fit, care) from Printify's catalog, as short lines."""
+        if kind not in self._facts:
+            try:
+                bp = self.c.printify("GET", f"catalog/blueprints/{KINDS[kind]['blueprint']}.json") or {}
+                text = re.sub(r"<[^>]+>", "\n", bp.get("description") or "")
+                self._facts[kind] = [re.sub(r"^[.:\s]+", "", x).strip() for x in text.split("\n")
+                                     if x.strip().startswith(".:")][:6]
+            except Exception:
+                self._facts[kind] = []
+        return self._facts[kind]
+
+    def upload(self, img, name: str) -> str:
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=92)
+        return self.c.printify("POST", "uploads/images.json",
+                               {"file_name": name, "contents": base64.b64encode(buf.getvalue()).decode()})["id"]
+
+    def create(self, rec: dict, channel: str, store: dict) -> dict:
+        """A product for this jersey in one store, priced from Printify's cost; not published."""
+        from worker.shop import price_for
+        k = KINDS[rec["kind"]]
+        ids = [v["id"] for v in self.variants(rec["kind"])]
+        holders = [{"position": pos, "images": [{"id": rec["uploads"][pos], "x": 0.5, "y": 0.5, "scale": 1, "angle": 0}]}
+                   for pos in k["areas"]]
+        body = {"title": titles(rec)[channel], "description": description(rec, self.facts(rec["kind"])),
+                "tags": TAGS[rec["kind"]], "blueprint_id": k["blueprint"], "print_provider_id": k["provider"],
+                "variants": [{"id": i, "price": 4499, "is_enabled": True} for i in ids],
+                "print_areas": [{"variant_ids": ids, "placeholders": holders}]}
+        made = self.c.printify("POST", f"shops/{store['id']}/products.json", body)
+        cost = {v["id"]: int(v.get("cost") or 0) for v in made.get("variants") or []}
+        priced = [{"id": i, "price": price_for(cost[i], k["profit"]), "is_enabled": True} for i in ids if cost.get(i)]
+        if priced:
+            self.c.printify("PUT", f"shops/{store['id']}/products/{made['id']}.json", {"variants": priced})
+        return {"id": made["id"], "shop": store["id"], "price": min((p["price"] for p in priced), default=4499),
+                "published": False, "images": [i["src"] for i in made.get("images") or []]}
+
+    def publish(self, prod: dict) -> None:
+        self.shop.publish(prod)
+        prod["listed_at"] = self.clock()
+
+    # -- 1. the inbox -------------------------------------------------------------------------------------------------
+    def intake(self, st: dict, stores: dict) -> list:
+        """New concept folders in the inbox: art fitted and uploaded, a Pop-Up draft made, the user texted."""
+        from PIL import Image
+        done = []
+        if not self.inbox.is_dir():
+            return done
+        for folder in sorted(p for p in self.inbox.iterdir() if p.is_dir()):
+            front, back = _art_file(folder, "front"), _art_file(folder, "back")
+            if not (front and back):
+                continue
+            slug = slug_of(folder.name)
+            if find(st, slug):
+                slug = f"{slug}-{int(self.clock())}"
+            info = read_info(folder)
+            sleeve = _art_file(folder, "sleeve")
+            kind = "soccer" if sleeve or info.get("kind") == "soccer" else "basketball"
+            if kind == "soccer" and not sleeve:
+                sleeve = back                            # no sleeve art: the back's pattern goes on the sleeves
+            dest = self.designs_dir / slug
+            dest.mkdir(parents=True, exist_ok=True)
+            rec = {"id": f"jersey-{slug}", "slug": slug, "concept": folder.name.replace("-", " ").replace("_", " ").strip(),
+                   "kind": kind, "made": self.clock(), "status": "new", "uploads": {}, **info}
+            try:
+                area = {p["position"]: (p["width"], p["height"]) for p in self.variants(kind)[0]["placeholders"]}
+                src = {"front": front, "back": back, "sleeve": sleeve}
+                for pos, which in KINDS[kind]["areas"].items():
+                    with Image.open(src[which]) as im:
+                        art = fit(im, area[pos])
+                    if pos == "left_sleeve":
+                        art = art.transpose(Image.FLIP_LEFT_RIGHT)
+                    if pos in ("front", "back"):
+                        art.save(dest / f"{pos}.jpg", "JPEG", quality=92)
+                    rec["uploads"][pos] = self.upload(art, f"{slug}-{pos}.jpg")
+                for f in folder.iterdir():
+                    shutil.copy2(f, dest / f"original-{f.name}")
+                rec["file"] = str(dest / "front.jpg")
+                rec["title"] = info.get("title") or ""
+                rec["channels"] = {"popup": {"jersey": self.create(rec, "popup", stores["popup"])}}
+                rec["preview"] = str(self.preview(rec, dest))
+                rec["status"] = "awaiting"
+            except Exception as exc:
+                self.log(f"jerseys: couldn't prepare {folder.name}: {exc}")
+                rec["status"] = "broken"
+                rec["error"] = str(exc)[:300]
+            shutil.rmtree(folder, ignore_errors=True)
+            st["designs"].append(rec)
+            save(st, self.state_path)
+            if rec["status"] == "awaiting":
+                note = (f"🏀 New jersey ready: {rec['concept'].upper()} ({KINDS[kind]['name'].lower()}, "
+                        f"${rec['channels']['popup']['jersey']['price'] / 100:.2f} + shipping). Front and back below. "
+                        f"To post it, tell Claude: approve jersey {slug}  (or: reject jersey {slug})")
+                try:
+                    self.text_file(Path(rec["preview"]), note)
+                except Exception as exc:
+                    self.log(f"jerseys: couldn't text the preview: {exc}")
+            else:
+                self._say(f"⚠️ Couldn't prepare the jersey '{folder.name}': {rec['error'][:150]}")
+            done.append(rec)
+        return done
+
+    def preview(self, rec: dict, dest: Path) -> Path:
+        """One picture for the text: the jersey on a person front and back, and flat front and back."""
+        import requests
+        from PIL import Image
+        imgs = rec["channels"]["popup"]["jersey"].get("images") or []
+        by = {}
+        for src in imgs:
+            m = re.search(r"camera_label=([\w-]+)", src)
+            if m:
+                by.setdefault(m.group(1), src)
+        want = [next((k for k in by if "person" in k and k.endswith("front")), None),
+                next((k for k in by if "person" in k and k.endswith("back")), None), "front", "back"]
+        tiles = []
+        for label in want:
+            if not label or label not in by:
+                continue
+            try:
+                r = requests.get(by[label], headers={"User-Agent": "Mozilla/5.0"}, timeout=60)
+                tiles.append(Image.open(io.BytesIO(r.content)).convert("RGB").resize((800, 800)))
+            except Exception:
+                continue
+        if not tiles:
+            for pos in ("front", "back"):
+                with Image.open(dest / f"{pos}.jpg") as im:
+                    im.thumbnail((800, 800))
+                    tiles.append(im.convert("RGB"))
+        cols = 2
+        sheet = Image.new("RGB", (800 * cols, 800 * ((len(tiles) + 1) // cols)), "white")
+        for i, t in enumerate(tiles):
+            sheet.paste(t, ((i % cols) * 800 + (800 - t.width) // 2, (i // cols) * 800 + (800 - t.height) // 2))
+        out = dest / f"{rec['slug']}-preview.jpg"
+        sheet.save(out, "JPEG", quality=88)
+        return out
+
+    # -- 2. approvals -------------------------------------------------------------------------------------------------
+    def make_room_tiktok(self, store: dict) -> bool:
+        """At TikTok's listing limit: delete the TikTok product of the oldest never-sold daily design (not a winner's
+        spin-off). True when there's room."""
+        from worker.shop import load_state, save_state
+        live = self.shop.tiktok_live(store["id"])
+        if live is None or live < TIKTOK_MAX:
+            return live is not None
+        sst = load_state(self.shop.state_path)
+        sold = {i for x in sst.get("sales_log") or [] for i in x.get("designs") or []}
+        for d in sst["designs"]:
+            if d.get("id") in sold or d.get("spinoff_of"):
+                continue
+            tiktok = d.get("channels", {}).get("tiktok", {})
+            for kind, prod in list(tiktok.items()):
+                if not prod.get("published"):
+                    continue
+                self.c.printify("DELETE", f"shops/{store['id']}/products/{prod['id']}.json")
+                del tiktok[kind]
+                d.setdefault("tiktok_ended", []).append(kind)
+                save_state(sst, self.shop.state_path)
+                self.log(f"jerseys: took '{d.get('slogan')}' {kind} off TikTok to make room")
+                return True
+        return False
+
+    def make_room_ebay(self, store: dict) -> bool:
+        from worker.shop import load_state, save_state
+        sst = load_state(self.shop.state_path)
+        cfg = self.shop.cfg()
+        on_ebay = sum(len(d.get("channels", {}).get("ebay", {})) for d in sst["designs"])
+        if on_ebay + self.ebay_jerseys() < cfg.get("ebay_max", 250):
+            return True
+        sold = {i for x in sst.get("sales_log") or [] for i in x.get("designs") or []}
+        ok = self.shop.end_oldest_ebay(sst, store, sold)
+        save_state(sst, self.shop.state_path)
+        return ok
+
+    def ebay_jerseys(self) -> int:
+        return sum(1 for r in load(self.state_path)["designs"] if (r.get("channels", {}).get("ebay") or {}).get("jersey"))
+
+    def list_approved(self, st: dict, stores: dict) -> list:
+        """Approved jerseys onto TikTok, eBay and the Pop-Up Store (Etsy waits its turn). Returns the lines listed."""
+        out = []
+        for rec in st["designs"]:
+            if rec.get("status") != "approved":
+                continue
+            listed, failed = [], []
+            for channel, room in (("tiktok", self.make_room_tiktok), ("ebay", self.make_room_ebay), ("popup", None)):
+                store = stores.get(channel)
+                if not store:
+                    continue
+                prods = rec.setdefault("channels", {}).setdefault(channel, {})
+                prod = prods.get("jersey")
+                if prod and prod.get("published"):
+                    continue
+                try:
+                    if not prod and room and not room(store):
+                        failed.append(f"{channel}: no room")
+                        continue
+                    prod = prods["jersey"] = prod or self.create(rec, channel, store)
+                    save(st, self.state_path)
+                    self.publish(prod)
+                    listed.append(channel)
+                except Exception as exc:
+                    failed.append(f"{channel}: {str(exc)[:120]}")
+                    self.log(f"jerseys: {rec['slug']} on {channel} failed: {exc}")
+            rec["status"] = "listed" if not failed else "approved"
+            rec.setdefault("errors", []).extend(failed)
+            if len(rec["errors"]) > 9:
+                rec["status"] = "listed"             # stop retrying a channel that keeps failing; the rest are up
+            rec["etsy_queued"] = True
+            save(st, self.state_path)
+            names = {"tiktok": "TikTok Shop", "ebay": "eBay", "popup": "our shop + Pinterest"}
+            if listed:
+                out.append(f"{rec['concept'].upper()} on " + ", ".join(names[c] for c in listed))
+            if failed and rec["status"] == "listed":
+                self._say(f"⚠️ {rec['concept'].upper()} couldn't go on: {'; '.join(failed)[:200]}")
+        return out
+
+    def etsy_turn(self, st: dict, stores: dict) -> Optional[str]:
+        """One approved jersey onto Etsy every ETSY_EVERY_DAYS ($0.20 a listing), oldest approval first."""
+        if "etsy" not in stores:
+            return None
+        last = max((r["products"]["jersey"].get("listed_at", 0) for r in st["designs"]
+                    if (r.get("products") or {}).get("jersey")), default=0)
+        if self.clock() - last < ETSY_EVERY_DAYS * 86400:
+            return None
+        rec = next((r for r in st["designs"] if r.get("etsy_queued") and not (r.get("products") or {}).get("jersey")), None)
+        if not rec:
+            return None
+        try:
+            prod = rec.setdefault("products", {})["jersey"] = self.create(rec, "etsy", stores["etsy"])
+            save(st, self.state_path)
+            self.publish(prod)
+            save(st, self.state_path)
+            return f"{rec['concept'].upper()} on Etsy"
+        except Exception as exc:
+            rec["etsy_queued"] = False
+            save(st, self.state_path)
+            self.log(f"jerseys: {rec['slug']} on Etsy failed: {exc}")
+            return None
+
+    def reject(self, st: dict) -> None:
+        for rec in st["designs"]:
+            if rec.get("status") != "rejecting":
+                continue
+            for channel, prods in (rec.get("channels") or {}).items():
+                prod = prods.get("jersey")
+                if prod and not prod.get("published"):
+                    try:
+                        self.c.printify("DELETE", f"shops/{prod['shop']}/products/{prod['id']}.json")
+                    except Exception as exc:
+                        self.log(f"jerseys: couldn't delete the {channel} draft of {rec['slug']}: {exc}")
+                    prods.pop("jersey", None)
+            rec["status"] = "rejected"
+            save(st, self.state_path)
+
+    def _say(self, msg: str) -> None:
+        try:
+            self.text(msg)
+        except Exception as exc:
+            self.log(f"jerseys: couldn't text: {exc}")
+
+    def run(self) -> bool:
+        """One pass. True when something new went live (so the storefront and its Pinterest feed rebuild)."""
+        st = load(self.state_path)
+        has_inbox = self.inbox.is_dir() and any(p.is_dir() for p in self.inbox.iterdir())
+        busy = any(r.get("status") in ("approved", "rejecting") or r.get("etsy_queued") for r in st["designs"])
+        if not (has_inbox or busy):
+            return False
+        stores = self.shop.stores()
+        self.intake(st, stores)
+        self.reject(st)
+        live = self.list_approved(st, stores)
+        etsy = self.etsy_turn(st, stores)
+        if etsy:
+            live.append(etsy)
+        if live:
+            self._say("✅ Jersey live: " + "; ".join(live) + ".")
+        return bool(live)
+
+
+def pin_recs(path: Path = STATE) -> list:
+    """Listed jerseys shaped like shop designs, for the storefront (whose feed Pinterest pins from)."""
+    out = []
+    for rec in load(path)["designs"]:
+        if rec.get("status") != "listed":
+            continue
+        name = titles(rec)["popup"]
+        out.append({"id": rec["id"], "title": name, "slogan": rec["concept"].upper(), "made": rec["made"],
+                    "description": f"{rec['concept'].upper()}: a vintage Y2K streetwear {KINDS[rec['kind']]['name'].lower()}, "
+                                   "printed all over. " + ORIGINAL,
+                    "file": rec.get("file", ""), "products": dict(rec.get("products") or {}),
+                    "channels": {ch: {("jersey" if rec["kind"] == "basketball" else "soccer_jersey"): p
+                                      for p in prods.values()} for ch, prods in (rec.get("channels") or {}).items()}})
+        if rec["kind"] == "soccer" and out[-1]["products"].get("jersey"):
+            out[-1]["products"] = {"soccer_jersey": out[-1]["products"]["jersey"]}
+    return out
+
+
+def mark(name: str, status: str, path: Path = STATE) -> str:
+    """The user's yes or no (from their phone, through Claude). The worker does the listing on its next pass."""
+    st = load(path)
+    if name in ("all", "everything"):
+        recs = [r for r in st["designs"] if r.get("status") == "awaiting"]
+    else:
+        rec = find(st, name)
+        recs = [rec] if rec else []
+    if not recs:
+        waiting = ", ".join(r["slug"] for r in st["designs"] if r.get("status") == "awaiting") or "none"
+        return f"No jersey called '{name}' is waiting. Waiting: {waiting}."
+    for rec in recs:
+        if rec.get("status") != "awaiting":
+            return f"{rec['slug']} is already {rec.get('status')}."
+        rec["status"] = status
+    save(st, path)
+    verb = "will go live on TikTok Shop, eBay, our shop and Pinterest within about 5 minutes (Etsy in its turn)" \
+        if status == "approved" else "will be deleted"
+    return f"{', '.join(r['slug'] for r in recs)} {verb}."
+
+
+def summary(path: Path = STATE) -> str:
+    st = load(path)
+    if not st["designs"]:
+        return "No jerseys yet. Drop art in memory/jersey_art/inbox/<concept>/ (front.png, back.png)."
+    return "\n".join(f"{r['slug']}: {r.get('status')} ({r['kind']})"
+                     + (" · on " + ", ".join(ch for ch, p in (r.get('channels') or {}).items() if (p.get('jersey') or {}).get('published')) if r.get("channels") else "")
+                     + (" · Etsy" if (r.get("products") or {}).get("jersey") else "")
+                     for r in st["designs"])
 
 
 if __name__ == "__main__":
     import sys
-    list_everywhere(publish="--publish" in sys.argv)
+    args = sys.argv[1:]
+    if len(args) >= 2 and args[0] in ("approve", "reject"):
+        print(mark(" ".join(args[1:]), "approved" if args[0] == "approve" else "rejecting"))
+    else:
+        print(summary())
