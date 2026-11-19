@@ -121,6 +121,9 @@ def read_info(folder: Path) -> dict:
     p = folder / "info.txt"
     if p.is_file():
         text = p.read_text(errors="replace")
+        n = re.search(r"name:\s*(.+)", text, re.I)
+        if n:
+            info["concept"] = n.group(1).strip()[:40]
         m = re.search(r"title:\s*(.+)", text, re.I)
         if m:
             info["title"] = m.group(1).strip()[:140]

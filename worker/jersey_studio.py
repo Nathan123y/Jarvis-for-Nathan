@@ -168,7 +168,7 @@ def generate(slug: str, inbox: Path = INBOX, timeout: int = 900, run=subprocess.
         staging.mkdir(parents=True)
         for n in need:
             shutil.copy2(Path(tmp) / n, staging / n)
-        (staging / "info.txt").write_text(f"title: {c[6]}\n" + ("soccer\n" if c[2] == "soccer" else ""))
+        (staging / "info.txt").write_text(f"name: {c[1]}\ntitle: {c[6]}\n" + ("soccer\n" if c[2] == "soccer" else ""))
         inbox.mkdir(parents=True, exist_ok=True)
         staging.rename(dest)                     # the folder appears whole, never half-written for the worker
     return dest
