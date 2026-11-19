@@ -1174,6 +1174,19 @@ def youtube_upload(rec: dict, cfg: Optional[dict] = None, log: Callable = print,
             if not want or f"/channel/{want}" not in pg.url:    # never upload to any other channel
                 raise WrongChannel(f"Studio opened {pg.url[:80]}, not the guides' channel {want or '?'}")
             pg.goto(f"https://studio.youtube.com/channel/{want}/videos/upload?d=ud", wait_until="domcontentloaded", timeout=60000)
+            try:                                                # the link sometimes lands on the dashboard with no upload dialog (11-18)
+                pg.locator("input[type=file]").first.wait_for(state="attached", timeout=20000)
+            except Exception:
+                log("youtube: the upload dialog didn't open; opening it from Create")
+                for t in ("No thanks", "Dismiss"):                  # the "Help us improve YouTube Studio" survey
+                    try:
+                        pg.get_by_text(t, exact=True).first.click(timeout=2000)
+                    except Exception:
+                        pass
+                pg.goto(f"https://studio.youtube.com/channel/{want}", wait_until="domcontentloaded", timeout=60000)
+                pg.wait_for_timeout(3000)
+                pg.locator("#create-icon, ytcp-button#create-icon").first.click(timeout=15000)
+                pg.locator("tp-yt-paper-item:has-text('Upload videos'), #text-item-0").first.click(timeout=15000)
             pg.locator("input[type=file]").first.set_input_files(rec["path"], timeout=60000)
             title = pg.locator("#title-textarea #textbox").first
             title.wait_for(state="visible", timeout=120000)
