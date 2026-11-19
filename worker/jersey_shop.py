@@ -78,18 +78,32 @@ def find(st: dict, name: str) -> Optional[dict]:
     return next((r for r in st["designs"] if r["slug"] == want), None)
 
 
-def fit(img, size: tuple):
-    """Cover-crop the art to the print area's shape (centred) and scale it to the area's full resolution."""
+# On a worn jersey only about the middle 3/4 of a front or back panel shows from the front (Printify's model photos,
+# 2026-11-19: ChatGPT's lettering spans ~80% of its image and was cut off at the sides). The art is shrunk to this share
+# of the panel's width and the rest is filled by mirroring its own edges, so the pattern still runs to the seams.
+PANEL_INSET = 0.74
+
+
+def fit(img, size: tuple, inset: float = 1.0):
+    """The art fitted to a print area: centred, its full width shrunk to `inset` of the area's width (the edges filled
+    by mirroring the art outward; cropped top and bottom if it's too tall), at the area's full resolution."""
+    import numpy as np
     from PIL import Image, ImageFilter
     img = img.convert("RGB")
     w, h = img.size
     tw, th = size
-    if w / h > tw / th:
-        nw = int(h * tw / th)
-        img = img.crop(((w - nw) // 2, 0, (w - nw) // 2 + nw, h))
-    else:
-        nh = int(w * th / tw)
-        img = img.crop((0, (h - nh) // 2, w, (h - nh) // 2 + nh))
+    ratio = tw / th
+    W = max(int(round(w / inset)), 1)
+    H = int(round(W / ratio))
+    if H < h:                                   # too tall for the area at this width: trim top and bottom evenly
+        top = (h - H) // 2
+        img = img.crop((0, top, w, top + H))
+        h = H
+    if W > w or H > h:
+        arr = np.asarray(img)
+        left, top = (W - w) // 2, (H - h) // 2
+        arr = np.pad(arr, ((top, H - h - top), (left, W - w - left), (0, 0)), mode="symmetric")
+        img = Image.fromarray(arr)
     out = img.resize(size, Image.LANCZOS)
     return out.filter(ImageFilter.UnsharpMask(radius=3, percent=60, threshold=2)) if tw > w * 1.5 else out
 
@@ -234,7 +248,7 @@ class Jerseys:
                 src = {"front": front, "back": back, "sleeve": sleeve}
                 for pos, which in KINDS[kind]["areas"].items():
                     with Image.open(src[which]) as im:
-                        art = fit(im, area[pos])
+                        art = fit(im, area[pos], PANEL_INSET if pos in ("front", "back") else 1.0)
                     if pos == "left_sleeve":
                         art = art.transpose(Image.FLIP_LEFT_RIGHT)
                     if pos in ("front", "back"):
@@ -268,6 +282,38 @@ class Jerseys:
                 self._say(f"⚠️ Couldn't prepare the jersey '{folder.name}': {rec['error'][:150]}")
             done.append(rec)
         return done
+
+    def refit(self, rec: dict) -> int:
+        """Fit a jersey's original art again (as fit() does today) and send it to every product it has, republishing the
+        live ones so their photos follow. Returns how many products were updated."""
+        from PIL import Image
+        dest = self.designs_dir / rec["slug"]
+        k = KINDS[rec["kind"]]
+        area = {p["position"]: (p["width"], p["height"]) for p in self.variants(rec["kind"])[0]["placeholders"]}
+        src = {w: _art_file(dest, f"original-{w}") for w in ("front", "back", "sleeve")}
+        src["sleeve"] = src["sleeve"] or src["back"]
+        for pos, which in k["areas"].items():
+            with Image.open(src[which]) as im:
+                art = fit(im, area[pos], PANEL_INSET if pos in ("front", "back") else 1.0)
+            if pos == "left_sleeve":
+                art = art.transpose(Image.FLIP_LEFT_RIGHT)
+            if pos in ("front", "back"):
+                art.save(dest / f"{pos}.jpg", "JPEG", quality=92)
+            rec["uploads"][pos] = self.upload(art, f"{rec['slug']}-{pos}.jpg")
+        ids = [v["id"] for v in self.variants(rec["kind"])]
+        holders = [{"position": pos, "images": [{"id": rec["uploads"][pos], "x": 0.5, "y": 0.5, "scale": 1, "angle": 0}]}
+                   for pos in k["areas"]]
+        prods = [p.get("jersey") for p in (rec.get("channels") or {}).values()] + [(rec.get("products") or {}).get("jersey")]
+        n = 0
+        for prod in [p for p in prods if p]:
+            made = self.c.printify("PUT", f"shops/{prod['shop']}/products/{prod['id']}.json",
+                                   {"print_areas": [{"variant_ids": ids, "placeholders": holders}]}) or {}
+            if made.get("images"):
+                prod["images"] = [i["src"] for i in made["images"]]
+            if prod.get("published"):
+                self.shop.publish(prod)
+            n += 1
+        return n
 
     def preview(self, rec: dict, dest: Path) -> Path:
         """One picture for the text: the jersey on a person front and back, and flat front and back."""
