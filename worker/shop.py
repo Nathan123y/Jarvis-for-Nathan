@@ -1573,8 +1573,9 @@ class Shop:
         return False
 
     def tiktok_live(self, shop_id: int) -> Optional[int]:
-        """How many of the TikTok store's products TikTok has taken (Printify gives each one a TikTok id as `external`;
-        one still in review counts too). None when Printify can't say."""
+        """How many listing slots the TikTok store uses: every product in Printify's TikTok store counts, whether TikTok
+        has taken it (`external`), it's in review, or it's stuck (TikTok refuses new products at its limit and Printify
+        never says so; counting only `external` let 56 stuck ones pile up in Nov 2026). None when Printify can't say."""
         n = 0
         try:
             for page in range(1, 11):
@@ -1582,7 +1583,7 @@ class Shop:
                 data = r.get("data") if isinstance(r, dict) else None
                 if not isinstance(data, list):
                     return None
-                n += sum(1 for p in data if p.get("external"))
+                n += len(data)
                 if page >= int(r.get("last_page") or 1):
                     break
         except Exception:
@@ -1619,7 +1620,8 @@ class Shop:
                 continue
             listed = products_in(rec, "tiktok")
             missing = sum(1 for k in rec.get("only") or cfg["products"]
-                          if k in PRODUCTS and k in cfg["tiktok_products"] and not (listed.get(k) or {}).get("published"))
+                          if k in PRODUCTS and k in cfg["tiktok_products"] and k not in (rec.get("tiktok_ended") or [])
+                          and not (listed.get(k) or {}).get("published"))
             if missing:
                 tiktok_ok[pos] = min(missing, budget)
                 budget -= missing
@@ -1650,7 +1652,7 @@ class Shop:
                             save_state(st, self.state_path)
                         continue
                 if channel == "tiktok":
-                    kinds = [k for k in kinds if k in cfg["tiktok_products"]]
+                    kinds = [k for k in kinds if k in cfg["tiktok_products"] and k not in (rec.get("tiktok_ended") or [])]
                 for kind in kinds:
                     if kind not in PRODUCTS:
                         continue

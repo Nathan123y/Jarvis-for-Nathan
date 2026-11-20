@@ -404,7 +404,17 @@ class ListingTests(_Base):
                       tiktok_products=["tee", "mug", "sticker"])
         s.make_design(only=["tee", "mug", "sticker"])
         done = s.list_pending()
-        self.assertEqual(len(done), 2)                    # 48 are live of 50 allowed
+        self.assertEqual(len(done), 1)                    # 48 live + 1 stuck (no external) use 49 of 50 slots
+
+    def test_tiktok_never_relists_a_product_taken_off(self):
+        s = self.shop(FakeClients(shops=[{"id": 4, "sales_channel": "tiktok"}]), tiktok_products=["tee", "mug"])
+        s.make_design(only=["tee", "mug"])
+        st = ws.load_state(self.dir / "s.json")
+        st["designs"][0]["tiktok_ended"] = ["tee"]
+        ws.save_state(st, self.dir / "s.json")
+        s.list_pending()
+        rec = ws.load_state(self.dir / "s.json")["designs"][0]
+        self.assertEqual(sorted(rec["channels"]["tiktok"]), ["mug"])
 
     def test_tiktok_shop_only_gets_the_kinds_it_accepts(self):
         c = FakeClients(shops=[{"id": 4, "sales_channel": "tiktok"}])
