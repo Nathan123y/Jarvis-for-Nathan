@@ -111,7 +111,7 @@ CONCEPTS = [
     ("lagoon", "LAGOON", "basketball", "20", "teal base, coral and sand supports, white accent",
      "palm silhouettes and lagoon ripples flowing across the body",
      "Lagoon Basketball Jersey Vintage Y2K Streetwear Teal Coral Palms"),
-    ("thistle", "THISTLE", "soccer", "16", "deep plum base, heather green support, cream accent",
+    ("thistle", "THISTLE", "soccer", "16", "deep plum base, sage green support, cream accent",
      "thistle flower motifs woven into curved plaid-like stripes",
      "Thistle Vintage Soccer Jersey Y2K Streetwear Plum Green Cream Floral"),
     ("savanna", "SAVANNA", "soccer", "22", "mustard gold base, black and burnt-orange supports, cream accent",
