@@ -42,6 +42,27 @@ class AgentsHQTests(unittest.TestCase):
         self.assertIn("summary", snap)
         self.assertEqual(snap["summary"]["agents"], sum(len(c["agents"]) for c in snap["crews"]))
 
+    def test_an_order_filled_in_pieces_is_one_trade(self):
+        cj = '{"underlying": "IWM", "right": "P"}'
+        rows = [("iwm-drive", "BUY_TO_OPEN", "IWM1", cj, 3, 2.43, "2026-11-19T14:45:10.50Z"),
+                ("iwm-drive", "BUY_TO_OPEN", "IWM1", cj, 3, 2.43, "2026-11-19T14:45:10.61Z"),
+                ("iwm-orb-scalp", "BUY_TO_OPEN", "IWM1", cj, 5, 2.58, "2026-11-19T14:55:06Z"),
+                ("iwm-orb-scalp", "SELL_TO_CLOSE", "IWM1", cj, 5, 4.41, "2026-11-19T16:54:08Z"),
+                ("iwm-drive", "SELL_TO_CLOSE", "IWM1", cj, 6, 4.61, "2026-11-19T17:50:21Z")]
+        trades = {t["bot"]: t for t in hq.round_trips(rows)}
+        self.assertEqual(len(trades), 2)
+        self.assertEqual(trades["iwm-drive"]["qty"], 6)
+        self.assertAlmostEqual(trades["iwm-drive"]["pnl"], 1308)
+        self.assertEqual(trades["iwm-drive"]["kind"], "put")
+
+    def test_messages_lose_the_programmer_noise(self):
+        self.assertEqual(hq.plain("Acme failed: TimeoutError('launch: Timeout 180000ms exceeded.\\nCall log:\\n /Users/x')"),
+                         "Acme failed: timed out")
+        self.assertEqual(hq.bot_label("qqq-orb-scalp"), "QQQ opening-range scalp")
+
+    def test_trading_without_a_database_is_not_an_error(self):
+        self.assertEqual(hq.trading(db=Path("/nonexistent/paper.db")), {"ok": False})
+
 
 if __name__ == "__main__":
     unittest.main()
