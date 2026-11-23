@@ -94,6 +94,7 @@ from core.echo                 import EchoGuard
 from core.audio_streams        import KeptStream
 
 from core                      import unprompted
+from core                      import vault_brain
 from core                      import brain as jarvis_brain
 from core.playback_timing      import playback_idle, parse_output_latency
 from core.perf_trace          import (
@@ -1506,6 +1507,14 @@ class JarvisLive:
             self._set_ui_state("LISTENING", "tool_end")
 
         print(f"[JARVIS] 📤 {name} → {str(result)[:80]}")
+        # Into the day's Obsidian log too, with the same privacy as the launch log:
+        # dictated messages, note contents and other people's messages stay out.
+        _shown = ("[omitted]" if any(f in name for f in ("send_message", "obsidian", "gmail",
+                                                         "message", "inbox", "chat_takeover"))
+                  else str(result)[:200])
+        vault_brain.log(vault_brain.area_for_tool(name),
+                        f"used {name} {json.dumps(log_args, ensure_ascii=False, default=str)[:200]} → {_shown}",
+                        links=("Conversations",))
 
         # A tool that declared itself NON_BLOCKING also says when its answer may
         # re-enter the conversation. Without this the model finishes whatever it
@@ -1952,6 +1961,7 @@ class JarvisLive:
                                 self._last_out_logged = ""   # new exchange
                                 self.ui.write_log(f"You: {full_in}")
                                 self._session_log.append(f"User: {full_in}")
+                                vault_brain.log("Conversations", f"You: {full_in}")
                                 if self._dashboard:
                                     asyncio.create_task(self._dashboard.broadcast({
                                         "type": "log", "speaker": "user",
@@ -1971,6 +1981,7 @@ class JarvisLive:
                                 self._last_out_logged = full_out
                                 self.ui.write_log(f"{self._asst_name}: {full_out}")
                                 self._session_log.append(f"{self._asst_name}: {full_out}")
+                                vault_brain.log("Conversations", f"{self._asst_name}: {full_out}")
                                 self._last_reply_done = time.monotonic()
                                 self._brain.heard_reply(full_out)
                                 if jarvis_brain.ends_with_check_in(full_out):

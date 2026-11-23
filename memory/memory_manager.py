@@ -14,6 +14,9 @@ def get_base_dir() -> Path:
 
 BASE_DIR         = get_base_dir()
 MEMORY_PATH      = BASE_DIR / "memory" / "long_term.json"
+# Stamps of the Obsidian memory notes as Jarvis last wrote them (core/vault_brain.py):
+# a note whose stamp differs was edited in Obsidian, and its facts are taken in.
+VAULT_SYNC_PATH  = BASE_DIR / "memory" / "vault_sync.json"
 _lock            = Lock()
 MAX_VALUE_LENGTH = 380
 
@@ -54,7 +57,16 @@ def _empty_memory() -> dict:
         "notes":         {},
     }
 
-def load_memory() -> dict:
+def _vault():
+    """core.vault_brain, or None. The memory works the same without a vault."""
+    try:
+        from core import vault_brain
+        return vault_brain
+    except Exception:
+        return None
+
+
+def _load_json() -> dict:
     if not MEMORY_PATH.exists():
         return _empty_memory()
     with _lock:
@@ -70,6 +82,28 @@ def load_memory() -> dict:
         except Exception as e:
             print(f"[Memory] ⚠️ Load error: {e}")
             return _empty_memory()
+
+
+def load_memory() -> dict:
+    """The memory, with any edits made to its notes in Obsidian taken in.
+
+    The notes in <vault>/Jarvis Brain/Jarvis Memory are the memory you can see and
+    edit; long_term.json is the fast copy read on every connect. An edited note
+    (its stamp differs from the one Jarvis wrote) replaces that category here."""
+    data = _load_json()
+    vb = _vault()
+    if vb is not None:
+        try:
+            taken = vb.adopt_memory_edits(data, VAULT_SYNC_PATH)
+        except Exception as e:
+            print(f"[Memory] ⚠️ Obsidian edits not read: {e!r}")
+            taken = []
+        if taken:
+            _write_json(data)
+            print(f"[Memory] 📝 Took in Obsidian edits: {taken}")
+            vb.log("Jarvis Memory", "took in your Obsidian edits to " + ", ".join(
+                vb.MEMORY_NOTES.get(c, c) for c in taken))
+    return data
 
 def _all_entries(memory: dict) -> list[tuple]:
     entries = []
@@ -115,16 +149,23 @@ def _trim_to_limit(memory: dict) -> dict:
             pass
     return memory
 
-def save_memory(memory: dict) -> None:
-    if not isinstance(memory, dict):
-        return
-    memory = _trim_to_limit(memory)
+def _write_json(memory: dict) -> None:
     MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
     with _lock:
         MEMORY_PATH.write_text(
             json.dumps(memory, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+
+
+def save_memory(memory: dict) -> None:
+    if not isinstance(memory, dict):
+        return
+    memory = _trim_to_limit(memory)
+    _write_json(memory)
+    vb = _vault()
+    if vb is not None:
+        vb.save_memory_notes(memory, VAULT_SYNC_PATH)
 
 
 def _truncate_value(val: str) -> str:
@@ -160,10 +201,27 @@ def update_memory(memory_update: dict) -> dict:
     if not isinstance(memory_update, dict) or not memory_update:
         return load_memory()
     memory = load_memory()
+    before = {(c, k): _entry_value(e) for c, items in memory.items() if isinstance(items, dict)
+              for k, e in items.items()}
     if _recursive_update(memory, memory_update):
         save_memory(memory)
         print(f"[Memory] 💾 Saved: {list(memory_update.keys())}")
+        _log_learned(memory_update, memory, before)
     return memory
+
+
+def _log_learned(memory_update: dict, memory: dict, before: dict) -> None:
+    vb = _vault()
+    if vb is None:
+        return
+    for cat, items in memory_update.items():
+        if not isinstance(items, dict):
+            continue
+        for key in items:
+            val = _entry_value((memory.get(cat) or {}).get(key))
+            if val and val != before.get((cat, key)):
+                vb.log("Jarvis Memory", f"remembered {_pretty(key)}: {val}",
+                       links=(vb.MEMORY_NOTES.get(cat, ""),))
 
 def _entry_value(entry) -> str:
     """Accept both the {'value': ..., 'updated': ...} shape and a bare string,
@@ -416,6 +474,9 @@ def forget(key: str, category: str = "notes") -> str:
         del cat[key]
         memory[category] = cat
         save_memory(memory)
+        vb = _vault()
+        if vb is not None:
+            vb.log("Jarvis Memory", f"forgot {_pretty(key)}", links=(vb.MEMORY_NOTES.get(category, ""),))
         return f"Forgotten: {category}/{key}"
     return f"Not found: {category}/{key}"
 
@@ -452,6 +513,9 @@ def save_session_summary(summary: str, language: str = "") -> None:
             encoding="utf-8",
         )
     print(f"[Memory] 📝 Session saved ({entry['date']}): {summary[:60]}…")
+    vb = _vault()
+    if vb is not None:
+        vb.log("Conversations", f"session summary: {summary}")
 
 
 def pop_last_session() -> dict | None:

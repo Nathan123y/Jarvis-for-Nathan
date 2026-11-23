@@ -482,6 +482,12 @@ class Brain:
             self._save()
         for t in fresh:
             print(f"[Brain] {t['kind']} ({t['urgency']}) {t['topic']}: {t['text']}")
+            try:
+                from core import vault_brain
+                vault_brain.log("Jarvis Thoughts",
+                                f"{t['kind']} (urgency {t['urgency']}) {t['topic']}: {t['text']}")
+            except Exception:
+                pass
         return fresh
 
     def _recently_raised(self, topic: str, now: float) -> bool:
