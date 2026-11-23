@@ -139,6 +139,7 @@ class Mapping(unittest.TestCase):
         self.assertEqual(vb.area_for_tool("open_app"), "Conversations")
         self.assertEqual(vb.areas_for_paths(["/r/worker/jersey_shop.py", "/r/worker/shop.py", "/r/main.py"]),
                          ["Jersey Line", "Shop"])
+        self.assertEqual(vb.areas_for_paths(["/r/core/vault_brain.py", "/r/core/brain.py"]), ["Jarvis Thoughts"])
 
 
 class MemoryNotes(_Vault):

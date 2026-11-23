@@ -108,7 +108,7 @@ _PATH_AREAS = (
     ("sweater", "Shop"), ("viral", "Viral Videos"), ("clip", "GTA Clips"), ("guide", "GTA Guides"),
     ("yt_stats", "GTA Guides"), ("intern", "Internships"), ("trading", "Trading"), ("optionsbots", "Trading"),
     ("campaign", "Website Pitcher"), ("worker/phone", "AI Phone Line"), ("alerts", "Phone Alerts"),
-    ("agents_hq", "Home Dashboard"), ("canvas", "School"), ("brain", "Jarvis Thoughts"),
+    ("agents_hq", "Home Dashboard"), ("canvas", "School"), ("core/brain.py", "Jarvis Thoughts"),
     ("memory_manager", "Jarvis Memory"), ("lights", "Lights & Home"),
 )
 
@@ -344,13 +344,14 @@ def _day_header(brain: Path, day: date) -> str:
             "did today, oldest first.\n\n")
 
 
-def format_line(area: str, text: str, when: datetime, links=()) -> str:
+def format_line(area: str, text: str, when: datetime, links=(), limit: int = LINE_MAX) -> str:
     extra = [a for a in dict.fromkeys(links) if a and a != area]
     tail = (" → " + ", ".join(f"[[{a}]]" for a in extra)) if extra else ""
-    return f"- {when.strftime('%H:%M')} · [[{area}]] · {clean(text)}{tail}\n"
+    return f"- {when.strftime('%H:%M')} · [[{area}]] · {clean(text, limit)}{tail}\n"
 
 
-def append_line(brain: Path, area: str, text: str, when: datetime | None = None, links=()) -> None:
+def append_line(brain: Path, area: str, text: str, when: datetime | None = None, links=(),
+                limit: int = LINE_MAX) -> None:
     """Append one line to that day's log, under a lock shared by every process writing here."""
     when = when or datetime.now()
     day = when.date()
@@ -363,7 +364,7 @@ def append_line(brain: Path, area: str, text: str, when: datetime | None = None,
             f.seek(0, os.SEEK_END)
             if f.tell() == 0:
                 f.write(_day_header(brain, day))
-            f.write(format_line(area, text, when, links))
+            f.write(format_line(area, text, when, links, limit))
             f.flush()
         finally:
             fcntl.flock(f, fcntl.LOCK_UN)
@@ -429,7 +430,7 @@ def _repeat(area: str, text: str) -> bool:
 
 
 def log(area: str, text, *, links=(), dedupe: bool = False, when: datetime | None = None,
-        wait: float = 0.0) -> None:
+        wait: float = 0.0, limit: int = LINE_MAX) -> None:
     """Note that something happened. Never raises, never blocks (unless `wait` seconds are given)."""
     try:
         text = str(text or "").strip()
@@ -445,7 +446,7 @@ def log(area: str, text, *, links=(), dedupe: bool = False, when: datetime | Non
         def write():
             brain = brain_dir()
             if brain is not None:
-                append_line(brain, area, text, when, links)
+                append_line(brain, area, text, when, links, limit)
 
         done = _writer.submit(write)
         if wait:
