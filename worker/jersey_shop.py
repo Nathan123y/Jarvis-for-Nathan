@@ -133,17 +133,12 @@ def read_info(folder: Path) -> dict:
 
 
 def titles(rec: dict) -> dict:
-    """A title per marketplace: Etsy and the Pop-Up Store up to 140 letters, eBay and TikTok up to 80."""
+    """One short, clickable title on every marketplace (user, 2026-11-22: "not too many words"): the club name, one
+    hook word and the garment, e.g. "North Pole Christmas Basketball Jersey" or "Starfire Vintage Soccer Jersey"."""
     name, kind = rec["concept"].title(), KINDS[rec["kind"]]["name"]
-    base = rec.get("title") or f"{name} {kind}, Vintage Y2K Streetwear Sports Jersey, Retro Unisex Jersey Gift for Him"
-    short = rec.get("title") or f"{name} {kind} Vintage Y2K Streetwear Retro Unisex Sports Jersey"
-
-    def cut(text: str, limit: int) -> str:
-        if len(text) <= limit:
-            return text
-        return text[:limit].rsplit(" ", 1)[0].rstrip(",")
-
-    return {"etsy": cut(base, 140), "popup": cut(base, 140), "ebay": cut(short, 80), "tiktok": cut(short, 80)}
+    hook = "Christmas" if "christmas" in (rec.get("title") or "").lower() else "Vintage"
+    t = f"{name} {hook} {kind}"
+    return {"etsy": t, "popup": t, "ebay": t[:80], "tiktok": t[:80]}
 
 
 def description(rec: dict, facts: list) -> str:
@@ -218,6 +213,28 @@ class Jerseys:
             self.c.printify("PUT", f"shops/{store['id']}/products/{made['id']}.json", {"variants": priced})
         return {"id": made["id"], "shop": store["id"], "price": min((p["price"] for p in priced), default=4499),
                 "published": False, "images": [i["src"] for i in made.get("images") or []]}
+
+    def retitle(self, path: Path = STATE) -> int:
+        """Give every jersey product on every store today's titles() and republish the live ones so the marketplaces
+        follow. Returns how many products were updated."""
+        st = load(path)
+        n = 0
+        for rec in st["designs"]:
+            t = titles(rec)
+            prods = [(ch, (p or {}).get("jersey")) for ch, p in (rec.get("channels") or {}).items()]
+            prods.append(("etsy", (rec.get("products") or {}).get("jersey")))
+            for ch, prod in prods:
+                if not prod or ch not in t:
+                    continue
+                try:
+                    self.c.printify("PUT", f"shops/{prod['shop']}/products/{prod['id']}.json", {"title": t[ch]})
+                    if prod.get("published"):
+                        self.shop.publish(dict(prod))
+                    n += 1
+                    self.log(f"jerseys: {rec['slug']} on {ch} is now '{t[ch]}'")
+                except Exception as exc:
+                    self.log(f"jerseys: couldn't retitle {rec['slug']} on {ch}: {exc}")
+        return n
 
     def publish(self, prod: dict) -> None:
         self.shop.publish(prod)
@@ -563,5 +580,8 @@ if __name__ == "__main__":
     args = sys.argv[1:]
     if len(args) >= 2 and args[0] in ("approve", "reject"):
         print(mark(" ".join(args[1:]), "approved" if args[0] == "approve" else "rejecting"))
+    elif args[:1] == ["retitle"]:
+        from worker.shop import Shop
+        print(Jerseys(Shop()).retitle(), "jersey products retitled")
     else:
         print(summary())

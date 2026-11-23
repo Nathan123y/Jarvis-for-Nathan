@@ -220,5 +220,16 @@ class JerseyTests(unittest.TestCase):
         assert "STARFIRE" in recs[0]["slogan"]
 
 
+
+class TitleTests(unittest.TestCase):
+    def test_short_clickable_titles(self):
+        from worker.jersey_shop import titles
+        xmas = titles({"concept": "NORTH POLE", "kind": "basketball", "title": "North Pole Christmas Basketball Jersey Ugly"})
+        self.assertEqual(set(xmas.values()), {"North Pole Christmas Basketball Jersey"})
+        plain = titles({"concept": "starfire", "kind": "soccer", "title": "Starfire Vintage Y2K Streetwear Navy"})
+        self.assertEqual(plain["tiktok"], "Starfire Vintage Soccer Jersey")
+        self.assertLessEqual(len(plain["ebay"].split()), 6)
+
+
 if __name__ == "__main__":
     unittest.main()
