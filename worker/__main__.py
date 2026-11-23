@@ -123,9 +123,15 @@ def cmd_run(args) -> int:
     from worker.brain_feed import TradingFeed
     trading_feed = TradingFeed(d / "brain_feed.json")
     trading_feed.start()
+    # The brain's sleep: each night yesterday becomes a summary, lessons, open threads and
+    # concept notes; Mondays a week review (worker/brain_sleep.py, one Claude call a night).
+    from worker.brain_sleep import SleepService
+    brain_sleep = SleepService(d / "brain_sleep.json", logging.getLogger("jarvis.worker").info)
+    brain_sleep.start()
     try:
         w.run_forever()
     finally:
+        brain_sleep.stop()
         trading_feed.stop()
         guides.stop()
         clips.stop()

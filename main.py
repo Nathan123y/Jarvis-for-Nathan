@@ -1215,6 +1215,15 @@ class JarvisLive:
         parts = [time_ctx, identity_ctx]
         if mem_str:
             parts.append(mem_str)
+        # A few lines from the Obsidian brain on what has been going on; the
+        # brain_recall tool reaches everything else (core/brain_recall.py).
+        try:
+            from core import brain_recall
+            _lately = brain_recall.lately()
+            if _lately:
+                parts.append(_lately)
+        except Exception as e:
+            print(f"[JARVIS] brain context not loaded: {e!r}")
         parts.append(sys_prompt)
         try:
             from core.assyrian import ASSYRIAN_GUIDE

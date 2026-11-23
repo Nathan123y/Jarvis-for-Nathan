@@ -311,6 +311,11 @@ def _memory() -> str:
         return ""
 
 
+def _from_brain() -> list[str]:
+    from core import brain_recall
+    return brain_recall.for_thinking()
+
+
 def gather(recent_turns: list[str], now: Optional[float] = None) -> str:
     """One plain-text snapshot of everything the brain can see right now."""
     now = now or time.time()
@@ -338,6 +343,7 @@ def gather(recent_turns: list[str], now: Optional[float] = None) -> str:
     add("FANTASY FOOTBALL (last 36h):", lambda: _fantasy(now))
     add("PAPER TRADING:", _trading)
     add("THIS MAC:", _system)
+    add("FROM YOUR BRAIN (Obsidian log: today's notable events, open threads, lessons):", _from_brain)
     mem = _memory()
     if mem:
         sections.append("WHAT I KNOW ABOUT THEM:\n" + mem)
