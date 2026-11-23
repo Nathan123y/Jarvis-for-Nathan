@@ -81,6 +81,8 @@ _FACT = re.compile(r"^\s*[-*]\s+\*\*(?P<key>[^*\n]+?)\*\*\s*:\s*(?P<value>.*?)\s
 
 _DAYS_START, _DAYS_END = "<!-- recent-days -->", "<!-- /recent-days -->"
 _NOTES_START, _NOTES_END = "<!-- your-notes -->", "<!-- /your-notes -->"
+_BRAIN_START, _BRAIN_END = "<!-- brain -->", "<!-- /brain -->"
+SUMMARY_START, SUMMARY_END = "<!-- summary -->", "<!-- /summary -->"
 
 # Which area a worker log line belongs to: by its "word:" prefix first, then by logger.
 _PREFIX_AREAS = {
@@ -255,6 +257,10 @@ def _nucleus_note() -> str:
         f"- Jarvis (edit these and Jarvis goes by them): {mem}",
         "- Claude Code: [[MEMORY]] — the index of everything in *Claude Memory*",
         "",
+        "## What the brain has worked out",
+        _BRAIN_START,
+        _BRAIN_END,
+        "",
         "## Days",
         _DAYS_START,
         _DAYS_END,
@@ -298,14 +304,46 @@ def _your_notes(brain: Path) -> str:
     return "\n".join(out) or "- (none yet)"
 
 
+def _brain_block(brain: Path) -> str:
+    """Lessons, the latest week, the most active concepts and what is still open."""
+    lines = ["- [[Lessons]] — what Jarvis, the crews and Claude have learned, newest last"]
+    weeks = sorted((p.stem for p in (brain / "Digests").glob("Week *.md")), reverse=True) \
+        if (brain / "Digests").is_dir() else []
+    if weeks:
+        lines.append("- Weeks: " + " · ".join(f"[[{w}]]" for w in weeks[:6]))
+    concepts = []
+    if (brain / "Concepts").is_dir():
+        cps = []
+        for p in (brain / "Concepts").glob("*.md"):
+            try:
+                cps.append((p.stat().st_mtime, p.stem))
+            except OSError:
+                pass
+        concepts = [n for _, n in sorted(cps, reverse=True)[:24]]
+    if concepts:
+        lines.append("- Concepts lately: " + " · ".join(f"[[{c}]]" for c in concepts))
+    try:
+        from core import brain_recall
+        threads = brain_recall.latest_threads(6)
+    except Exception:
+        threads = []
+    if threads:
+        lines.append("- Still open:")
+        lines += [f"    - {clean(t, 220)}" for t in threads]
+    return "\n".join(lines)
+
+
 def refresh_nucleus(brain: Path) -> None:
-    """Rewrite the two generated blocks of Nucleus.md (days, your notes); the rest is yours to edit."""
+    """Rewrite the generated blocks of Nucleus.md (brain, days, your notes); the rest is yours to edit."""
     path = brain / f"{NUCLEUS}.md"
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return
-    new = _replace_block(text, _DAYS_START, _DAYS_END, _recent_days(brain))
+    if _BRAIN_START not in text and "## Days" in text:     # notes made before this block existed
+        text = text.replace("## Days", f"## What the brain has worked out\n{_BRAIN_START}\n{_BRAIN_END}\n\n## Days", 1)
+    new = _replace_block(text, _BRAIN_START, _BRAIN_END, _brain_block(brain))
+    new = _replace_block(new, _DAYS_START, _DAYS_END, _recent_days(brain))
     new = _replace_block(new, _NOTES_START, _NOTES_END, _your_notes(brain))
     if new != text:
         _write_if_changed(path, new)
@@ -313,7 +351,7 @@ def refresh_nucleus(brain: Path) -> None:
 
 def ensure_skeleton(brain: Path) -> None:
     """Make the folders, the nucleus and the area hubs if missing. Never overwrites a note."""
-    for sub in ("Areas", "Log", "Jarvis Memory", "Claude Memory"):
+    for sub in ("Areas", "Log", "Jarvis Memory", "Claude Memory", "Concepts", "Digests"):
         (brain / sub).mkdir(parents=True, exist_ok=True)
     nucleus = brain / f"{NUCLEUS}.md"
     if not nucleus.exists():
@@ -368,6 +406,11 @@ def append_line(brain: Path, area: str, text: str, when: datetime | None = None,
             f.flush()
         finally:
             fcntl.flock(f, fcntl.LOCK_UN)
+    try:
+        from core import brain_index
+        brain_index.add_log_line(area, clean(text, limit), when)
+    except Exception as e:
+        print(f"[Brain vault] not indexed: {e!r}")
     if new_day:
         refresh_nucleus(brain)
 
@@ -598,6 +641,11 @@ def write_memory_notes(memory: dict, sync_path: Path) -> None:
         path = brain / "Jarvis Memory" / f"{title}.md"
         _write_if_changed(path, _memory_note(cat, memory.get(cat) or {}))
         sync[cat] = _stamp(path)
+    try:
+        from core import brain_index
+        brain_index.index_facts(memory, MEMORY_NOTES)
+    except Exception as e:
+        print(f"[Brain vault] facts not indexed: {e!r}")
     tmp = sync_path.with_suffix(".tmp")
     tmp.write_text(json.dumps(sync), encoding="utf-8")
     tmp.replace(sync_path)
