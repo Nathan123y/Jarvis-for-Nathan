@@ -52,8 +52,9 @@ W, H, FPS = 1920, 1080, 30
 DEFAULTS = {"enabled": True,
             "start_date": "2026-11-13",                 # the user wants GTA posting running before launch (11-13)
             "launch_date": "2026-11-19",                # before it: official trailers + the Extended Look only
-            "time": "16:00",                            # one long video a day
-            "short_times": "12:00,17:00,21:00",         # numbered-list shorts (YouTube Shorts + TikTok + Instagram)
+            "time": "",                                 # the long video: off since 11-22 (7 of them got 0-15 views each,
+                                                        # the Shorts get hundreds); "16:00" turns it back on
+            "short_times": "12:00,16:00,17:00,21:00",         # numbered-list shorts (YouTube Shorts + TikTok + Instagram)
             "tiktok": True,                             # off = Shorts and tall copies skip TikTok (off since 11-15)
             "vertical_copy": True,                      # the long video is also cut tall for TikTok and Instagram, so
                                                         # every account gets it (user, 11-13: "every social media account")
@@ -145,6 +146,7 @@ SHORT_PROMPT = """You write viral Shorts about {game} for YouTube, in the style 
 
 {topic_line}
 Shorts already made (pick something different): {history}
+{winners}
 
 RESEARCH FIRST. Use web search. Pick ONE specific, surprising, checkable thing about the game that a fan would
 repeat to a friend: a single feature, detail, change from the last game, or piece of news. Not a list, nothing
@@ -294,11 +296,20 @@ def minutes_for(cfg: dict, today: Optional[str] = None) -> float:
     return float(cfg["minutes_prelaunch"] if before and cfg.get("minutes_prelaunch") else cfg["minutes"])
 
 
+def _winners_line() -> str:
+    try:
+        from worker import yt_stats
+        return yt_stats.prompt_line(("short",), "Shorts")
+    except Exception:
+        return ""
+
+
 def write_script(topic: str, cfg: dict, history: list, ask: Callable = _write, kind: str = "guide") -> dict:
     if kind == "short":
         prompt = SHORT_PROMPT.format(game=cfg["game"], today=datetime.now().strftime("%B %d, %Y"), when=when_line(cfg),
                                      topic_line=(f"The topic: {topic}" if topic else "Pick the topic yourself: the list fans would most want to see this week."),
-                                     history="; ".join(history[-40:]) or "none yet")
+                                     history="; ".join(history[-40:]) or "none yet",
+                                     winners=_winners_line())
         text = ask(prompt, effort=cfg["claude_effort"])
         if not text:
             raise Busy("neither Claude nor Gemini could write the script")
@@ -1157,6 +1168,41 @@ def _publish(pg, button: str, log: Callable = print, wait_min: float = 25) -> No
         pg.wait_for_timeout(45000)
 
 
+def _open_upload_dialog(pg, want: str, log: Callable) -> None:
+    """Gets Studio's upload dialog (its file input) open on the guides' channel; raises if it can't."""
+    pg.goto("https://studio.youtube.com/", wait_until="domcontentloaded", timeout=60000)
+    pg.wait_for_url(re.compile(r"studio\.youtube\.com/channel/"), timeout=60000)
+    if not want or f"/channel/{want}" not in pg.url:    # never upload to any other channel
+        raise WrongChannel(f"Studio opened {pg.url[:80]}, not the guides' channel {want or '?'}")
+    pg.goto(f"https://studio.youtube.com/channel/{want}/videos/upload?d=ud", wait_until="domcontentloaded", timeout=60000)
+    try:                                                # the link sometimes lands on the dashboard with no upload dialog (11-18)
+        pg.locator("input[type=file]").first.wait_for(state="attached", timeout=20000)
+        return
+    except Exception:
+        log("youtube: the upload dialog didn't open; opening it from Create")
+    for t in ("No thanks", "Dismiss"):                  # the "Help us improve YouTube Studio" survey
+        try:
+            pg.get_by_text(t, exact=True).first.click(timeout=2000)
+        except Exception:
+            pass
+    pg.wait_for_timeout(2000)
+    # Studio's header "Create" became a labelled button in Nov 2026 (#create-icon no longer matches); the dashboard's
+    # upload-arrow icon opens the same dialog directly
+    for opener in (lambda: pg.get_by_role("button", name="Upload videos").first.click(timeout=6000),
+                   lambda: pg.locator("#upload-icon, ytcp-icon-button#upload-icon").first.click(timeout=6000),
+                   lambda: (pg.get_by_role("button", name="Create").first.click(timeout=8000),
+                            pg.get_by_text("Upload videos", exact=False).first.click(timeout=8000)),
+                   lambda: (pg.locator("#create-icon, ytcp-button#create-icon").first.click(timeout=8000),
+                            pg.locator("tp-yt-paper-item:has-text('Upload videos'), #text-item-0").first.click(timeout=8000))):
+        try:
+            opener()
+            pg.locator("input[type=file]").first.wait_for(state="attached", timeout=15000)
+            return
+        except Exception:
+            continue
+    raise RuntimeError("YouTube Studio's upload dialog wouldn't open (Create / upload buttons not found)")
+
+
 def youtube_upload(rec: dict, cfg: Optional[dict] = None, log: Callable = print, dry_run: bool = False) -> str:
     """Uploads through YouTube Studio. Returns the video's link (or a dry-run note); raises on failure (screenshot kept)."""
     from playwright.sync_api import sync_playwright
@@ -1169,24 +1215,19 @@ def youtube_upload(rec: dict, cfg: Optional[dict] = None, log: Callable = print,
         try:
             if not logged_in(ctx):
                 raise wv.NotLoggedIn("YouTube isn't logged in (run: python3 -m worker.guides login)")
-            pg.goto("https://studio.youtube.com/", wait_until="domcontentloaded", timeout=60000)
-            pg.wait_for_url(re.compile(r"studio\.youtube\.com/channel/"), timeout=60000)
-            if not want or f"/channel/{want}" not in pg.url:    # never upload to any other channel
-                raise WrongChannel(f"Studio opened {pg.url[:80]}, not the guides' channel {want or '?'}")
-            pg.goto(f"https://studio.youtube.com/channel/{want}/videos/upload?d=ud", wait_until="domcontentloaded", timeout=60000)
-            try:                                                # the link sometimes lands on the dashboard with no upload dialog (11-18)
-                pg.locator("input[type=file]").first.wait_for(state="attached", timeout=20000)
-            except Exception:
-                log("youtube: the upload dialog didn't open; opening it from Create")
-                for t in ("No thanks", "Dismiss"):                  # the "Help us improve YouTube Studio" survey
-                    try:
-                        pg.get_by_text(t, exact=True).first.click(timeout=2000)
-                    except Exception:
-                        pass
-                pg.goto(f"https://studio.youtube.com/channel/{want}", wait_until="domcontentloaded", timeout=60000)
-                pg.wait_for_timeout(3000)
-                pg.locator("#create-icon, ytcp-button#create-icon").first.click(timeout=15000)
-                pg.locator("tp-yt-paper-item:has-text('Upload videos'), #text-item-0").first.click(timeout=15000)
+            # opening the upload dialog is retried: half the misses were right after the Mac woke, before the network
+            # was back (11-19..22). Nothing is sent before the file is set, so a retry can't double-post.
+            for attempt in range(3):
+                try:
+                    _open_upload_dialog(pg, want, log)
+                    break
+                except WrongChannel:
+                    raise
+                except Exception as exc:
+                    if attempt == 2:
+                        raise
+                    log(f"youtube: couldn't open the upload dialog ({str(exc)[:80]}); trying again in 30 s")
+                    pg.wait_for_timeout(30000)
             pg.locator("input[type=file]").first.set_input_files(rec["path"], timeout=60000)
             title = pg.locator("#title-textarea #textbox").first
             title.wait_for(state="visible", timeout=120000)

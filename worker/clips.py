@@ -174,6 +174,7 @@ Watch and listen to the attached clip ({duration:.0f} seconds long) and answer w
 Only describe what is really in the clip. Never call footage "leaked" and never invent a claim about the game:
 if a streamer is watching one of the publisher's official trailers or gameplay showcases, the title is about the
 streamer's reaction or about what the official footage shows. Say ok=false when the clip is about a different game.
+{winners}
 JSON only."""
 
 
@@ -187,7 +188,9 @@ def gemini_plan(src: Path, info: dict, cfg: dict, log: Callable = print) -> Opti
                     "-c:v", "libx264", "-crf", "32", "-preset", "veryfast", "-c:a", "aac", "-b:a", "64k", str(small)],
                    check=True, timeout=900)
     try:
-        prompt = PLAN_PROMPT.format(game=cfg["game"], duration=info["duration"], min_s=cfg["min_seconds"], max_s=cfg["max_seconds"])
+        from worker import yt_stats                         # the channel's best and worst clips, so picks lean to what works
+        prompt = PLAN_PROMPT.format(game=cfg["game"], duration=info["duration"], min_s=cfg["min_seconds"], max_s=cfg["max_seconds"],
+                                    winners=yt_stats.prompt_line(("clip",), "clips"))
         c = gemini.client(timeout_ms=300000)
         for model in ("gemini-3.5-flash", "gemini-3.5-flash-lite"):
             try:
