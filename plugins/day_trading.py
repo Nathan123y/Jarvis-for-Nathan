@@ -22,7 +22,10 @@ PLUGIN = {
         "Check on and control the automatic PRACTICE OPTIONS trader (optionsbots): eleven rule-based bots trading "
         "QQQ, SPY and IWM options in an Alpaca paper account with fake money. Use for 'how are the bots doing', "
         "'how is the trader doing', 'did the bots trade today', 'start the trader', 'how is each bot doing', "
-        "'stop the bots' = stop (lock in the day: the bots sell everything, then shut down), 'pause the bots' = pause (the user is "
+        "Any QUESTION about the bots ('why haven't the bots traded', 'what's going on with the bots', 'are the bots working') is "
+        "status, never stop. 'stop the bots' = stop (lock in the day: the bots sell everything, then shut down) ONLY when the user "
+        "clearly orders it; first ask 'Stop the bots and sell everything?' and call stop with confirmed=true only after they say yes. "
+        "'pause the bots' = pause (the user is "
         "going offline: shut down and keep positions), 'resume the bots' = resume (start again and pick the positions back up), "
         "'stop opening new trades' = hold, and release to allow them again. "
         "'what did the bots learn', 'did the bots change anything'. Every weekday after the close the bots review themselves "
@@ -43,6 +46,7 @@ PLUGIN = {
             "action": {"type": "STRING", "description": "status (default), each, learned, start, stop (sell all, shut down), pause (shut down, keep positions), "
                                                         "resume, hold / release (new entries) (options trader); "
                                                         "crypto, crypto_start, crypto_stop (memecoin bot); hype (memecoin buzz); portfolio (both)"},
+            "confirmed": {"type": "BOOLEAN", "description": "stop only: true after the user said yes to 'Stop the bots and sell everything?'"},
         },
         "required": [],
     },
@@ -63,6 +67,10 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
     try:
         if not BOTS.exists():
             result = "The options trader isn't installed where I expect it, in the optionsbots folder in your home folder."
+        elif action == "stop" and not (parameters or {}).get("confirmed"):
+            # 2026-11-23: a question about why the bots weren't trading ran 'stop' three times and shut them down mid-session
+            result = ("Stopping would sell everything the bots hold and shut them down for the day. Say yes if you want that. "
+                      "Here's how they're doing right now: " + (bots("status") or "no answer from the trader."))
         elif action not in ACTIONS:
             result = ("I can show the options trader's status or each bot, what it learned, start, stop (sell everything), pause (keep positions) or resume it, "
                       "and the memecoin bot's status, or start and stop it.")

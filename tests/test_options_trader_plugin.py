@@ -53,8 +53,15 @@ class RunTests(unittest.TestCase):
 
     def test_unknown_actions_run_nothing(self):
         with patch.object(plugin.subprocess, "run") as run:
-            self.assertIn("start, stop, pause or resume", plugin.run({"action": "buy SPY"}))
+            self.assertIn("start, stop (sell everything), pause", plugin.run({"action": "buy SPY"}))
         run.assert_not_called()
+
+    def test_stop_needs_a_yes_first(self):
+        done = subprocess.CompletedProcess([], 0, stdout="ok", stderr="")
+        with patch.object(plugin.subprocess, "run", return_value=done) as run:
+            self.assertIn("Say yes", plugin.run({"action": "stop"}))
+            plugin.run({"action": "stop", "confirmed": True})
+        self.assertEqual([c.args[0][2] for c in run.call_args_list], ["status", "stop"])
 
     def test_a_missing_install_or_a_timeout_is_spoken(self):
         plugin.BOTS.unlink()
