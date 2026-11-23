@@ -145,7 +145,7 @@ def main() -> int:
         from core import vault_brain
         cwd = hook.get("cwd") or os.getcwd()
         vault_brain.log("Claude Code", turn_line(turn, cwd),
-                        links=vault_brain.areas_for_paths(turn["edited"]), wait=5.0)
+                        links=vault_brain.areas_for_paths(turn["edited"]), wait=5.0, limit=1000)
     except Exception as e:
         print(f"claude_vault_log: {e!r}", file=sys.stderr)
     return 0
