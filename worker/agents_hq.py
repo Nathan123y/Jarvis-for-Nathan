@@ -325,10 +325,10 @@ def attention(crews: list, trade: dict, coin: dict, batt: Optional[dict], now: O
     """Short plain sentences for the 'Needs a look' box, most important first."""
     now_ny = datetime.now(NY)
     out = []
-    market_day = now_ny.weekday() < 5 and 6 <= now_ny.hour < 17
+    market_day = now_ny.weekday() < 5 and (9, 30) <= (now_ny.hour, now_ny.minute) < (16, 0)   # New York market hours
     if trade.get("ok") and not trade.get("engine_up") and market_day:
         out.append("The trading bots aren't answering. Start them with: python3 ~/optionsbots/scripts/bots.py start")
-    if trade.get("ok") and not trade.get("reconciled", True):
+    if trade.get("ok") and not trade.get("reconciled", True) and market_day:   # after the close the engine stops checking
         out.append("The trading books don't match Alpaca right now.")
     if coin.get("ok") and coin.get("age_s") is not None and coin["age_s"] > 1800:
         out.append(f"The memecoin bot has been quiet for {round(coin['age_s'] / 60)} minutes (it should check in every few minutes).")
@@ -391,6 +391,13 @@ table{width:100%;border-collapse:collapse;font-size:14px}td{padding:7px 0;border
 .cname{font-weight:600}.clast{color:var(--mute);font-size:13px;word-break:break-word}.when{color:var(--mute);font-size:12px;margin-left:6px;font-weight:400}
 .more{padding:0 0 12px 22px;font-size:13px}.more .a{padding:5px 0}.more .nums{color:var(--mute);margin-bottom:6px}.more .nums b{color:var(--ink)}.more .bad{color:var(--down)}
 a{color:var(--blue);text-decoration:none}
+.chartcard{margin-top:12px}.chead{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.tabs{display:flex;gap:6px;flex-wrap:wrap}.tab{border:1px solid var(--line);background:transparent;color:var(--ink);border-radius:999px;padding:5px 12px;font:inherit;font-size:13px;cursor:pointer}
+.tab.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}.tab sup{font-size:10px;margin-left:3px;color:var(--up);font-weight:700}.tab.on sup{color:var(--bg)}
+.daynav{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--mute)}.daynav button{border:1px solid var(--line);background:transparent;color:var(--ink);border-radius:8px;width:28px;height:28px;cursor:pointer;font-size:14px}
+.daynav button:disabled{opacity:.35;cursor:default}.livebadge{color:var(--up);font-weight:700;font-size:12px}.livebadge:before{content:'';display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--up);margin-right:5px;animation:pulse 1.4s infinite}
+@keyframes pulse{50%{opacity:.25}}#chart{height:380px;width:100%}@media (max-width:760px){#chart{height:300px}}
+.moves{margin-top:10px;font-size:13px}.mv{display:flex;gap:10px;padding:6px 0;border-top:1px solid var(--line)}.mv b.buy{color:var(--up)}.mv b.sell{color:var(--down)}.mv .t{color:var(--mute);min-width:84px}
 </style></head><body><main>
 <header><h1>Home</h1><span id="at">loading…</span></header>
 <div class="money">
@@ -398,13 +405,15 @@ a{color:var(--blue);text-decoration:none}
  <div class="card"><div class="label">Memecoin bot (paper)</div><div class="mid" id="coin">–</div><div class="row" id="coinrow"></div><div class="note" id="coinnote"></div></div>
  <div class="card"><div class="label">Shop sales</div><div class="mid" id="shop">–</div><div class="row" id="shoprow"></div></div>
 </div>
+<div class="card chartcard"><div class="chead"><div class="tabs" id="symtabs"></div><div class="daynav"><span id="live"></span><button id="prev" aria-label="Previous day">‹</button><span id="dayl"></span><button id="next" aria-label="Next day">›</button></div></div>
+<div id="chart"></div><div class="note" id="chartnote"></div><div class="moves" id="moves"></div></div>
 <h2>Needs a look</h2><div id="attn"></div>
 <div class="two">
  <div><h2>Trading bots</h2><div class="card"><table id="bots"></table><div class="note"><a href="http://localhost:8444" target="_blank">Full trading detail →</a></div></div></div>
  <div><h2>Latest trades</h2><div class="card"><table id="recent"></table></div></div>
 </div>
 <h2>Crews <span id="crewsum" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2><div class="card" id="crews"></div>
-</main><script>
+</main><script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script><script>
 const esc=t=>String(t??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const $=(n,s=true)=>{const v=Math.abs(n).toLocaleString('en-US',{maximumFractionDigits:0});return (n<0?'−':s&&n>0?'+':'')+'$'+v};
 const cls=n=>n>0?'up':n<0?'down':'';
@@ -437,6 +446,39 @@ function render(d){
   (k.feed?k.feed.map(m=>`<div class="a"><b>${esc(m.from)} → ${esc(m.to)}</b><div>${esc(m.text)}</div></div>`).join('')||'<div>Nothing yet.</div>':'')+`</div></details>`).join('');
 }
 async function tick(){try{render(await (await fetch('/api/agents')).json())}catch(e){document.getElementById('at').textContent='waiting for the worker…'}}
+// ---- live chart: 1-minute candles + the bots' buys (green, below the candle) and sells (red, above) ----
+const U0=new URLSearchParams(location.search);let CH=null,SER=null,CS={symbol:U0.get('symbol'),day:U0.get('day'),days:[],fit:true,live:false};
+const shift=t=>t-new Date(t*1000).getTimezoneOffset()*60;          // the time axis shows your own clock
+function css(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim()}
+function makeChart(){if(!window.LightweightCharts){document.getElementById('chartnote').textContent='The chart library did not load (no internet?).';return false}
+ CH=LightweightCharts.createChart(document.getElementById('chart'),{autoSize:true,layout:{background:{color:'transparent'},textColor:css('--mute'),fontFamily:'-apple-system,system-ui,sans-serif'},
+  grid:{vertLines:{color:css('--line')},horzLines:{color:css('--line')}},rightPriceScale:{borderColor:css('--line')},
+  timeScale:{borderColor:css('--line'),timeVisible:true,secondsVisible:false},crosshair:{mode:0}});
+ SER=CH.addCandlestickSeries({upColor:css('--up'),downColor:css('--down'),borderVisible:false,wickUpColor:css('--up'),wickDownColor:css('--down')});return true}
+const money=n=>(n<0?'−':'+')+'$'+Math.abs(n).toLocaleString('en-US');
+function moveText(m){const what=`${m.qty}× ${m.symbol} ${m.strike?Number(m.strike):''} ${m.kind}`;return (m.side==='buy'?'bought ':'sold ')+`${what} @ $${m.price.toFixed(2)}`+(m.pnl!=null?` · ${money(m.pnl)} (${m.pct>0?'+':''}${m.pct}%)`:'')}
+async function loadChart(){try{
+ const q=new URLSearchParams();if(CS.symbol)q.set('symbol',CS.symbol);if(CS.day)q.set('day',CS.day);
+ const d=await (await fetch('/api/chart?'+q)).json();
+ const changed=d.symbol!==CS.symbol||d.day!==CS.day;Object.assign(CS,{symbol:d.symbol,day:d.day,days:d.days,live:d.live});
+ if(!SER&&!makeChart())return;
+ SER.setData(d.bars.map(b=>({...b,time:shift(b.time)})));
+ SER.setMarkers(d.marks.map(m=>({time:shift(m.bar),position:m.side==='buy'?'belowBar':'aboveBar',color:m.side==='buy'?css('--up'):css('--down'),
+  shape:m.side==='buy'?'arrowUp':'arrowDown',text:m.side==='buy'?`${m.qty}${m.kind[0].toUpperCase()}`:(m.pnl!=null?money(m.pnl):'sold')})));
+ if(changed||CS.fit){CH.timeScale().fitContent();CS.fit=false}
+ document.getElementById('symtabs').innerHTML=d.symbols.map(s=>`<button class="tab${s===d.symbol?' on':''}" data-s="${s}">${s}${d.counts[s]?`<sup>${d.counts[s]}</sup>`:''}</button>`).join('');
+ document.getElementById('dayl').textContent=d.day_label;
+ document.getElementById('live').innerHTML=d.live?'<span class="livebadge">LIVE</span>':'';
+ const i=d.days.indexOf(d.day);document.getElementById('prev').disabled=i<=0;document.getElementById('next').disabled=i<0||i>=d.days.length-1;
+ const n=d.marks.filter(m=>m.side==='buy').length;
+ document.getElementById('chartnote').textContent=d.error?d.error:!d.bars.length?'No candles for this day (market closed).':
+  `${d.symbol} 1-minute candles${d.last?' · last $'+d.last.toFixed(2):''}. `+(n?`The bots traded ${d.symbol} options ${n} time${n>1?'s':''} this day: green ▲ = bought, red ▼ = sold.`:`No bot trades on ${d.symbol} this day.`);
+ document.getElementById('moves').innerHTML=d.marks.map(m=>`<div class="mv"><span class="t">${esc(m.at)}</span><span><b class="${m.side}">${m.side==='buy'?'BUY':'SELL'}</b> ${esc(m.name)}: ${esc(moveText(m))}</span></div>`).join('');
+}catch(e){document.getElementById('chartnote').textContent='Chart is waiting for the worker…'}}
+document.getElementById('symtabs').addEventListener('click',e=>{const b=e.target.closest('[data-s]');if(b){CS.symbol=b.dataset.s;CS.fit=true;loadChart()}});
+document.getElementById('prev').onclick=()=>{const i=CS.days.indexOf(CS.day);if(i>0){CS.day=CS.days[i-1];CS.fit=true;loadChart()}};
+document.getElementById('next').onclick=()=>{const i=CS.days.indexOf(CS.day);if(i>=0&&i<CS.days.length-1){CS.day=CS.days[i+1];CS.fit=true;loadChart()}};
+loadChart();setInterval(()=>{if(CS.live)loadChart()},5000);
 tick();setInterval(tick,15000);
 </script></body></html>"""
 
@@ -447,6 +489,11 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.split("?")[0] == "/api/agents":
             body, kind = json.dumps(snapshot()).encode(), "application/json"
+        elif self.path.split("?")[0] == "/api/chart":
+            from urllib.parse import parse_qs, urlsplit
+            from worker import home_chart
+            q = {k: v[0] for k, v in parse_qs(urlsplit(self.path).query).items()}
+            body, kind = json.dumps(home_chart.chart(q.get("symbol"), q.get("day"))).encode(), "application/json"
         elif self.path.split("?")[0] in ("/", "/index.html"):
             body, kind = PAGE.encode(), "text/html; charset=utf-8"
         else:
