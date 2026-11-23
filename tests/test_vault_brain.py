@@ -124,6 +124,14 @@ class DailyLog(_Vault):
         self.assertIn("[[Shop]] · warning: printify down", text)
 
 
+class ICloud(unittest.TestCase):
+    def test_writer_can_download_cloud_only_notes(self):
+        import platform
+        if platform.system() != "Darwin":
+            self.skipTest("macOS only")
+        self.assertTrue(vb.allow_icloud_downloads())
+
+
 class Mapping(unittest.TestCase):
     def test_logger_and_prefix(self):
         self.assertEqual(vb.area_for_logger("jarvis.shop", "storefront: published 192"), "Shop")

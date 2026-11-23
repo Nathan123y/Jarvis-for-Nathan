@@ -372,6 +372,21 @@ def append_line(brain: Path, area: str, text: str, when: datetime | None = None,
         refresh_nucleus(brain)
 
 
+def allow_icloud_downloads(thread_only: bool = True) -> bool:
+    """Let this thread (or process) download iCloud notes that "Optimize Mac Storage" moved
+    to the cloud. macOS refuses that to background processes such as the launchd worker:
+    every open() of such a note fails with EDEADLK ("Resource deadlock avoided")."""
+    if platform.system() != "Darwin":
+        return True
+    try:
+        import ctypes
+        libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+        # IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, IOPOL_SCOPE_THREAD/PROCESS, IOPOL_MATERIALIZE_DATALESS_FILES_ON
+        return libc.setiopolicy_np(3, 1 if thread_only else 0, 2) == 0
+    except Exception:
+        return False
+
+
 class _Writer:
     """One background thread per process that does the vault writes in order."""
 
@@ -393,6 +408,7 @@ class _Writer:
         return done
 
     def _run(self):
+        allow_icloud_downloads()
         while True:
             fn, done = self.q.get()
             try:
@@ -602,6 +618,7 @@ def adopt_memory_edits(memory: dict, sync_path: Path) -> list[str]:
     brain = brain_dir(create=False)
     if brain is None:
         return []
+    allow_icloud_downloads()
     sync = _load_sync(sync_path)
     taken = []
     for cat, title in MEMORY_NOTES.items():
