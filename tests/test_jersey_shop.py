@@ -80,6 +80,8 @@ def drop(tmp, name, sleeve=False):
     d.mkdir(parents=True)
     for stem in ("front", "back") + (("sleeve",) if sleeve else ()):
         Image.new("RGB", (1024, 1536), (20, 30, 70)).save(d / f"{stem}.png")
+    if not sleeve:
+        (d / "info.txt").write_text("basketball\n")            # new art is soccer unless info.txt says basketball
     return d
 
 
@@ -93,6 +95,13 @@ class JerseyTests(unittest.TestCase):
     def tearDown(self):
         self._d.cleanup()
 
+
+    def test_new_art_is_soccer_unless_it_says_basketball(self):
+        d = self.tmp / "x"
+        d.mkdir()
+        self.assertEqual(js.read_info(d), {})
+        (d / "info.txt").write_text("name: FROST\nbasketball\n")
+        self.assertEqual(js.read_info(d).get("kind"), "basketball")
 
     def test_fit_fills_the_print_area(self):
         tmp_path = self.tmp

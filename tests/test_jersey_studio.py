@@ -28,7 +28,8 @@ class StudioTests(unittest.TestCase):
 
     def test_soccer_asks_for_sleeves(self):
         self.assertIn("sleeve.png", js.prompt(js.concept("sunset-tide")))
-        self.assertNotIn("sleeve.png", js.prompt(js.concept("starfire")))
+        self.assertIn("sleeve.png", js.prompt(js.concept("starfire")))       # every new jersey is soccer now
+        self.assertNotIn("basketball", js.prompt(js.concept("gingerbread")).split("THE STYLE")[0])
 
     def fake_codex(self, names, size=(1024, 1536)):
         def run(argv, **kw):
@@ -47,7 +48,7 @@ class StudioTests(unittest.TestCase):
     def test_missing_art_fails_and_leaves_nothing(self):
         with mock.patch.object(js, "codex_bin", return_value="codex"):
             with self.assertRaises(RuntimeError):
-                js.generate("starfire", inbox=self.tmp / "inbox", run=self.fake_codex(["front.png"]))
+                js.generate("starfire", inbox=self.tmp / "inbox", run=self.fake_codex(["front.png", "back.png"]))
         self.assertFalse((self.tmp / "inbox" / "starfire").exists())
 
     def test_next_concepts_skips_made_and_twice_failed(self):

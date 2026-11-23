@@ -129,6 +129,8 @@ def read_info(folder: Path) -> dict:
             info["title"] = m.group(1).strip()[:140]
         if re.search(r"\bsoccer\b|\bfootball shirt\b", text, re.I):
             info["kind"] = "soccer"
+        elif re.search(r"^\s*basketball\s*$", text, re.I | re.M):
+            info["kind"] = "basketball"
     return info
 
 
@@ -256,7 +258,8 @@ class Jerseys:
                 slug = f"{slug}-{int(self.clock())}"
             info = read_info(folder)
             sleeve = _art_file(folder, "sleeve")
-            kind = "soccer" if sleeve or info.get("kind") == "soccer" else "basketball"
+            # soccer unless info.txt asks for basketball: the basketball blank's trim is always white (user, 2026-11-22)
+            kind = "basketball" if info.get("kind") == "basketball" and not sleeve else "soccer"
             if kind == "soccer" and not sleeve:
                 sleeve = back                            # no sleeve art: the back's pattern goes on the sleeves
             dest = self.designs_dir / slug

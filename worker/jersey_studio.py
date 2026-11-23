@@ -144,6 +144,10 @@ CONCEPTS = [
      "Skybreak Basketball Jersey Vintage Y2K Streetwear Grey Yellow Lightning Clouds"),
 ]
 
+# The user, 2026-11-22: no white parts. The basketball blank (949) always has white neck/armhole trim, so every new
+# jersey is made as a soccer jersey (its collar and sleeves print with the design), whatever the concept says.
+GARMENT = "soccer"
+
 PANEL = """Make it as FLAT PRINT ARTWORK for an all-over-print {garment} jersey, NOT a photo of a jersey: artwork only,
 edge to edge, no garment shape, no mannequin, no shadows, no folds, no collar, no background, no margins, no mockup.
 The pattern fills the whole image (its edges get trimmed off at the seams). Keep every letter and number inside the
@@ -176,6 +180,7 @@ def concept(slug: str) -> Optional[tuple]:
 
 def prompt(c: tuple) -> str:
     slug, name, garment, number, palette, graphics, _ = c
+    garment = GARMENT or garment
     kind = "sleeveless basketball" if garment == "basketball" else "short-sleeve soccer"
     parts = [
         f"You are my sportswear designer. Use your image generation tool to make the print artwork for one {kind} jersey "
@@ -208,7 +213,8 @@ def generate(slug: str, inbox: Path = INBOX, timeout: int = 900, run=subprocess.
     c = concept(slug)
     if not c:
         raise ValueError(f"no concept called {slug}")
-    need = ["front.png", "back.png"] + (["sleeve.png"] if c[2] == "soccer" else [])
+    soccer = (GARMENT or c[2]) == "soccer"
+    need = ["front.png", "back.png"] + (["sleeve.png"] if soccer else [])
     with tempfile.TemporaryDirectory(prefix="jarvis-jersey-") as tmp:
         env = {k: v for k, v in os.environ.items() if k not in ("OPENAI_API_KEY", "CODEX_API_KEY")}  # the subscription only
         r = run([codex_bin(), "exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "--ephemeral", "-"],
@@ -227,7 +233,7 @@ def generate(slug: str, inbox: Path = INBOX, timeout: int = 900, run=subprocess.
         staging.mkdir(parents=True)
         for n in need:
             shutil.copy2(Path(tmp) / n, staging / n)
-        (staging / "info.txt").write_text(f"name: {c[1]}\ntitle: {c[6]}\n" + ("soccer\n" if c[2] == "soccer" else ""))
+        (staging / "info.txt").write_text(f"name: {c[1]}\ntitle: {c[6]}\n" + ("soccer\n" if soccer else ""))
         inbox.mkdir(parents=True, exist_ok=True)
         staging.rename(dest)                     # the folder appears whole, never half-written for the worker
     return dest
