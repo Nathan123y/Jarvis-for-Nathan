@@ -35,6 +35,28 @@ badge that resembles a real club's; no skeletons; spell every word exactly as gi
 # (slug, club name, garment, number, palette, graphics, title). The palettes and motifs are from the user's catalog
 # (2026-11-19); the club names are ours.
 CONCEPTS = [
+    # 2026-11-22 Christmas collab: ugly-Christmas-sweater knit meets the vintage jersey. First in the queue so they
+    # land before the holiday rush; all motifs are generic (no named characters, songs or films).
+    ("north-pole", "NORTH POLE", "basketball", "25", "Christmas red base, pine green and snow white supports, gold accent",
+     "a chunky knitted fair-isle band across the chest (snowflakes, pine trees and reindeer as knit stitches) flowing "
+     "into the vintage waves, candy-cane striped trim at the hem",
+     "North Pole Christmas Basketball Jersey Ugly Sweater Y2K Streetwear Red Green Fair Isle"),
+    ("candy-cane", "CANDY CANE", "soccer", "12", "snow white base, candy red support, mint green accent",
+     "red-and-white candy-cane stripes twisting into warped diagonal waves, tiny knit-stitch peppermint swirls",
+     "Candy Cane Christmas Soccer Jersey Ugly Sweater Y2K Streetwear White Red Mint Stripes"),
+    ("frostbite", "FROSTBITE", "soccer", "1", "midnight navy base, icy blue and white supports, silver accent",
+     "falling snow, big knitted snowflakes in a fair-isle grid sweeping across frosted waves",
+     "Frostbite Christmas Soccer Jersey Ugly Sweater Y2K Streetwear Navy Ice Blue Snowflakes"),
+    ("gingerbread", "GINGERBREAD", "basketball", "24", "warm gingerbread brown base, icing white support, "
+     "gumdrop red and green accents",
+     "white icing squiggles piped like stripes, gingerbread-house rooftops along the hem, knit-stitch texture",
+     "Gingerbread Christmas Basketball Jersey Ugly Sweater Y2K Streetwear Brown White Icing"),
+    ("mistletoe", "MISTLETOE", "soccer", "25", "deep forest green base, berry red support, gold accent",
+     "mistletoe leaves and red berries woven into curved knit-texture stripes, little gold bells",
+     "Mistletoe Christmas Soccer Jersey Ugly Sweater Y2K Streetwear Green Red Gold"),
+    ("sleigh-ride", "SLEIGH RIDE", "basketball", "12", "black base, Christmas red and white supports, gold accent",
+     "a fair-isle reindeer-and-sleigh knit pattern racing across the body as speed waves, starbursts",
+     "Sleigh Ride Christmas Basketball Jersey Ugly Sweater Y2K Streetwear Black Red Reindeer"),
     ("starfire", "STARFIRE", "basketball", "10", "navy base, red and sky-blue waves, aged cream accent",
      "a huge cracked-cream star outline behind the chest, red flames climbing from the hem",
      "Starfire Basketball Jersey Vintage Y2K Streetwear Navy Red Flames Star Jersey"),

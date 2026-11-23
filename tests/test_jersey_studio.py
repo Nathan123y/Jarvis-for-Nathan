@@ -53,7 +53,9 @@ class StudioTests(unittest.TestCase):
     def test_next_concepts_skips_made_and_twice_failed(self):
         path = self.tmp / "s.json"
         js.save({"made": {"starfire": 1}, "failed": {"garnet-royale": 2}}, path)
-        self.assertEqual(js.next_concepts(1, path), ["silver-crown"])
+        self.assertEqual(js.next_concepts(1, path), [js.CONCEPTS[0][0]])
+        js.save({"made": {"starfire": 1, "north-pole": 1}, "failed": {"candy-cane": 2}}, path)
+        self.assertEqual(js.next_concepts(1, path), ["frostbite"])
 
 
 if __name__ == "__main__":
