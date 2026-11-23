@@ -36,6 +36,8 @@ config/trading_day/
 
 # ── Personal data the assistant accumulates about you ─────────────────────────
 memory/long_term.json
+# Stamps of the Obsidian memory notes (core/vault_brain.py)
+memory/vault_sync.json
 memory/*.db
 # Mission Control task list (your deadlines and notes)
 memory/mission_control.json

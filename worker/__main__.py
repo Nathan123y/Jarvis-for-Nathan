@@ -45,6 +45,9 @@ def _setup_logging(directory: Path) -> None:
         stream = logging.StreamHandler()
         stream.setFormatter(fmt)
         root.addHandler(stream)
+    # Every crew's log line also goes into the day's note in the Obsidian brain (core/vault_brain.py).
+    from core.vault_brain import VaultLogHandler
+    root.addHandler(VaultLogHandler())
 
 
 def _handlers() -> dict:
@@ -116,9 +119,14 @@ def cmd_run(args) -> int:
     # Agents HQ: a page showing what every crew above is doing, at http://localhost:8460 (worker/agents_hq.py).
     from worker import agents_hq
     agents_hq.start(logging.getLogger("jarvis.worker").info)
+    # The trading bots' fills and memecoin trades, into the Obsidian brain (worker/brain_feed.py).
+    from worker.brain_feed import TradingFeed
+    trading_feed = TradingFeed(d / "brain_feed.json")
+    trading_feed.start()
     try:
         w.run_forever()
     finally:
+        trading_feed.stop()
         guides.stop()
         clips.stop()
         viral.stop()
