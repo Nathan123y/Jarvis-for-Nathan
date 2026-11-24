@@ -7,7 +7,7 @@ The flow (user, 2026-11-19):
    Pop-Up Store for Printify's mockups and texts the user the front and back.
 3. The user approves or rejects it (from Claude on their phone): python3 -m worker.jersey_shop approve <concept>.
    That only marks it; the worker lists it on its next pass, so the shop state has one writer.
-4. Approved: TikTok Shop (the best audience so far: it's at its 100-listing limit, so the oldest never-sold shirt
+4. Approved (not on TikTok since 2026-11-24: outside Printify's TikTok catalog). Formerly TikTok Shop (the oldest never-sold shirt
    there makes room), eBay (the same: the oldest never-sold listing goes), the Pop-Up Store and so Pinterest (the
    storefront feed pins it), and Etsy slowly: one jersey every ETSY_EVERY_DAYS.
 
@@ -413,13 +413,15 @@ class Jerseys:
         return sum(1 for r in load(self.state_path)["designs"] if (r.get("channels", {}).get("ebay") or {}).get("jersey"))
 
     def list_approved(self, st: dict, stores: dict) -> list:
-        """Approved jerseys onto TikTok, eBay and the Pop-Up Store (Etsy waits its turn). Returns the lines listed."""
+        """Approved jerseys onto eBay and the Pop-Up Store (Etsy waits its turn). Returns the lines listed."""
         out = []
         for rec in st["designs"]:
             if rec.get("status") != "approved":
                 continue
             listed, failed = [], []
-            for channel, room in (("tiktok", self.make_room_tiktok), ("ebay", self.make_room_ebay), ("popup", None)):
+            # not TikTok (user, 2026-11-24): Printify flags jerseys as outside its supported TikTok catalog, which risks
+            # fulfilment cancellations and a store suspension
+            for channel, room in (("ebay", self.make_room_ebay), ("popup", None)):
                 store = stores.get(channel)
                 if not store:
                     continue
@@ -563,7 +565,7 @@ def mark(name: str, status: str, path: Path = STATE) -> str:
             return f"{rec['slug']} is already {rec.get('status')}."
         rec["status"] = status
     save(st, path)
-    verb = "will go live on TikTok Shop, eBay, our shop and Pinterest within about 5 minutes (Etsy in its turn)" \
+    verb = "will go live on eBay, our shop and Pinterest within about 5 minutes (Etsy in its turn)" \
         if status == "approved" else "will be deleted"
     return f"{', '.join(r['slug'] for r in recs)} {verb}."
 

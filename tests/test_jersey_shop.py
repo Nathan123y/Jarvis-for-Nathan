@@ -132,7 +132,7 @@ class JerseyTests(unittest.TestCase):
         assert rec["kind"] == "soccer"
         assert set(rec["uploads"]) == {"front", "back", "right_sleeve", "left_sleeve", "Collar"}
 
-    def test_approved_goes_on_tiktok_ebay_and_popup_then_etsy(self):
+    def test_approved_goes_on_ebay_and_popup_then_etsy_never_tiktok(self):
         tmp_path = self.tmp
         shop = FakeShop(tmp_path)
         drop(tmp_path, "starfire")
@@ -142,7 +142,7 @@ class JerseyTests(unittest.TestCase):
         assert j.run() is True
         rec = js.load(tmp_path / "jersey.json")["designs"][0]
         assert rec["status"] == "listed"
-        assert {ch for ch, p in rec["channels"].items() if p["jersey"]["published"]} == {"tiktok", "ebay", "popup"}
+        assert {ch for ch, p in rec["channels"].items() if p["jersey"]["published"]} == {"ebay", "popup"}
         assert rec["products"]["jersey"]["published"]           # Etsy too: no jersey there in the last 3 days
         assert any("Jersey live" in t for t in texts)
         prices = [b for m, p, b in shop.c.calls if m == "PUT" and b and "variants" in b]
@@ -225,7 +225,7 @@ class JerseyTests(unittest.TestCase):
         js.mark("starfire", "approved", tmp_path / "jersey.json")
         j.run()
         recs = js.pin_recs(tmp_path / "jersey.json")
-        assert recs[0]["channels"]["tiktok"]["jersey"]["published"]
+        assert recs[0]["channels"]["ebay"]["jersey"]["published"]
         assert "STARFIRE" in recs[0]["slogan"]
 
 
