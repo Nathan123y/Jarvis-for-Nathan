@@ -23,6 +23,17 @@ Voices (all free, no key):
   A stock voice tuned to the same register, not a copy of the actor.
 * Kokoro (offline, memory/kokoro) is the fallback when Microsoft's service fails:
   bm_daniel has the closest offline pitch (120.6 Hz).
+* ElevenLabs (paid beyond its free ~10 minutes a month; the user's own key as
+  "elevenlabs_api_key" in config/api_keys.json). The most natural of these; its
+  library has deep British butler voices. Never a clone of a real person: the
+  user asked for the actors' "exact voices" on 11-23 and that was declined.
+  The voice is "elevenlabs_voice" (a name from the account's voices, or an ID).
+  If it fails (no credit left, key revoked), Gemini's own voice takes over at
+  once rather than a robotic stand-in.
+
+The user found the Microsoft voices "way too robotic" (11-23) and asked for
+deeper, Alfred-like British voices: Gemini's own Algieba is the default now
+(memory/config_manager.DEFAULT_VOICE) and these stay as options in the picker.
 """
 from __future__ import annotations
 
@@ -47,7 +58,11 @@ VOICES: dict[str, dict] = {
     "Alfred": {"engine": "edge", "voice": "en-GB-ThomasNeural", "rate": "-6%", "pitch": "-10Hz"},
     "Ryan":   {"engine": "edge", "voice": "en-GB-RyanNeural", "rate": "+0%", "pitch": "+0Hz"},
     "Daniel": {"engine": "kokoro", "voice": "bm_daniel", "speed": 1.0},
+    "Eleven": {"engine": "elevenlabs"},          # voice and model from config (eleven_settings)
 }
+ELEVEN_URL = "https://api.elevenlabs.io/v1"
+ELEVEN_MODEL = "eleven_flash_v2_5"               # their lowest-latency model (~75 ms), half the credits
+ELEVEN_DEFAULT_VOICE = "Daniel"                  # their deep British premade voice, until one is chosen
 FALLBACK = {"engine": "kokoro", "voice": "bm_daniel", "speed": 1.0}
 # The Gemini voice the Live session connects with while an outside voice speaks.
 # Its audio is only heard if the outside voice fails, so pick a calm male one.
@@ -176,19 +191,84 @@ def _kokoro_say(text: str, v: dict) -> bytes:
     return to_pcm(samples, sr)
 
 
+class VoiceUnavailable(RuntimeError):
+    """The service refused for a reason retrying won't fix (key, credit, plan)."""
+
+
+def eleven_settings() -> dict:
+    try:
+        from memory.config_manager import load_api_keys
+        cfg = load_api_keys()
+    except Exception:
+        cfg = {}
+    return {"key": str(cfg.get("elevenlabs_api_key") or "").strip(),
+            "voice": str(cfg.get("elevenlabs_voice") or ELEVEN_DEFAULT_VOICE).strip(),
+            "model": str(cfg.get("elevenlabs_model") or ELEVEN_MODEL).strip()}
+
+
+_eleven_ids: dict[str, str] = {}
+
+
+def _eleven_voice_id(key: str, want: str) -> str:
+    """A voice ID as given, or looked up by name among the account's voices."""
+    import requests
+    if re.fullmatch(r"[A-Za-z0-9]{20}", want):
+        return want
+    if want.lower() in _eleven_ids:
+        return _eleven_ids[want.lower()]
+    r = requests.get(f"{ELEVEN_URL}/voices", headers={"xi-api-key": key}, timeout=10)
+    if r.status_code in (401, 403):
+        raise VoiceUnavailable(f"ElevenLabs refused the key ({r.status_code})")
+    r.raise_for_status()
+    voices = r.json().get("voices") or []
+    for v in voices:
+        _eleven_ids[str(v.get("name", "")).lower()] = v.get("voice_id", "")
+    for name, vid in _eleven_ids.items():
+        if name == want.lower() or name.startswith(want.lower()):
+            return vid
+    raise VoiceUnavailable(f"no ElevenLabs voice called {want!r} on this account")
+
+
+def _eleven_say(text: str, v: dict) -> bytes:
+    import requests
+    cfg = eleven_settings()
+    if not cfg["key"]:
+        raise VoiceUnavailable("no ElevenLabs key saved")
+    vid = _eleven_voice_id(cfg["key"], cfg["voice"])
+    body = {"text": text, "model_id": cfg["model"],
+            "voice_settings": {"stability": 0.5, "similarity_boost": 0.8, "style": 0.0,
+                               "use_speaker_boost": True}}
+    if v.get("previous_text"):
+        body["previous_text"] = v["previous_text"]      # keeps the intonation joined up across clauses
+    r = requests.post(f"{ELEVEN_URL}/text-to-speech/{vid}", params={"output_format": "pcm_24000"},
+                      headers={"xi-api-key": cfg["key"]}, json=body, timeout=12)
+    if r.status_code in (401, 402, 403) or "quota" in r.text[:300].lower():
+        raise VoiceUnavailable(f"ElevenLabs said no ({r.status_code}): {r.text[:120]}")
+    if r.status_code != 200:
+        raise RuntimeError(f"ElevenLabs {r.status_code}: {r.text[:120]}")
+    pcm = np.frombuffer(r.content[: len(r.content) // 2 * 2], dtype="<i2").astype(np.float32) / 32768.0
+    return to_pcm(pcm, SR)
+
+
 def kokoro_available() -> bool:
     return (KOKORO_DIR / "kokoro-v1.0.onnx").is_file() and (KOKORO_DIR / "voices-v1.0.bin").is_file()
 
 
 async def synthesize(text: str, v: dict, log: Callable[[str], None] = print) -> bytes:
     """Speech for one sentence: the chosen voice, then the offline one."""
-    chain = [v] + ([FALLBACK] if v.get("engine") != "kokoro" and kokoro_available() else [])
+    # Only the Microsoft voices fall back to Kokoro (both are synthetic); ElevenLabs
+    # hands back to Gemini's natural voice instead of dropping to a robotic one.
+    chain = [v] + ([FALLBACK] if v.get("engine") == "edge" and kokoro_available() else [])
     last: Optional[BaseException] = None
     for i, voice in enumerate(chain):
         try:
             if voice["engine"] == "edge":
                 return await _edge(text, voice)
+            if voice["engine"] == "elevenlabs":
+                return await asyncio.to_thread(_eleven_say, text, voice)
             return await asyncio.to_thread(_kokoro_say, text, voice)
+        except VoiceUnavailable:
+            raise
         except Exception as exc:          # network, service change, missing model
             last = exc
             if i + 1 < len(chain):
@@ -254,6 +334,9 @@ class VoiceOut:
         if self._voice and self._voice["engine"] == "kokoro" and not kokoro_available():
             self._log(f"[Voice] {name} needs the offline model in memory/kokoro; using Gemini's voice")
             self._voice = None
+        if self._voice and self._voice["engine"] == "elevenlabs" and not eleven_settings()["key"]:
+            self._log("[Voice] ElevenLabs needs your key (elevenlabs_api_key); using Gemini's voice")
+            self._voice = None
         self.voice_name = name if self._voice else ""
         self._failures = 0
         return self.active
@@ -264,6 +347,7 @@ class VoiceOut:
         self._turn_audio = False
         self._turn_spoke = False
         self._turn_raw = bytearray()
+        self._last_text = ""
 
     # input from the receive loop
     def gemini_audio(self, pcm: bytes) -> None:
@@ -329,6 +413,7 @@ class VoiceOut:
             return
         self._turn_spoke = True
         voice = dict(self._voice or FALLBACK)
+        voice["previous_text"], self._last_text = self._last_text, text
 
         async def job() -> bytes:
             if self._sem is None:
@@ -360,6 +445,10 @@ class VoiceOut:
                     pcm = None
                     if self._runner is not None and self._runner.cancelled():
                         raise
+                except VoiceUnavailable as exc:
+                    pcm = None
+                    self._failures = 2                     # no point trying the next sentence
+                    self._log(f"[Voice] {exc}")
                 except Exception as exc:
                     pcm = None
                     self._failures += 1

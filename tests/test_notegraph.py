@@ -147,7 +147,7 @@ class OrbRules(unittest.TestCase):
 class Config(unittest.TestCase):
     def test_voice_default_is_in_list(self):
         self.assertIn(cm.DEFAULT_VOICE, cm.AVAILABLE_VOICES)
-        self.assertEqual(cm.DEFAULT_VOICE, "Algenib")
+        self.assertEqual(cm.DEFAULT_VOICE, "Algieba")
 
     def test_hud_cycle(self):
         self.assertEqual(cm.next_hud_style("orb"), "face")

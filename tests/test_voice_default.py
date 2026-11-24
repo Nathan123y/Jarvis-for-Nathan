@@ -21,13 +21,13 @@ class VoiceDefault(unittest.TestCase):
         cm.CONFIG_FILE.write_text(json.dumps(data))
 
     def test_default_is_a_male_voice(self):
-        self.assertEqual(cm.get_voice(), "Algenib")
+        self.assertEqual(cm.get_voice(), "Algieba")
 
     def test_saved_gacrux_from_old_default_moves_once(self):
         self.write({"voice_name": "Gacrux", "gemini_api_key": "x"})
-        self.assertEqual(cm.get_voice(), "Algenib")
+        self.assertEqual(cm.get_voice(), "Algieba")
         data = json.loads(cm.CONFIG_FILE.read_text())
-        self.assertEqual(data["voice_name"], "Algenib")
+        self.assertEqual(data["voice_name"], "Algieba")
         self.assertTrue(data["voice_default_v2"])
         self.assertEqual(data["gemini_api_key"], "x")     # rest of config untouched
 
@@ -39,7 +39,7 @@ class VoiceDefault(unittest.TestCase):
 
     def test_unknown_voice_falls_back(self):
         self.write({"voice_name": "Nope"})
-        self.assertEqual(cm.get_voice(), "Algenib")
+        self.assertEqual(cm.get_voice(), "Algieba")
 
 
 if __name__ == "__main__":
