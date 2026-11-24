@@ -66,6 +66,15 @@ class VoiceAnswer(unittest.TestCase):
 
     def test_nothing_pending(self):
         self.assertIsNone(confirm.voice_answer("yes", time.monotonic()))
+        self.assertEqual(confirm.pending_key(), "")
+
+    def test_revised_draft_replaces_the_waiting_one(self):
+        self.park()
+        self.assertEqual(confirm.pending_key(), "msg")
+        confirm.request("msg", "Text Mom", "hi again", lambda: self.ran.append(2) or "sent")
+        self.assertTrue(confirm.voice_answer("yes", time.monotonic()))
+        self.wait_for_run()
+        self.assertEqual(self.ran, [2])                # only the revised one was sent
 
     def test_request_tells_the_model_not_to_call_again(self):
         text = confirm.request("msg", "Text Mom", "hi", lambda: "sent")

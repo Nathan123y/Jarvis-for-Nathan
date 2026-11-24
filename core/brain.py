@@ -127,10 +127,40 @@ def was_voiced(thought_text: str, spoken: str) -> bool:
 # A reply that ends by fishing for more work. The voice prompt forbids these; when
 # one slips out anyway, main.py reminds the live session in private.
 _CHECK_IN = re.compile(
-    r"(anything else|is there anything|what else can i|let me know if|would you like me to|"
+    r"(anything else|is there anything|what else can i|let me know if|would you like|"
     r"do you want me to|shall i\b|should i\b|want me to\b|need anything else|"
-    r"how can i help|can i help with|happy to help|how else can i)[^.!?]*\?\s*$",
+    r"how can i help|can i help with|happy to help|how else can i|"
+    r"are you (sure|certain)|did (it|you|the [\w ]+?) happen to|can you double.check)[^.!?]*\?\s*$",
     re.IGNORECASE)
+
+
+# Phrasing that makes Jarvis sound like a generic chatbot instead of JARVIS (seen in the
+# 11-23 log): restating the request, cheerleading, filler thanks, unasked-for disclaimers,
+# and handing the checking back to the user. (label, pattern) — the label goes in the note.
+_GENERIC = [
+    ("restating the request", re.compile(r"\bi understand\b|\byou'?d like (me )?to\b|^so you want\b", re.I)),
+    ("cheerleading", re.compile(r"\bit sounds like you\b|\bthat'?s (great|awesome|amazing)\b", re.I)),
+    ("filler thanks", re.compile(r"\bthank you for (clarifying|confirming|letting me know|the clarification)\b", re.I)),
+    ("filler opener", re.compile(r"^(absolutely|sure thing|great question|good question|great idea)\b", re.I)),
+    ("an unasked-for disclaimer", re.compile(
+        r"\b(don'?t|do not|can'?t|cannot) (provide|give|offer) (medical|financial|legal|professional) advice\b|"
+        r"\b(consult|speak (to|with)|talk to|check with) (a|your) (doctor|healthcare|medical|qualified|professional)",
+        re.I)),
+    ("pushing the checking back to the user", re.compile(
+        r"\bperhaps you could\b|\bit might be worth (checking|looking|verifying)\b|"
+        r"\byou (may|might) want to (check|verify|look|confirm)\b", re.I)),
+    ("narrating yourself", re.compile(r"\bi'?m about to\b|\bi will now\b", re.I)),
+]
+
+
+def generic_phrasing(reply: str) -> str:
+    """What in a reply sounds like a generic AI rather than JARVIS ('' when nothing does)."""
+    reply = str(reply or "").strip()
+    for label, pattern in _GENERIC:
+        m = pattern.search(reply)
+        if m:
+            return f'{label} ("{m.group(0).strip()}")'
+    return ""
 
 
 _CONFIRMING = re.compile(r"go ahead|send (it|this|that)|proceed|confirm|place the call|ring (them|him|her)",
@@ -570,7 +600,7 @@ def speak_text(thought: dict) -> str:
     return (
         "[INNER_THOUGHT] Something you noticed on your own and decided to bring up now, unprompted. "
         "Say it to the user in your own words, in their language, in one or two short sentences, "
-        "like a friend who just spotted it. A statement that ends on the point or the suggestion: "
+        "the way JARVIS raises a point: composed, specific, addressed to sir. A statement that ends on the point or the suggestion: "
         "no question, no offer, no 'let me know'. Do not call any tools. Do not mention this "
         f"message.\nThe thought ({thought['kind']}): {thought['text']}")
 
@@ -579,3 +609,12 @@ STYLE_NUDGE = (
     "[STYLE_NOTE] Private, do not reply or speak. Your last reply ended with a check-in or an "
     "offer question. Don't do that: when a task is done, the result is the last sentence. Ask a "
     "question only when you genuinely cannot carry on without the answer.")
+
+
+def generic_nudge(what: str) -> str:
+    """A private reminder after a reply that slipped out of character."""
+    return (
+        "[STYLE_NOTE] Private, do not reply or speak. Your last reply slipped out of character: "
+        f"{what}. That is how a generic AI talks, not JARVIS. Lead with the result, crisp and "
+        "composed, address the user as sir, and drop restating, cheerleading, filler thanks, "
+        "disclaimers and 'perhaps you could check'.")

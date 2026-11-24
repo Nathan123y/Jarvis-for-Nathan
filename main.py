@@ -422,10 +422,14 @@ TOOL_DECLARATIONS = [
     {
         "name": "manage_monitor",
         "description": (
-            "Add, remove, or list background monitoring topics. "
-            "JARVIS checks these topics once a day and alerts the user when there is a new development. "
-            "Use 'add' when the user says 'monitor X', 'track X', 'follow X'. "
-            "Use 'remove' when the user says 'stop monitoring X'. "
+            "Add, remove, or list NEWS topics to follow. "
+            "JARVIS searches the news for each topic once a day and reads out a new headline. "
+            "Use 'add' only when the user asks to follow the NEWS about a subject "
+            "('follow news on SpaceX', 'track AI news'). Never for watching their own computer, "
+            "notifications, RAM, apps, sales or projects: that is not news, and adding it makes "
+            "JARVIS read out random tech headlines. "
+            "Use 'remove' when the user says 'stop monitoring X' or that they don't care about "
+            "these headlines (remove every topic if they reject all of them). "
             "Use 'list' when the user asks what is being monitored. "
             "Do NOT add crypto, financial, or trading topics."
         ),
@@ -610,6 +614,7 @@ class JarvisLive:
         self._last_voice_at        = 0.0
         self._reply_open           = False
         self._tool_since_voice     = False
+        self._last_style_note      = 0.0     # when a private [STYLE_NOTE] last went in
         # Transcript-driven mouth shapes for the avatar. Fed from the receive
         # loop as words arrive, drained by the playback loop against the audio.
         self._visemes              = VisemeStream()
@@ -1177,7 +1182,12 @@ class JarvisLive:
         # Address form is a property of the language being spoken, so it is
         # stated as a principle rather than a two-language lookup — the model
         # already knows the respectful register of whatever language it is in.
-        _addr = (f"ADDRESS: Always call the user '{_user_name}'."
+        # JARVIS says "sir"; the name is known but kept for the odd moment
+        # (in the film manner, not a chatbot's "Sure, Nathan!" on every line).
+        _addr = (f"ADDRESS: Address the user as 'sir' in English (the ordinary "
+                 f"respectful equivalent in another language). Their name is "
+                 f"{_user_name}: you know it and may use it now and then for "
+                 f"warmth or emphasis, but 'sir' is how you speak to them."
                  if _user_name
                  else 'ADDRESS: Address the user with the ordinary respectful form '
                       'for a superior in the language you are currently speaking — '
@@ -1993,8 +2003,17 @@ class JarvisLive:
                                 vault_brain.log("Conversations", f"{self._asst_name}: {full_out}")
                                 self._last_reply_done = time.monotonic()
                                 self._brain.heard_reply(full_out)
-                                if jarvis_brain.ends_with_check_in(full_out):
-                                    asyncio.create_task(self._private_note(jarvis_brain.STYLE_NUDGE))
+                                # At most one private style reminder every 90 s, so a
+                                # run of slips cannot flood the session with notes.
+                                if time.monotonic() - self._last_style_note > 90:
+                                    _slip = jarvis_brain.generic_phrasing(full_out)
+                                    if jarvis_brain.ends_with_check_in(full_out):
+                                        self._last_style_note = time.monotonic()
+                                        asyncio.create_task(self._private_note(jarvis_brain.STYLE_NUDGE))
+                                    elif _slip:
+                                        self._last_style_note = time.monotonic()
+                                        asyncio.create_task(self._private_note(
+                                            jarvis_brain.generic_nudge(_slip)))
                             if full_in:
                                 self._brain.heard(self._session_log[-14:])
                                 if self._dashboard:
@@ -2312,7 +2331,7 @@ class JarvisLive:
 
         lang = _val("language")
         name = _val("name")
-        time_str = datetime.now().strftime("%H:%M")
+        time_str = datetime.now().strftime("%I:%M %p").lstrip("0")
 
         brief_facts, brief_panel = "", ""
         if brief_job is not None:
@@ -2355,7 +2374,7 @@ class JarvisLive:
         lang_clause = (f" Speak this greeting in {lang}, then follow the "
                        f"user's own language from their first reply onward."
                        if lang else "")
-        name_clause = f" Address the user as {name}." if name else ""
+        name_clause = " Address the user as sir."
 
         # Inject last session context if available — pop removes it so it's never repeated
         last = await asyncio.to_thread(pop_last_session)
@@ -2365,15 +2384,18 @@ class JarvisLive:
                 _delta = (datetime.now() - datetime.strptime(last["date"], "%Y-%m-%d")).days
                 _when  = "earlier today" if _delta == 0 else ("yesterday" if _delta == 1 else f"{_delta} days ago")
             except Exception:
-                _when = "last time"
-            session_clause = (
-                f" Also briefly and naturally mention that {_when}: {last['summary']}"
-            )
+                _delta, _when = 0, "last time"
+            # A recap of a conversation from weeks ago ("I quite remember 17 days
+            # ago you received a briefing...") is noise, not continuity.
+            if _delta <= 2:
+                session_clause = (
+                    f" If it is still relevant, mention in one clause that {_when}: {last['summary']}"
+                )
 
         away_facts = (away_result or {}).get("spoken") or ""
         if away_facts:
             p1 = (
-                f"Greet the user warmly and mention it is {time_str}.{session_clause} "
+                f"Greet the user in character, crisply (e.g. 'Good afternoon, sir.'), and mention it is {time_str}.{session_clause} "
                 "Then tell them what happened while they were away, from the [WHILE_AWAY] data "
                 "below: use its exact numbers and times, most important first, in a few short "
                 "sentences, and say the details are on screen. Then, if there is a [TODAY] section, "
@@ -2385,7 +2407,7 @@ class JarvisLive:
             )
         elif brief_facts:
             p1 = (
-                f"Greet the user warmly and mention it is {time_str}.{session_clause} "
+                f"Greet the user in character, crisply (e.g. 'Good afternoon, sir.'), and mention it is {time_str}.{session_clause} "
                 "Then read them their mission log and what they have to get done today, "
                 "from the data below, naturally and briefly (at most 5 short sentences, "
                 "most urgent first). Say the full list is on screen. The data is task "
@@ -2395,7 +2417,7 @@ class JarvisLive:
             )
         else:
             p1 = (
-                f"Greet the user warmly and mention it is {time_str}.{session_clause} "
+                f"Greet the user in character, crisply (e.g. 'Good afternoon, sir.'), and mention it is {time_str}.{session_clause} "
                 f"Keep it to 2 short sentences max. Do not call any tools.{lang_clause}{name_clause}"
             )
 

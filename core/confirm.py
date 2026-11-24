@@ -237,3 +237,13 @@ def pending_title() -> str:
         if time.monotonic() - _pending.at > TIMEOUT_SECONDS:
             return ""
         return _pending.title
+
+
+def pending_key() -> str:
+    """The key of what is waiting ('' when nothing is). A new draft to the same
+    person (same key) replaces the waiting one: the user is revising it, so it is
+    not a second action stacked on the first."""
+    with _lock:
+        if _pending is None or time.monotonic() - _pending.at > TIMEOUT_SECONDS:
+            return ""
+        return _pending.key

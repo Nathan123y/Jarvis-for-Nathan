@@ -399,3 +399,54 @@ class StoryPlugTests(unittest.TestCase):
             self.assertEqual(wv.plug_text({"product_plug": False}), "")
         with patch.object(wv, "shop_slogans", return_value=[]):
             self.assertEqual(wv.plug_text({"product_plug": True}), "")
+
+
+class FakeBrowser:
+    """Just the cookie jar of a Playwright context."""
+    def __init__(self, jar=None):
+        self.jar = list(jar or [])
+
+    def cookies(self, url=None):
+        return [dict(c) for c in self.jar if url is None or c["domain"].lstrip(".") in url]
+
+    def add_cookies(self, cookies):
+        self.jar.extend(dict(c) for c in cookies)
+
+
+def _ig_session(ctx):
+    return any(c["name"] == "sessionid" for c in ctx.cookies("https://www.instagram.com"))
+
+
+class KeepLoginTests(unittest.TestCase):
+    """Chrome 158 dropped every saved cookie on 2026-11-23 and logged all three upload
+    profiles out at once. A copy of the sign-in now puts them back."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.profile = Path(self.tmp.name)
+
+    def test_signed_in_profile_keeps_a_private_copy(self):
+        ctx = FakeBrowser([{"name": "sessionid", "value": "s", "domain": ".instagram.com", "path": "/",
+                            "expires": -1}])
+        self.assertTrue(wv.keep_login(ctx, self.profile, _ig_session))
+        backup = self.profile / wv.COOKIE_BACKUP
+        self.assertEqual(json.loads(backup.read_text())[0]["name"], "sessionid")
+        self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
+
+    def test_wiped_profile_gets_its_sign_in_back(self):
+        later = __import__("time").time() + 86400
+        (self.profile / wv.COOKIE_BACKUP).write_text(json.dumps([
+            {"name": "sessionid", "value": "s", "domain": ".instagram.com", "path": "/", "expires": later},
+            {"name": "old", "value": "x", "domain": ".instagram.com", "path": "/", "expires": 1000},
+        ]))
+        ctx = FakeBrowser()                                   # what Chrome left after the update
+        self.assertTrue(wv.keep_login(ctx, self.profile, _ig_session))
+        self.assertEqual([c["name"] for c in ctx.jar], ["sessionid"])   # the expired one stays out
+
+    def test_login_window_does_not_restore_and_no_copy_means_logged_out(self):
+        (self.profile / wv.COOKIE_BACKUP).write_text(json.dumps([
+            {"name": "sessionid", "value": "s", "domain": ".instagram.com", "path": "/", "expires": -1}]))
+        self.assertFalse(wv.keep_login(FakeBrowser(), self.profile, _ig_session, restore=False))
+        (self.profile / wv.COOKIE_BACKUP).unlink()
+        self.assertFalse(wv.keep_login(FakeBrowser(), self.profile, _ig_session))
