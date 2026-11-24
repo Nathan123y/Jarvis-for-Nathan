@@ -1163,7 +1163,14 @@ def _publish(pg, button: str, log: Callable = print, wait_min: float = 25) -> No
         if not (asking.count() and asking.first.is_visible()):
             pg.wait_for_timeout(4000)
             return
-        pg.get_by_role("button", name="Go back").first.click(timeout=15000)
+        # the dialog's way out was "Go back" until 11-23, now "Got it" (never "Publish anyway": that risks a strike)
+        for name in ("Go back", "Got it"):
+            btn = pg.get_by_role("button", name=name, exact=True)
+            if btn.count() and btn.first.is_visible():
+                btn.first.click(timeout=15000)
+                break
+        else:
+            pg.keyboard.press("Escape")
         if time.time() > end:
             raise StillChecking(f"YouTube was still checking the video after {wait_min:.0f} minutes: it is saved as private")
         log("guides: YouTube is still checking the video; waiting to publish")
