@@ -119,6 +119,9 @@ def cmd_run(args) -> int:
     # Monday 09:00: one text with last week's views per platform and what to change (worker/social_scorecard.py).
     from worker.social_scorecard import ScorecardService
     ScorecardService(logging.getLogger("jarvis.worker").info).start()
+    # One always-open Chrome per posting account (TikTok, Instagram, YouTube), parked off screen (worker/social_gate.py).
+    from worker.social_gate import KeeperService
+    KeeperService(logging.getLogger("jarvis.worker").info).start()
     # Agents HQ: a page showing what every crew above is doing, at http://localhost:8460 (worker/agents_hq.py).
     from worker import agents_hq
     agents_hq.start(logging.getLogger("jarvis.worker").info)

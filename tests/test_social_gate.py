@@ -66,3 +66,21 @@ class GateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChromeTests(unittest.TestCase):
+    def test_which_chrome_is_running(self):
+        prof = Path("/x/memory/tiktok_profile")
+        ours = f"/Chrome --user-data-dir={prof} --remote-debugging-port=9301 --no-first-run"
+        old = "/Chrome --user-data-dir=/x/memory/tiktok_profile_old_20261124 --remote-debugging-port=9301"
+        with patch.object(gate, "_alive", return_value=True):
+            with patch.object(gate, "_commands", return_value=[ours, ours + " --type=renderer"]):
+                self.assertEqual(gate.running(prof), "ours")
+            with patch.object(gate, "_commands", return_value=[old]):
+                self.assertEqual(gate.running(prof), "")
+            with patch.object(gate, "_commands", return_value=[f"/Chrome --user-data-dir={prof} --enable-automation"]):
+                self.assertEqual(gate.running(prof), "other")
+
+    def test_fixed_ports(self):
+        self.assertEqual(gate.port_for(Path("/a/instagram_profile")), 9302)
+        self.assertTrue(9310 <= gate.port_for(Path("/a/other")) < 9390)

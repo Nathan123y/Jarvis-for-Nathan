@@ -142,7 +142,7 @@ def freeze(platform: str, why: str, log: Callable = print, path: Optional[Path] 
     if time.time() - told > 86400:
         st["frozen"][platform]["told"] = time.time()
         msg = (f"🔒 {NAMES.get(platform, platform)} needs you: \"{why[:200]}\". I stopped posting there so it doesn't "
-               f"get worse. Open the app on your phone and clear it (it's usually a texted code). I'll check again "
+               f"get worse. Its Chrome window is on your screen: clear it there or in the app (usually a texted code). I'll check again "
                f"in a few hours and pick back up on my own.")
     _save(st, path)
     log(f"gate: froze {platform}: {why[:160]}")
@@ -193,19 +193,23 @@ def checkpoint_reason(pg) -> str:
 
 
 def on_failure(pg, platform: str, log: Callable = print) -> None:
-    """Called from an upload's error path: a lock page freezes the account and becomes AccountLocked."""
+    """Called from an upload's error path: a lock page freezes the account and becomes AccountLocked. The window
+    comes onto the screen so the user can type the code straight in."""
     why = checkpoint_reason(pg)
     if why:
         freeze(platform, why, log)
+        place_window(pg, on_screen=True)
         raise AccountLocked(f"{NAMES.get(platform, platform)} showed a security page: {why}")
 
 
 # ── a normal Chrome ──────────────────────────────────────────────────────────
 class _RealContext:
-    """Playwright's BrowserContext for a Chrome we started ourselves; close() also quits that Chrome."""
+    """Playwright's BrowserContext for one of the always-open account Chromes. close() only lets go of it: the
+    Chrome stays open (logins stay warm and the user can see it), extra tabs are shut, and a window brought on
+    screen for a sign-in goes back to its parking spot."""
 
-    def __init__(self, browser, proc):
-        self._browser, self._proc = browser, proc
+    def __init__(self, browser, profile: Path, park_on_close: bool):
+        self._browser, self._profile, self._park = browser, profile, park_on_close
         self._ctx = browser.contexts[0]
 
     def __getattr__(self, name):
@@ -213,31 +217,63 @@ class _RealContext:
 
     def close(self) -> None:
         try:
-            self._browser.close()
+            pages = self._ctx.pages
+            for extra in pages[1:]:
+                extra.close()
+            if self._park and pages:
+                place_window(pages[0], on_screen=False)
         except Exception:
             pass
         try:
-            self._proc.terminate()                  # SIGTERM: Chrome writes its cookies out and exits
-            self._proc.wait(20)
+            self._browser.close()               # connected over CDP: this only disconnects
         except Exception:
-            try:
-                self._proc.kill()
-            except Exception:
-                pass
+            pass
 
 
-def _free_port() -> int:
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
+PROFILES = {"tiktok": ROOT / "memory" / "tiktok_profile", "instagram": ROOT / "memory" / "instagram_profile",
+            "youtube": ROOT / "memory" / "youtube_profile"}
+PORTS = {"tiktok_profile": 9301, "instagram_profile": 9302, "youtube_profile": 9303}
+HOMES = {"tiktok": "https://www.tiktok.com/foryou", "instagram": "https://www.instagram.com/",
+         "youtube": "https://studio.youtube.com/"}
+
+
+def port_for(profile: Path) -> int:
+    name = Path(profile).name
+    return PORTS.get(name) or 9310 + int(hashlib.md5(name.encode()).hexdigest(), 16) % 80
+
+
+def platform_of(profile: Path) -> str:
+    return next((k for k, v in PROFILES.items() if Path(v).name == Path(profile).name), "")
+
+
+def _commands() -> list[str]:
+    try:
+        return subprocess.run(["ps", "-ax", "-o", "command="], capture_output=True, text=True, timeout=10).stdout.splitlines()
+    except Exception:
+        return []
+
+
+def _alive(port: int) -> bool:
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=2)
+        return True
+    except Exception:
+        return False
+
+
+def running(profile: Path) -> str:
+    """"ours" = our Chrome is up on its port, "other" = something else holds the profile, "" = nothing."""
+    flag, port = f"--user-data-dir={profile} ", port_for(profile)       # the space: not tiktok_profile_old_...
+    mine = [c for c in _commands() if flag in c + " " and "--type=" not in c]
+    if any(f"--remote-debugging-port={port}" in c for c in mine) and _alive(port):
+        return "ours"
+    return "other" if mine else ""
 
 
 def _quit_leftover(profile: Path) -> None:
-    """A Chrome left running on this profile (the worker died mid-upload) would swallow the new launch."""
-    subprocess.run(["pkill", "-f", f"--user-data-dir={profile}"], capture_output=True)
-    time.sleep(1)
+    """A Chrome on this profile that we can't drive (an old-style window, or one that hung) would swallow the launch."""
+    subprocess.run(["pkill", "-f", f"--user-data-dir={profile}( |$)"], capture_output=True)
+    time.sleep(2)
     for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
         try:
             (profile / name).unlink()
@@ -245,30 +281,98 @@ def _quit_leftover(profile: Path) -> None:
             pass
 
 
-def real_chrome(p, profile: Path, visible: bool, size=(1280, 900)):
-    """A normally launched Chrome on `profile` (visible, or a real window parked off screen)."""
+def launch(profile: Path, size=(1280, 900), home: str = "about:blank") -> None:
+    """Start the account's Chrome, parked off screen, in its own session so a worker restart doesn't take it down."""
     profile = Path(profile)
     profile.mkdir(parents=True, exist_ok=True)
-    _quit_leftover(profile)
-    port = _free_port()
-    args = [CHROME, f"--user-data-dir={profile}", f"--remote-debugging-port={port}", "--no-first-run",
-            "--no-default-browser-check", f"--window-size={size[0]},{size[1] + 120}",
-            "--window-position=120,80" if visible else "--window-position=-2400,0", "about:blank"]
-    proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    port = port_for(profile)
+    subprocess.Popen([CHROME, f"--user-data-dir={profile}", f"--remote-debugging-port={port}", "--no-first-run",
+                      "--no-default-browser-check", f"--window-size={size[0]},{size[1] + 120}",
+                      "--window-position=-2400,0", home],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     end = time.time() + 60
     while time.time() < end:
-        try:
-            urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=1)
-            break
-        except Exception:
-            if proc.poll() is not None:
-                raise RuntimeError("Chrome quit right after starting")
-            time.sleep(0.5)
-    else:
-        proc.kill()
-        raise RuntimeError("Chrome didn't open its debugging port")
-    browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{port}", timeout=60000)
-    return _RealContext(browser, proc)
+        if _alive(port):
+            return
+        time.sleep(0.5)
+    raise RuntimeError("Chrome didn't open its debugging port")
+
+
+def ensure(profile: Path, size=(1280, 900), take_over: bool = True) -> bool:
+    """The account's Chrome is up. take_over=False leaves a profile alone while something else is using it."""
+    state = running(profile)
+    if state == "ours":
+        return True
+    if state == "other":
+        if not take_over:
+            return False
+        _quit_leftover(profile)
+    launch(profile, size, HOMES.get(platform_of(profile), "about:blank"))
+    return True
+
+
+def place_window(pg, on_screen: bool) -> None:
+    """Bring the Chrome window onto the screen (in front) or park it off to the side."""
+    try:
+        cdp = pg.context.new_cdp_session(pg)
+        wid = cdp.send("Browser.getWindowForTarget")["windowId"]
+        cdp.send("Browser.setWindowBounds", {"windowId": wid, "bounds": {"windowState": "normal"}})
+        cdp.send("Browser.setWindowBounds", {"windowId": wid, "bounds": {"left": 120 if on_screen else -2400, "top": 80}})
+        if on_screen:
+            pg.bring_to_front()
+    except Exception:
+        pass
+
+
+def frozen(platform: str) -> bool:
+    return bool(platform and _load()["frozen"].get(platform))
+
+
+def real_chrome(p, profile: Path, visible: bool, size=(1280, 900)):
+    """Connect to the account's always-open Chrome (starting it if needed). visible = put it on screen for the
+    user (a sign-in), and park it again afterwards. A frozen account's window stays on screen so the code can go in."""
+    profile = Path(profile)
+    ensure(profile, size)
+    browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{port_for(profile)}", timeout=60000)
+    ctx = _RealContext(browser, profile, park_on_close=visible)
+    pg = ctx.pages[0] if ctx.pages else ctx.new_page()
+    if visible:
+        place_window(pg, on_screen=True)
+    elif not frozen(platform_of(profile)):
+        place_window(pg, on_screen=False)
+    return ctx
+
+
+class KeeperService:
+    """Keeps every account's Chrome open (it may have crashed, or Chrome updated and quit). Never takes a profile
+    away from something else using it."""
+    PASS_SECONDS = 600
+
+    def __init__(self, log: Callable[[str], None] = print):
+        self.log = log
+        self._stop = __import__("threading").Event()
+
+    def start(self) -> None:
+        __import__("threading").Thread(target=self._run, daemon=True, name="account-chromes").start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _run(self) -> None:
+        while True:
+            self.run_once()
+            if self._stop.wait(self.PASS_SECONDS):
+                return
+
+    def run_once(self) -> None:
+        if not settings().get("real_chrome", True):
+            return
+        for plat, profile in PROFILES.items():
+            try:
+                if running(profile) != "ours" and ensure(profile, take_over=False):
+                    self.log(f"gate: opened the {NAMES[plat]} Chrome")
+            except Exception as exc:
+                self.log(f"gate: couldn't open the {NAMES[plat]} Chrome: {exc}")
 
 
 def open_profile(p, profile: Path, visible: bool, size=(1280, 900), legacy: Optional[Callable] = None):

@@ -2296,6 +2296,9 @@ def ig_post(video: Path, caption: str, ai_label: bool = True, log: Callable = pr
                 raise NotLoggedIn("Instagram sent us to the login page")
             if any(u in pg.url for u in gate.LOCK_URLS):    # a security / suspended page: freeze, don't push on
                 gate.on_failure(pg, "instagram", log)
+            create = pg.locator("svg[aria-label='New post'], svg[aria-label='Create']")
+            if not create.count() and pg.locator("a:text-is('Log in'), button:text-is('Log in')").count():
+                raise NotLoggedIn("Instagram shows its logged-out page (the saved sign-in was refused)")
             if not dry_run:
                 gate.browse_a_bit(pg, log=log)
             _ig_click(pg, ["Not Now", "Not now"])          # "turn on notifications" / "save login info"
