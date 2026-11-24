@@ -311,6 +311,19 @@ def ensure(profile: Path, size=(1280, 900), take_over: bool = True) -> bool:
     return True
 
 
+def _ensure_window(port: int, home: str) -> None:
+    """On a Mac, closing a Chrome's last window leaves it running with no window at all, and Playwright can't attach
+    to that ("Browser context management is not supported"). Open a fresh window when none is left."""
+    try:
+        tabs = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=5).read())
+        if not any(t.get("type") == "page" for t in tabs):
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/json/new?{home}", method="PUT")
+            urllib.request.urlopen(req, timeout=10).read()
+            time.sleep(2)
+    except Exception:
+        pass
+
+
 def place_window(pg, on_screen: bool) -> None:
     """Bring the Chrome window onto the screen (in front) or park it off to the side."""
     try:
@@ -333,6 +346,7 @@ def real_chrome(p, profile: Path, visible: bool, size=(1280, 900)):
     user (a sign-in), and park it again afterwards. A frozen account's window stays on screen so the code can go in."""
     profile = Path(profile)
     ensure(profile, size)
+    _ensure_window(port_for(profile), HOMES.get(platform_of(profile), "about:blank"))
     browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{port_for(profile)}", timeout=60000)
     ctx = _RealContext(browser, profile, park_on_close=visible)
     pg = ctx.pages[0] if ctx.pages else ctx.new_page()
