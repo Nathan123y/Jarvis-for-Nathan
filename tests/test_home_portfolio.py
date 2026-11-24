@@ -104,6 +104,17 @@ class ProjectionTests(unittest.TestCase):
         self.assertLessEqual(n["low"], n["median"])
         self.assertLessEqual(n["median"], n["high"])
 
+    def test_growing_limits_make_bigger_trades_than_fixed_ones_on_a_bigger_account(self):
+        trips = self.trips([("spy-drive", 20.0), ("spy-drive", -30.0), ("qqq-drive", 15.0)] * 5)
+        fixed = {"trade_pct": None, "open_pct": None, "stop_pct": None, "trade_cap": 1500.0, "open_cap": 4200.0, "stop_cap": 600.0, "max_contracts": 25}
+        grow = {**fixed, "trade_pct": 0.30, "open_pct": 0.84, "stop_pct": 0.12}
+        now = datetime(2026, 11, 24, 17, tzinfo=NY)
+        a = hp.projection(trips, now, paths=400, equity=20000, limits=fixed)
+        b = hp.projection(trips, now, paths=400, equity=20000, limits=grow)
+        self.assertGreater(b["cost"], a["cost"])                        # 30% of $20,000 buys more than the $1,500 cap
+        self.assertGreater(abs(b["next"]["high"] - b["next"]["low"]), abs(a["next"]["high"] - a["next"]["low"]))
+        self.assertTrue(b["grows"])
+
     def test_the_review_horizon_counts_trading_days_only(self):
         self.assertEqual(hp.trading_days_between(date(2026, 11, 24), date(2026, 11, 30)), 3)   # Wed, Fri (Thanksgiving off), Mon
 
