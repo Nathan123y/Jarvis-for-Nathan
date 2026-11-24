@@ -129,3 +129,5 @@ memory/canvas_cache.tmp
 # Collab Studio: customer requests, uploads, generated images, admin password and session secret
 data/collab_studio/
 !collab_studio/.env.example
+config/youtube_api_client.json
+config/youtube_api_token.json
