@@ -589,6 +589,7 @@ class InternshipService:
         self._stop = threading.Event()
         self._replies_at = 0.0
         self._director_at = 0.0
+        self._checks_ok: dict = {}         # check -> did its last try work (unknown after a restart)
 
     def notify(self, text: str) -> None:
         self._notify(NS, text)
@@ -639,10 +640,19 @@ class InternshipService:
                 from plugins import gmail
                 if check_replies(st, gmail._service("personal"), self.notify):
                     save_state(st, self.state_path)
+                self._check_ok("reply check", True)
             except Exception as exc:
+                self._check_ok("reply check", False)
                 self.log(f"internships: reply check failed ({type(exc).__name__})")
             save_state(st, self.state_path)
         self._maybe_apply(st, cfg, now, today)
+
+    def _check_ok(self, check: str, ok: bool) -> None:
+        """A working check logs nothing, so the dashboard kept showing the last failure (a Wi-Fi drop) for a day:
+        the first success after a failure or a restart says so once."""
+        if ok and self._checks_ok.get(check) is not True:
+            self.log(f"internships: {check} ok")
+        self._checks_ok[check] = ok
 
     def _director(self, st: dict, now: datetime, today: str) -> None:
         """The director's sheet: re-read each morning and whenever he emails about internships."""
@@ -653,7 +663,9 @@ class InternshipService:
                 from plugins import gmail
                 emailed = director_emails(st, gmail._service("school"))
                 save_state(st, self.state_path)
+                self._check_ok("director email check", True)
             except Exception as exc:
+                self._check_ok("director email check", False)
                 self.log(f"internships: director email check failed ({type(exc).__name__})")
         due = st.get("director_day") != today and (_at(now, DIGEST_AT) or not st.get("director_day"))
         if not emailed and not due:

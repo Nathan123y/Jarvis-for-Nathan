@@ -62,7 +62,7 @@ CREWS = [
     ("Internship crew", "jarvis.internships", [
         ("Applier", "applies to Summer 2027 internships", r"appl|submit"),
         ("Inbox reader", "reads company replies", r"repl|inbox|email"),
-        ("Scout", "looks for new openings", r"scout|found|new"),
+        ("Scout", "looks for new openings", r"\bscout\b|director'?s? sheet"),   # not "ServerNotFoundError"
     ]),
     ("Phone and alerts", "jarvis.alerts", [
         ("Texter", "sends you the important news and sale alerts", r"."),

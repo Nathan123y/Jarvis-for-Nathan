@@ -181,6 +181,16 @@ class NewsletterTests(unittest.TestCase):
         self.assertEqual(sent, [])
 
 
+class CheckOkTests(unittest.TestCase):
+    def test_a_working_check_says_so_once_after_a_failure_or_restart(self):
+        logged = []
+        svc = wi.InternshipService(logged.append, lambda k, t: None, state_path=Path(tempfile.mkdtemp()) / "s.json",
+                                   clock=lambda: NOW)
+        for ok in (True, True, False, False, True, True):
+            svc._check_ok("reply check", ok)
+        self.assertEqual(logged, ["internships: reply check ok", "internships: reply check ok"])
+
+
 class NoneAnswerTests(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())

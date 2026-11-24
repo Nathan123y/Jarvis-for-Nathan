@@ -37,6 +37,21 @@ class AgentsHQTests(unittest.TestCase):
         self.assertTrue(crews["Video crew"]["TikTok poster"]["problem"])       # a failure is flagged
         self.assertEqual(crews["Game guides crew"]["Guide maker"]["light"], "blue")   # ten hours ago: active in 24 h
 
+    def test_an_inbox_failure_is_the_inbox_readers_and_clears_once_it_works(self):
+        log = ("2026-11-23 05:45:16,939 INFO jarvis.internships internships: the Scout found 0 new Summer 2027 postings\n"
+               "2026-11-23 15:04:35,215 INFO jarvis.internships internships: reply check failed (ServerNotFoundError)\n")
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "w.log"
+            p.write_text(log)
+            crew = {a["name"]: a for c in hq.agents_status(hq.read_log(p), datetime(2026, 11, 23, 16, 0))
+                    if c["crew"] == "Internship crew" for a in c["agents"]}
+            self.assertIn("Scout found 0", crew["Scout"]["last"])               # "NotFound" isn't the Scout's
+            self.assertTrue(crew["Inbox reader"]["problem"])
+            p.write_text(log + "2026-11-24 07:00:01,000 INFO jarvis.internships internships: reply check ok\n")
+            crew = {a["name"]: a for c in hq.agents_status(hq.read_log(p), datetime(2026, 11, 24, 7, 5))
+                    if c["crew"] == "Internship crew" for a in c["agents"]}
+            self.assertFalse(crew["Inbox reader"]["problem"])
+
     def test_snapshot_never_breaks_without_any_files(self):
         snap = hq.snapshot()
         self.assertIn("summary", snap)
