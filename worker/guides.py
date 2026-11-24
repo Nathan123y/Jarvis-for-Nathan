@@ -56,6 +56,10 @@ DEFAULTS = {"enabled": True,
                                                         # the Shorts get hundreds); "16:00" turns it back on
             "short_times": "12:00,16:00,17:00,21:00",         # numbered-list shorts (YouTube Shorts + TikTok + Instagram)
             "tiktok": True,                             # off = Shorts and tall copies skip TikTok (off since 11-15)
+            "instagram": True,                          # off = they skip Instagram too. It was missing here, so the stored
+                                                        # "off" was dropped and GTA kept going to the stories' page (11-23)
+            "followups": 2,                             # new Shorts queued about each upload that passes followup_views
+            "followup_views": 500,
             "vertical_copy": True,                      # the long video is also cut tall for TikTok and Instagram, so
                                                         # every account gets it (user, 11-13: "every social media account")
             "official": "@RockstarGames",               # channels whose footage of the game is official
@@ -1378,6 +1382,44 @@ def remove_files(rec: dict) -> None:
         shutil.rmtree(job, ignore_errors=True)
 
 
+FOLLOWUP_ANGLES = (
+    "the same kind of moment or fact, a different example of it that the same viewers would want next",
+    "the next question a viewer would ask after watching it, answered",
+)
+
+
+def followup_topic(title: str, views: int, angle: str) -> str:
+    return (f"FOLLOW-UP to our video \"{title}\", which got {views:,} views (it's working, viewers want more like it). "
+            f"Make a NEW Short on {angle}. Keep what made it work (the kind of moment, how the title is worded) but "
+            f"never repeat its fact or copy its title.")
+
+
+def queue_followups(cfg: dict, log: Callable = print, stats: Optional[dict] = None) -> list[str]:
+    """A Short or clip that passed `followup_views` gets `followups` new Shorts about it, at the front of the queue.
+    Each winner is followed up once (guides.json "followed")."""
+    n, bar = int(cfg.get("followups") or 0), int(cfg.get("followup_views") or 0)
+    if n <= 0 or bar <= 0:
+        return []
+    if stats is None:
+        from worker import yt_stats
+        stats = yt_stats.refresh()
+    st = wv.load_state(STATE)
+    followed = set(st.get("followed") or [])
+    new = []
+    for vid, v in sorted(stats.items(), key=lambda kv: -kv[1].get("views", 0)):
+        if (vid in followed or v.get("views", 0) < bar or v.get("kind") not in ("short", "clip")
+                or time.time() - v.get("made", 0) > 7 * 86400):     # an old hit isn't news any more
+            continue
+        followed.add(vid)
+        new += [followup_topic(v.get("title", ""), v["views"], a) for a in FOLLOWUP_ANGLES[:n]]
+        log(f"guides: \"{v.get('title', '')[:60]}\" passed {bar:,} views ({v['views']:,}); queued {n} follow-up Shorts")
+    if new or followed != set(st.get("followed") or []):
+        st["followed"] = sorted(followed)
+        st["short_queue"] = new + (st.get("short_queue") or [])
+        wv.save_state(st, STATE)
+    return new
+
+
 class GuideService:
     PASS_SECONDS = 120
     MAX_TRIES = 2
@@ -1409,6 +1451,11 @@ class GuideService:
                 or not self._busy.acquire(blocking=False)):
             return ""
         try:
+            try:
+                queue_followups(cfg, self.log)
+            except Exception as exc:
+                self.log(f"guides: follow-up check failed: {exc!r}")
+            st = wv.load_state(STATE)
             today = now.date().isoformat()
             for kind, times_key, slots_key in KINDS:
                 done = (st.get(slots_key) or {}).get(today, [])

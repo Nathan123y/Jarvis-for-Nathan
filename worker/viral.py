@@ -67,10 +67,24 @@ DEFAULTS = {"enabled": True,
             "claude_model": "opus",                 # Fable 5.2 needs paid credits (fails on the membership); Opus is covered
             "claude_effort": "medium",              # high (11-05) made scenes pass 30 min and hit the weekly
                                                     # Claude limit on 11-07; medium finished in ~15 min before
-            "instagram": True,
-            "ig_handle": "whatifishowedu",          # the ONLY Instagram account Jarvis may post to (never the user's main)                      # also post each video as a Reel on the videos' own Instagram page
-                                                    # (a new page, NOT the user's personal one; user's choice 2026-11-05)
-            "handle": "whatifishowedu"}                # the TikTok account, for reading view counts                       # TikTok requires the AI-generated label on AI-made videos
+            "instagram": True,                      # also post each video as a Reel on the videos' own Instagram page
+            "ig_handle": "whatifishowedu",          # the ONLY Instagram account Jarvis may post to (never the user's main;
+                                                    # a new page, NOT the user's personal one; user's choice 2026-11-05)
+            "handle": "whatifishowedu",             # the TikTok account, for reading view counts
+            # Growth plan (user, 11-23): the old TikTok sat at 0-2 views a post from 11-10, so it is paused and a fresh
+            # account takes over after a few days of warming it up by hand (python3 -m worker.viral newtiktok <handle>).
+            "tiktok": True,                         # off = stories skip TikTok (Instagram still gets them)
+            "tiktok_from": "",                      # "YYYY-MM-DD": no TikTok posts before this day (the warm-up)
+            "ig_delay_min": 90,                     # the Reel goes up this long after the TikTok, not at the same moment
+            "ig_tags": 5,                           # Reels do better with a few relevant hashtags than a long list
+            "health_pause": True}                   # 3 TikToks in a row under 10 views after 2 days: pause TikTok, text
+CHROME_ARGS = ["--use-angle=metal", "--enable-gpu", "--ignore-gpu-blocklist"]
+
+
+def tiktok_on(cfg: dict, today: Optional[str] = None) -> bool:
+    """Stories go to TikTok: posting on, TikTok on, and past the new account's warm-up day."""
+    today = today or datetime.now().date().isoformat()
+    return bool(cfg.get("post") and cfg.get("tiktok", True) and today >= str(cfg.get("tiktok_from") or ""))
 CHROME_ARGS = ["--use-angle=metal", "--enable-gpu", "--ignore-gpu-blocklist"]
 
 
@@ -1784,6 +1798,33 @@ def _media_stats(video: Path) -> list[str]:
     for a, b in re.findall(r"black_start:([\d.]+) black_end:([\d.]+)", out):
         if float(a) > 0.2:
             problems.append(f"black frames at {float(a):.1f}-{float(b):.1f}s")
+    return problems + _opening_problems(video)
+
+
+def _opening_problems(video: Path) -> list[str]:
+    """The first second decides whether a viewer stays (11-10 analytics: most left at 0:01). Measured: sound from the
+    start, a visible first frame (it's also the cover), and movement in the first second. [] when the opening is fine."""
+    problems = []
+    try:
+        aud = subprocess.run([ffmpeg(), "-hide_banner", "-nostats", "-t", "3", "-i", str(video), "-vn", "-af",
+                              "silencedetect=noise=-35dB:d=0.25", "-f", "null", "-"],
+                             capture_output=True, text=True, timeout=120).stderr
+        m = re.search(r"silence_start: (-?[\d.]+)[\s\S]*?silence_end: ([\d.]+)", aud)
+        if m and float(m.group(1)) <= 0.05 and float(m.group(2)) >= 1.0:
+            problems.append(f"the opening is silent for {float(m.group(2)):.1f}s (the voice should start right away)")
+        first = subprocess.run([ffmpeg(), "-hide_banner", "-nostats", "-i", str(video), "-frames:v", "1", "-vf",
+                                "signalstats,metadata=print:key=lavfi.signalstats.YAVG", "-f", "null", "-"],
+                               capture_output=True, text=True, timeout=120).stderr
+        y = re.search(r"YAVG=([\d.]+)", first)
+        if y and float(y.group(1)) < 12:
+            problems.append("the first frame (the cover) is nearly black")
+        moves = subprocess.run([ffmpeg(), "-hide_banner", "-nostats", "-t", "1.2", "-i", str(video), "-an", "-vf",
+                                "select='gt(scene,0.02)',metadata=print:key=lavfi.scene_score", "-f", "null", "-"],
+                               capture_output=True, text=True, timeout=120).stderr
+        if "scene_score" not in moves:
+            problems.append("nothing moves in the first second")
+    except Exception:
+        pass
     return problems
 
 
@@ -2121,16 +2162,29 @@ def tiktok_has_post(caption: str, wait_s: float = 30) -> bool:
 IG_SWAP = {"#fyp": "#reels", "#foryou": "#explorepage", "#foryoupage": "#explorepage", "#fypシ": "#reels"}
 
 
-def ig_caption(caption: str) -> str:
-    """TikTok's caption with Instagram's discovery tags instead of TikTok-only ones (#fyp means nothing on Reels)."""
-    out, seen = [], set()
+IG_SHARE = "Send this to the friend who'd argue about it 👇"
+
+
+def ig_caption(caption: str, max_tags: int = 0, share: bool = False) -> str:
+    """TikTok's caption with Instagram's discovery tags instead of TikTok-only ones (#fyp means nothing on Reels).
+    max_tags > 0 keeps only that many hashtags; share adds a line asking people to send it on (Instagram ranks Reels
+    by how often they get sent to friends)."""
+    words, tags, seen = [], [], set()
     for w in caption.split(" "):
         w = IG_SWAP.get(w.lower(), w)
-        if w.startswith("#") and w.lower() in seen:
-            continue
-        seen.add(w.lower())
-        out.append(w)
-    return " ".join(out)
+        if w.startswith("#"):
+            if w.lower() not in seen:
+                seen.add(w.lower())
+                tags.append(w)
+        else:
+            words.append(w)
+    if max_tags > 0:                                # the generic discovery tags go first to make room for topic ones
+        generic = [t for t in tags if t.lower() in ("#reels", "#explorepage")]
+        tags = ([t for t in tags if t not in generic] + generic)[:max_tags]
+    text = " ".join(w for w in words if w)
+    if share and IG_SHARE not in text:
+        text = f"{text}\n{IG_SHARE}"
+    return f"{text} {' '.join(tags)}".strip() if not share else f"{text}\n{' '.join(tags)}".strip()
 
 
 def _ig_context(p, visible: bool):
@@ -2441,9 +2495,40 @@ class ViralService:
                 st.setdefault("sequels", []).append(sequel_topic(r.get("desc", "")))
                 msgs = [m + " Making a Part 2 for the next slot." if r.get("desc", "")[:80] in m else m for m in msgs]
         save_state(st)
+        health = self.check_health(st.get("tiktok") or {}, now)
+        if health:
+            msgs.append(health)
         for m in msgs:
             self.notify("viral", m)
         return msgs
+
+    HEALTH_RUN = 3              # this many TikToks in a row...
+    HEALTH_VIEWS = 10           # ...under this many views...
+    HEALTH_AGE_S = 48 * 3600    # ...once each is two days old = the account is being held back
+
+    def check_health(self, seen: dict, now: Optional[float] = None) -> str:
+        """Pause TikTok (and say so) when the newest judged posts all flopped, so we stop posting into a hole
+        (11-10 to 11-23 the old account posted ~40 videos at 0-2 views each). Returns the text sent, or ""."""
+        now = now or time.time()
+        cfg = settings()
+        if not cfg.get("health_pause") or not tiktok_on(cfg):
+            return ""
+        since = float(load_state().get("tiktok_since") or 0)   # only the current account's posts count
+        judged = sorted((r for r in seen.values() if since <= r.get("first", 0) <= now - self.HEALTH_AGE_S),
+                        key=lambda r: r.get("first", 0))[-self.HEALTH_RUN:]
+        if len(judged) < self.HEALTH_RUN or any(r.get("views", 0) >= self.HEALTH_VIEWS for r in judged):
+            return ""
+        try:
+            from memory.config_manager import save_plugin_config
+            save_plugin_config(NS, {"tiktok": False})
+        except Exception as exc:
+            self.log(f"viral: couldn't pause TikTok: {exc}")
+            return ""
+        views = ", ".join(str(r.get("views", 0)) for r in judged)
+        self.log(f"viral: paused TikTok, the last {self.HEALTH_RUN} posts got {views} views")
+        return (f"⚠️ TikTok paused: the last {self.HEALTH_RUN} videos got {views} views after 2 days, so TikTok is "
+                f"holding the account back. Stories still go to Instagram. Check the account (Settings > Account "
+                f"status); turn TikTok back on by telling me.")
 
     def run_once(self, now: Optional[datetime] = None) -> str:
         try:
@@ -2457,6 +2542,10 @@ class ViralService:
             now = now or datetime.now()
             today = now.date().isoformat()
             self._recover_interrupted()
+            try:
+                self.post_pending_instagram(cfg)
+            except Exception as exc:
+                self.log(f"viral: a waiting Instagram Reel failed: {exc!r}")
             st = load_state()
             done = st["slots"].get(today, [])
             due = due_slots(cfg["times"], done, now, late_ok_h=6)   # room for retries: a late video beats none
@@ -2590,18 +2679,49 @@ class ViralService:
                 raise QualityHold("; ".join(problems))
             rec["qa_ok"] = True
             self.log("viral: quality check passed")
-        tt = self._deliver_tiktok(rec, cfg)
-        ig = self.post_instagram(rec, cfg) if cfg["post"] and cfg.get("instagram") else "off"
+        tt = self._deliver_tiktok(rec, cfg) if tiktok_on(cfg) else "paused" if cfg["post"] else "off"
+        ig_wanted = cfg["post"] and cfg.get("instagram")
+        delay = float(cfg.get("ig_delay_min") or 0)
+        if ig_wanted and tt == "posted" and delay > 0:      # the Reel follows later, not at the same moment
+            st = load_state()
+            st.setdefault("ig_pending", []).append({"path": rec["path"], "due": time.time() + delay * 60})
+            save_state(st)
+            self.log(f"viral: the Instagram Reel of \"{rec['title']}\" goes up in {delay:.0f} minutes")
+            return tt
+        ig = self.post_instagram(rec, cfg) if ig_wanted else "off"
+        return self._finish(rec, cfg, tt, ig)
+
+    def _finish(self, rec: dict, cfg: dict, tt: str, ig: str) -> str:
         self._text_result(rec, cfg, tt, ig)                 # ONE text per video, both apps (user, 11-10)
-        if tt == "posted" and ig in ("posted", "off"):      # up everywhere: no need to keep it (a failed post keeps its file)
-            remove_files(rec, self.log)
+        if tt in ("posted", "paused") and ig in ("posted", "off") and (tt == "posted" or ig == "posted"):
+            remove_files(rec, self.log)                     # up everywhere it goes: no need to keep it
         return tt
+
+    def post_pending_instagram(self, cfg: dict, now: Optional[float] = None) -> int:
+        """Reels whose wait after the TikTok is over. A video with no file left is dropped from the list."""
+        now = now or time.time()
+        st = load_state()
+        pending = st.get("ig_pending") or []
+        due = [p for p in pending if p.get("due", 0) <= now]
+        if not due:
+            return 0
+        st["ig_pending"] = [p for p in pending if p not in due]
+        save_state(st)
+        recs = {v["path"]: v for v in st["videos"]}
+        for p in due:
+            rec = dict(recs.get(p["path"]) or {})
+            if not rec or not Path(p["path"]).exists() or rec.get("ig_posted"):
+                continue
+            ig = self.post_instagram(rec, cfg) if cfg["post"] and cfg.get("instagram") else "off"
+            self._finish(rec, cfg, "posted", ig)
+        return len(due)
 
     def _text_result(self, rec: dict, cfg: dict, tt: str, ig: str) -> None:
         handle = cfg.get("handle") or "whatifishowedu"
         ig_handle = cfg.get("ig_handle") or "whatifishowedu"
         why = rec.get("_why", {})
         lines = [f"TikTok: ✅ https://www.tiktok.com/@{handle}" if tt == "posted"
+                 else "TikTok: paused (fresh account coming)" if tt == "paused"
                  else f"TikTok: ❌ {why.get('tiktok', tt)}" if cfg["post"] else "TikTok: not posted (posting is off)"]
         if ig != "off":
             lines.append(f"Instagram: ✅ https://www.instagram.com/{ig_handle}/reels/" if ig == "posted"
@@ -2610,9 +2730,9 @@ class ViralService:
         body = f"{head}: \"{rec['title']}\"\n" + "\n".join(lines)
         try:
             from core import phone_alerts
-            if tt == "posted":
+            if tt == "posted" or (tt == "paused" and ig == "posted"):
                 phone_alerts.send_text(body)
-            else:                                          # TikTok missed it: send the video so it can go up by hand
+            else:                                          # nothing went up: send the video so it can go up by hand
                 phone_alerts.send_file(rec["path"], body + f"\n\n{rec['caption']}")
         except Exception as exc:
             self.log(f"viral: couldn't text the post note: {exc}")
@@ -2620,7 +2740,8 @@ class ViralService:
     def post_instagram(self, rec: dict, cfg: dict) -> str:
         """The same video as a Reel on the videos' Instagram page (a failure there never stops TikTok)."""
         try:
-            ig_post(Path(rec["path"]), ig_caption(rec["caption"]), cfg["ai_label"], self.log)
+            tags = int(cfg.get("ig_tags") or 0)              # the stories' own settings: few tags + a "send it" line
+            ig_post(Path(rec["path"]), ig_caption(rec["caption"], tags, share=tags > 0), cfg["ai_label"], self.log)
             _mark(rec["path"], ig_posted=True)
             self.log(f"viral: posted to Instagram: {rec['title']}")
             return "posted"
@@ -2682,6 +2803,27 @@ def _mark(path: str, **fields) -> None:
     save_state(st)
 
 
+def switch_tiktok(handle: str, warmup_days: int = 4, now: Optional[datetime] = None) -> str:
+    """Move the stories to a fresh TikTok account: the old account's browser profile and view records are kept aside,
+    and nothing posts to the new one until it has been warmed up by hand for `warmup_days`."""
+    from datetime import timedelta
+    from memory.config_manager import save_plugin_config
+    now = now or datetime.now()
+    if PROFILE.exists():
+        old = PROFILE.with_name(f"{PROFILE.name}_old_{now:%Y%m%d}")
+        if not old.exists():
+            PROFILE.rename(old)
+    st = load_state()
+    if st.get("tiktok"):
+        st.setdefault("tiktok_old", {}).update(st["tiktok"])
+    st["tiktok"], st["tiktok_since"] = {}, now.timestamp()
+    save_state(st)
+    start = (now + timedelta(days=warmup_days)).date().isoformat()
+    save_plugin_config(NS, {"handle": handle, "tiktok": True, "tiktok_from": start})
+    return (f"TikTok stories now go to @{handle}, starting {start}. Until then, use the account by hand each day: "
+            f"watch and like sports and \"what if\" videos so TikTok learns who it's for.")
+
+
 def main(argv: list[str]) -> int:
     cmd = argv[0] if argv else "status"
     if cmd == "topic":                               # python3 -m worker.viral topic "Could ..." -> made at the next slot
@@ -2711,6 +2853,13 @@ def main(argv: list[str]) -> int:
         return 0
     if cmd == "login":
         print("A Chrome window is opening: log in to TikTok there (it waits up to 15 minutes).")
+        print("Logged in." if tiktok_login() else "Timed out before you logged in.")
+        return 0
+    if cmd == "newtiktok" and len(argv) >= 2:     # python3 -m worker.viral newtiktok <handle> [warm-up days, default 4]
+        handle = argv[1].lstrip("@")
+        days = int(argv[2]) if len(argv) > 2 else 4
+        print(switch_tiktok(handle, days))
+        print("A Chrome window is opening: log in to the NEW TikTok account there (it waits up to 15 minutes).")
         print("Logged in." if tiktok_login() else "Timed out before you logged in.")
         return 0
     if cmd == "iglogin":
