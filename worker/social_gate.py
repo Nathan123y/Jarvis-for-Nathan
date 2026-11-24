@@ -418,12 +418,18 @@ class KeeperService:
 
 
 def open_profile(p, profile: Path, visible: bool, size=(1280, 900), legacy: Optional[Callable] = None):
-    """real_chrome() when it's on (the default), else / if it fails, the old automation launch `legacy`."""
+    """real_chrome() when it's on (the default), else / if it fails, the old automation launch `legacy`.
+    A failed attach gets one more try, and while our Chrome holds the profile its own error is raised: the legacy
+    launch can't open a profile that's in use, and its "already in use" message hid the real cause (11-24 03:35)."""
     if settings().get("real_chrome", True) or legacy is None:
         try:
             return real_chrome(p, profile, visible, size)
         except Exception:
-            if legacy is None:
+            time.sleep(5)
+        try:
+            return real_chrome(p, profile, visible, size)
+        except Exception:
+            if legacy is None or running(profile) == "ours":
                 raise
     return legacy()
 
