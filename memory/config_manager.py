@@ -110,6 +110,11 @@ AVAILABLE_VOICES = ["Algenib", "Charon", "Algieba", "Iapetus", "Schedar",
 # (core/prompt.txt); a prebuilt voice cannot be cloned from a film actor.
 # (Gacrux, the previous default, is a female voice.)
 DEFAULT_VOICE    = "Algenib"
+# British voices from outside Gemini (core/voice_out.py has their settings):
+# Gemini still hears and thinks, these read its words. Free, no key. JARVIS is
+# a stock Microsoft voice tuned to the pitch and pace of the film's JARVIS.
+EXTERNAL_VOICES  = ["JARVIS", "Alfred", "Ryan", "Daniel"]
+ALL_VOICES       = EXTERNAL_VOICES + AVAILABLE_VOICES
 
 
 def get_voice() -> str:
@@ -127,7 +132,7 @@ def get_voice() -> str:
             _save_flag("voice_default_v2", True)
         except Exception:
             pass
-    return v if v in AVAILABLE_VOICES else DEFAULT_VOICE
+    return v if v in ALL_VOICES else DEFAULT_VOICE
 
 
 def save_voice(voice_name: str) -> None:
@@ -138,7 +143,7 @@ def save_voice(voice_name: str) -> None:
     if data is None:
         return
     v = (voice_name or "").strip()
-    data["voice_name"] = v if v in AVAILABLE_VOICES else DEFAULT_VOICE
+    data["voice_name"] = v if v in ALL_VOICES else DEFAULT_VOICE
     data["voice_default_v2"] = True
     _write_config(data)
 
