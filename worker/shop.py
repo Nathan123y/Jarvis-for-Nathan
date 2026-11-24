@@ -660,7 +660,10 @@ def slogan_case(slogan: str) -> str:
 FACT_WORDS = re.compile(r"material|fabric|cotton|polyester|ceramic|\d ?%|\boz\b|\bfit\b|dishwasher|microwave|"
                         r"lead|bpa|label|one-sided|hanging|machine wash|sherpa|fleece|canvas|rubber|neoprene", re.I)
 NOT_FACTS = re.compile(r"available in|shapes|sourced|customi[sz]|personali[sz]|your (design|print)|automatically|"
-                       r"disclaimer|providers?\b|assembled|blank product", re.I)
+                       r"disclaimer|providers?\b|assembled|blank product|"
+                       # colour blends we mostly don't sell, and "100% cotton" sourcing lines on blended garments:
+                       # TikTok rejects a listing whose description disagrees with its material attribute (2026-11-24)
+                       r"fabric blends?|heather|ethically grown", re.I)
 
 
 def product_facts(description: str, limit: int = 5) -> list:
