@@ -431,6 +431,41 @@ def company_in(job_company: str, sender: str, subject: str, snippet: str) -> boo
             or re.search(rf"@[\w.-]*{re.escape(name.replace(' ', ''))}", hay) is not None)
 
 
+def _role(title: str) -> str:
+    """The plain role name: "(#43211) Physical Design Engineer Intern - BS" -> "physical design engineer intern"."""
+    t = re.sub(r"\([^)]*\)", " ", title.lower())
+    t = re.split(r"\s[-–|]\s|,", t)[0]
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9&/ ]", " ", t)).strip()
+
+
+def reply_job(applied: list[dict], sender: str, subject: str, snippet: str, kind: str) -> tuple[Optional[dict], int]:
+    """Which application an email is about, and how many from that company it could be (1 = sure).
+
+    An email that names the role picks that application. One that doesn't ("Thank you for applying to
+    Lightmatter") goes, if it's a confirmation, to the oldest application there not yet confirmed; otherwise to
+    the latest one, with the count telling the text not to name a role it can't be sure of."""
+    same = sorted((j for j in applied if company_in(j["company"], sender, subject, snippet)),
+                  key=lambda j: j.get("applied_at", 0) or 0)
+    if not same:
+        return None, 0
+    hay = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9&/ ]", " ", f"{subject} {snippet}".lower()))
+    named = [j for j in same if _role(j["title"]) and _role(j["title"]) in hay]
+    if named:
+        best = max(len(_role(j["title"])) for j in named)
+        named = [j for j in named if len(_role(j["title"])) == best]
+        if kind == "received":
+            fresh = [j for j in named if not any(r.get("kind") == "received" for r in j.get("replies") or [])]
+            return (fresh or named)[0], 1
+        return named[-1], 1
+    if len(same) == 1:
+        return same[0], 1
+    if kind == "received":
+        fresh = [j for j in same if not any(r.get("kind") == "received" for r in j.get("replies") or [])]
+        if fresh:
+            return fresh[0], 1
+    return same[-1], len(same)
+
+
 def check_replies(st: dict, service, notify: Callable[[str], None]) -> int:
     applied = [j for j in st["jobs"].values() if j["status"] in ("applied", "replied")]
     if not applied:
@@ -452,18 +487,19 @@ def check_replies(st: dict, service, notify: Callable[[str], None]) -> int:
         h = {x["name"].lower(): x["value"] for x in msg["payload"]["headers"]}
         name, addr = parseaddr(h.get("from", ""))
         subject, snippet = h.get("subject", ""), unescape(msg.get("snippet", ""))
-        job = next((j for j in sorted(applied, key=lambda j: -j.get("applied_at", 0))
-                    if company_in(j["company"], f"{name} {addr}", subject, snippet)), None)
-        if not job:
-            continue
         kind, line = classify(subject, snippet)
         if not line:
             continue
-        job.setdefault("replies", []).append({"at": time.time(), "kind": kind, "subject": subject[:140]})
+        job, could_be = reply_job(applied, f"{name} {addr}", subject, snippet, kind)
+        if not job:
+            continue
+        job.setdefault("replies", []).append({"at": time.time(), "kind": kind, "subject": subject[:140]}
+                                             | ({"unsure_of_role": True} if could_be > 1 else {}))
         if kind != "received":
             job["status"] = "replied"
             job["outcome"] = kind
-        notify(line.format(company=job["company"]) + f" ({job['title'][:60]}): \"{subject[:80]}\"")
+        role = job["title"][:60] if could_be == 1 else f"one of your {could_be} {job['company']} applications"
+        notify(line.format(company=job["company"]) + f" ({role}): \"{subject[:80]}\"")
         n += 1
     st["replies_seen"] = list(seen)[-500:]
     return n

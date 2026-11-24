@@ -106,6 +106,50 @@ class ReplyTests(unittest.TestCase):
         self.assertIn("Muon Space wants to talk", sent[0])
 
 
+class ReplyMatchTests(unittest.TestCase):
+    def jobs(self):
+        return [{"id": "p", "company": "Lightmatter", "title": "Package Layout Automation Intern", "applied_at": 1},
+                {"id": "e", "company": "Lightmatter", "title": "Electrical Engineer Intern", "applied_at": 2},
+                {"id": "a", "company": "Lightmatter", "title": "Analog Engineering Intern - Summer 2027", "applied_at": 3},
+                {"id": "m", "company": "Marvell", "title": "Physical Design Engineer Intern - BS", "applied_at": 4},
+                {"id": "d", "company": "Marvell", "title": "Design for Test Intern", "applied_at": 5}]
+
+    def test_the_role_named_in_the_email_wins(self):
+        job, n = wi.reply_job(self.jobs(), "Marvell <x@marvell.com>",
+                              "Marvell | Application Confirmation | Physical Design Engineer Intern, BS - Summer 2027",
+                              "", "received")
+        self.assertEqual((job["id"], n), ("m", 1))
+
+    def test_unnamed_confirmations_go_to_each_application_in_turn(self):
+        applied = self.jobs()
+        got = []
+        for _ in range(3):
+            job, n = wi.reply_job(applied, "Lightmatter <no-reply@greenhouse.io>", "Thank you for applying to Lightmatter",
+                                  "", "received")
+            job.setdefault("replies", []).append({"kind": "received"})
+            got.append((job["id"], n))
+        self.assertEqual(got, [("p", 1), ("e", 1), ("a", 1)])
+
+    def test_an_unnamed_rejection_does_not_claim_a_role(self):
+        job, n = wi.reply_job(self.jobs(), "Lightmatter <no-reply@greenhouse.io>", "Update on your application",
+                              "Unfortunately we will not be moving forward", "rejection")
+        self.assertEqual(n, 3)
+
+    def test_texts_say_which_role_only_when_sure(self):
+        st = {"jobs": {j["id"]: {**j, "status": "applied"} for j in self.jobs()}, "replies_seen": []}
+        service = MagicMock()
+        api = service.users.return_value.messages.return_value
+        api.list.return_value.execute.return_value = {"messages": [{"id": "r1"}]}
+        api.get.return_value.execute.return_value = {
+            "payload": {"headers": [{"name": "From", "value": "Lightmatter <no-reply@greenhouse.io>"},
+                                    {"name": "Subject", "value": "Your application to Lightmatter"}]},
+            "snippet": "Unfortunately we will not be moving forward"}
+        sent = []
+        wi.check_replies(st, service, sent.append)
+        self.assertIn("one of your 3 Lightmatter applications", sent[0])
+        self.assertNotIn("Analog", sent[0])
+
+
 class NoneAnswerTests(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
