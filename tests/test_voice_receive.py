@@ -23,6 +23,9 @@ def _receive_method():
     receiver = namespace["Receiver"]
     # Reply-delay bookkeeping normally set in JarvisLive.__init__.
     receiver._reply_open, receiver._last_voice_at, receiver._tool_since_voice = False, 0.0, False
+    # Gemini's own voice (no outside voice picked): audio goes straight to the queue.
+    from core.voice_out import VoiceOut
+    receiver._voice_out = VoiceOut(lambda _pcm: None)
     return receiver
 
 
@@ -119,6 +122,53 @@ class VoiceReceiveTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(asyncio.CancelledError):
                 await task
             self.assertEqual(player._pending_tool_batches, 0)
+
+
+class OutsideVoiceReceiveTests(unittest.IsolatedAsyncioTestCase):
+    async def test_gemini_audio_is_set_aside_and_the_outside_voice_is_queued(self):
+        import main as jarvis_main
+        from core.voice_out import VoiceOut
+        gemini = b"\x05\x00" * 2400
+        heard = []
+
+        async def fake_voice(text, voice):
+            heard.append(text)
+            return b"\x07\x00" * 1200
+
+        class FakeSession:
+            async def receive(self):
+                common = {"session_resumption_update": None, "tool_call": None}
+                sc = SimpleNamespace(output_transcription=SimpleNamespace(text="Done, sir. "),
+                                     input_transcription=None, turn_complete=False)
+                yield SimpleNamespace(**common, data=gemini, server_content=None)
+                yield SimpleNamespace(**common, data=None, server_content=sc)
+                await asyncio.Event().wait()
+
+        player = _receive_method()()
+        player._pending_tool_batches = 0
+        player.ui = SimpleNamespace(muted=False)
+        player._set_ui_state = lambda *a: None
+        player.session = FakeSession()
+        player.audio_in_queue = asyncio.Queue()
+        player._interrupted = False
+        player._turn_done_event = asyncio.Event()
+        player._visemes = SimpleNamespace(feed_text=lambda _t: None)
+        player._voice_out = VoiceOut(lambda pcm: player.audio_in_queue.put_nowait(pcm),
+                                     log=lambda *_: None, synth=fake_voice)
+        player._voice_out.set_voice("JARVIS")
+        globals_ = type(player)._receive_audio.__globals__
+        globals_.update(_clean_transcript=jarvis_main._clean_transcript,
+                        _is_repeat_chunk=jarvis_main._is_repeat_chunk, _CTRL_RE=jarvis_main._CTRL_RE)
+        task = asyncio.create_task(player._receive_audio())
+        try:
+            got = await asyncio.wait_for(player.audio_in_queue.get(), 1)
+            self.assertEqual(got, b"\x07\x00" * 1200)       # the outside voice, not Gemini's
+            self.assertEqual(heard, ["Done, sir."])
+            self.assertTrue(player.audio_in_queue.empty())
+        finally:
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
 
 
 if __name__ == "__main__":

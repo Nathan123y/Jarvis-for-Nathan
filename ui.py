@@ -2845,7 +2845,7 @@ class CustomizeOverlay(QWidget):
     """Floating overlay — change assistant name, user name, UI colour and voice."""
 
     saved = pyqtSignal(str, str, str, str)   # assistant_name, user_name, ui_color, voice
-    _OW, _OH = 400, 588
+    _OW, _OH = 400, 624                       # +36 for the British voices row
 
     def __init__(self, assistant_name="JARVIS", user_name="",
                  ui_color=DEFAULT_UI_COLOR, voice="", parent=None):
@@ -2896,28 +2896,36 @@ class CustomizeOverlay(QWidget):
         self._user_input.setStyleSheet(_fs)
         lay.addWidget(self._user_input)
 
-        # ── Assistant voice — Gemini prebuilt voices ─────────────────────────
-        # Names are language-neutral proper nouns, so the row reads the same in
-        # every locale. Selecting one and applying rebuilds the Live session.
-        from memory.config_manager import AVAILABLE_VOICES, DEFAULT_VOICE
+        # ── Assistant voice ──────────────────────────────────────────────────
+        # Top row: British voices from outside Gemini (core/voice_out.py), which
+        # switch in place. Below: Gemini's prebuilt voices, which rebuild the
+        # Live session. Names are proper nouns, the same in every locale.
+        from memory.config_manager import AVAILABLE_VOICES, DEFAULT_VOICE, EXTERNAL_VOICES, ALL_VOICES
         lay.addSpacing(4)
         lay.addWidget(_lbl("ASSISTANT VOICE", 8, color=C.TEXT_DIM,
                             align=Qt.AlignmentFlag.AlignLeft))
         self._sel_voice   = (voice or DEFAULT_VOICE)
-        if self._sel_voice not in AVAILABLE_VOICES:
+        if self._sel_voice not in ALL_VOICES:
             self._sel_voice = DEFAULT_VOICE
         self._voice_btns: dict[str, QPushButton] = {}
+        _tips = {"JARVIS": "British (Microsoft Thomas), tuned to the film JARVIS's pitch and pace",
+                 "Alfred": "British (Microsoft Thomas), lower and slower: an older butler",
+                 "Ryan": "British (Microsoft Ryan), brighter and friendlier",
+                 "Daniel": "British, runs offline on this Mac (Kokoro)"}
         # A grid, not a single row: there are more voices than fit across.
         voice_row = QGridLayout(); voice_row.setSpacing(4)
-        for _i, _v in enumerate(AVAILABLE_VOICES):
+        _cells = [(_v, 0, _i) for _i, _v in enumerate(EXTERNAL_VOICES)] + \
+                 [(_v, 1 + _i // 5, _i % 5) for _i, _v in enumerate(AVAILABLE_VOICES)]
+        for _v, _r, _c in _cells:
             b = QPushButton(_v)
             b.setCheckable(True)
             b.setFixedHeight(28)
             b.setFont(UIFont(10, QFont.Weight.Bold))
             b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setToolTip(_tips.get(_v, "Gemini voice"))
             b.clicked.connect(lambda _=False, name=_v: self._on_voice_pick(name))
             self._voice_btns[_v] = b
-            voice_row.addWidget(b, _i // 5, _i % 5)
+            voice_row.addWidget(b, _r, _c)
         lay.addLayout(voice_row)
         self._refresh_voice_btns()
 

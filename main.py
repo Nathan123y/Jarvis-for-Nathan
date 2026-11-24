@@ -91,6 +91,8 @@ from core                      import confirm as confirm_gate
 from core                      import audio_devices
 from core.action_loader        import discover_actions
 from core.echo                 import EchoGuard
+from core                      import voice_out as voice_out_mod
+from core.voice_out            import VoiceOut
 from core.audio_streams        import KeptStream
 
 from core                      import unprompted
@@ -618,6 +620,16 @@ class JarvisLive:
         # Transcript-driven mouth shapes for the avatar. Fed from the receive
         # loop as words arrive, drained by the playback loop against the audio.
         self._visemes              = VisemeStream()
+        # Who reads the answers out (core/voice_out.py). With an outside voice
+        # picked (JARVIS, Alfred...), Gemini still hears and thinks, its own
+        # audio is set aside, and the transcript is spoken into the same queue.
+        self._voice_out            = VoiceOut(self._tts_put, log=print,
+                                              on_give_up=self._voice_gave_up)
+        self._live_voice           = ""      # the Gemini voice the session connected with
+        try:
+            self._voice_out.set_voice(get_voice())
+        except Exception as e:
+            print(f"[Voice] outside voice not set up: {e!r}")
         self._last_out_logged      = ""      # de-dupes a re-sent transcript tail
         # Push-to-talk
         self._ptt_enabled          = False
@@ -944,15 +956,42 @@ class JarvisLive:
         if loop and ev is not None:
             loop.call_soon_threadsafe(ev.set)
 
+    def _tts_put(self, pcm: bytes) -> None:
+        """Queue the outside voice's speech exactly as Gemini's audio was queued."""
+        q = self.audio_in_queue
+        if q is None or self._interrupted:
+            return
+        if self._turn_done_event and self._turn_done_event.is_set():
+            self._turn_done_event.clear()
+        for i in range(0, len(pcm), 2400):          # 50 ms slices, as for Gemini audio
+            q.put_nowait(pcm[i:i + 2400])
+
+    def _voice_gave_up(self, name: str) -> None:
+        try:
+            self.ui.write_log(f"SYS: The {name} voice isn't answering — Gemini's voice for now.")
+        except Exception:
+            pass
+
     def _on_voice_change(self):
         """Voice picker applied.
 
-        The voice is baked into the session at connect time, so a rebuild is
-        required. It is rebuilt WITHOUT the resumption handle on purpose:
+        An outside voice (core/voice_out.py) switches in place: the session and
+        the conversation stay, only who reads the words changes. A Gemini voice
+        is baked into the session at connect time, so that needs a rebuild,
+        which is done WITHOUT the resumption handle on purpose:
         resuming restores the server's own session state, and the safe reading
         is that it restores the voice with it — which would make the picker
         appear to do nothing. Losing context here is acceptable because changing
         voice is a deliberate, rare act; losing it on a dropped packet was not."""
+        name = get_voice()
+        loop = getattr(self, "_loop", None)
+        if loop and loop.is_running():
+            loop.call_soon_threadsafe(self._voice_out.set_voice, name)
+        else:
+            self._voice_out.set_voice(name)
+        if self._live_voice and voice_out_mod.live_voice_for(name) == self._live_voice:
+            print(f"[JARVIS] Voice now {name} (same session)")
+            return
         self.request_reconnect(keep_context=False, reason="new voice")
 
     def _on_audio_device_change(self):
@@ -1130,6 +1169,12 @@ class JarvisLive:
                     break
             if drained:
                 print(f"[JARVIS] ✋ Interrupted — {drained} audio chunks discarded")
+        # Sentences still being turned into speech are dropped too.
+        loop = getattr(self, "_loop", None)
+        if loop and loop.is_running():
+            loop.call_soon_threadsafe(self._voice_out.cancel)
+        else:
+            self._voice_out.cancel()
         self.set_speaking(False)
         # The words we were about to mouth are never going to be spoken now.
         self._visemes.reset()
@@ -1241,6 +1286,7 @@ class JarvisLive:
         except Exception as e:
             print(f"[JARVIS] Assyrian guide not loaded: {e!r}")
 
+        self._live_voice = voice_out_mod.live_voice_for(get_voice())
         cfg = dict(
             response_modalities=["AUDIO"],
             output_audio_transcription={},
@@ -1261,7 +1307,7 @@ class JarvisLive:
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name=get_voice()
+                        voice_name=self._live_voice
                     )
                 )
             ),
@@ -1919,9 +1965,15 @@ class JarvisLive:
                             # Split into ~50 ms chunks so interrupt() stops audio within 50 ms
                             # (24000 Hz × 2 bytes/sample × 0.05 s = 2400 bytes per slice)
                             _audio_data = response.data
-                            _SLICE = 2400
-                            for _i in range(0, len(_audio_data), _SLICE):
-                                self.audio_in_queue.put_nowait(_audio_data[_i : _i + _SLICE])
+                            if self._voice_out.active:
+                                # Not played: the outside voice reads the words.
+                                # Kept as the turn's safety net, and as the sign
+                                # that its transcript is real speech.
+                                self._voice_out.gemini_audio(_audio_data)
+                            else:
+                                _SLICE = 2400
+                                for _i in range(0, len(_audio_data), _SLICE):
+                                    self.audio_in_queue.put_nowait(_audio_data[_i : _i + _SLICE])
 
                     if response.server_content:
                         sc = response.server_content
@@ -1942,6 +1994,10 @@ class JarvisLive:
                                 # alone cannot show. Pure string work — it adds
                                 # nothing measurable to the response path.
                                 self._visemes.feed_text(txt)
+                                if self._voice_out.active and not self._interrupted:
+                                    # Raw, with its own spacing: a word can be cut
+                                    # across two chunks.
+                                    self._voice_out.feed(_CTRL_RE.sub("", sc.output_transcription.text))
 
                         if sc.input_transcription and sc.input_transcription.text:
                             txt = _clean_transcript(sc.input_transcription.text)
@@ -1953,7 +2009,12 @@ class JarvisLive:
 
                         if sc.turn_complete:
                             if self._turn_done_event:
-                                self._turn_done_event.set()
+                                if self._voice_out.active:
+                                    # Released once the outside voice has queued
+                                    # the last of this turn, not before.
+                                    self._voice_out.end_turn(self._turn_done_event.set)
+                                else:
+                                    self._turn_done_event.set()
 
                             # A spoken "yes" / "no" answers a waiting confirmation
                             # (send, call, shutdown...). It is read from the user's
@@ -2034,6 +2095,7 @@ class JarvisLive:
                                 asyncio.create_task(_cam_close())
 
                     if response.tool_call:
+                        self._voice_out.flush()        # say the "checking now" line first
                         self._pending_tool_batches += 1
                         worker = asyncio.create_task(respond_to_tools(response.tool_call))
                         tool_workers.add(worker)
@@ -2793,6 +2855,7 @@ class JarvisLive:
                     self._vision_busy          = False
                     self._vision_last_time     = 0.0
                     self._interrupted          = False
+                    self._voice_out.cancel()           # nothing from the last session
 
                     print("[JARVIS] Connected.")
                     if _resumed_with:
