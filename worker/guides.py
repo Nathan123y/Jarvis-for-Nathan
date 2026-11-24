@@ -1124,8 +1124,9 @@ def _context(p, visible: bool):
                                                 viewport={"width": 1400, "height": 950}, ignore_default_args=["--enable-automation"])
 
 
-def logged_in(ctx) -> bool:
-    return any(c["name"] == "LOGIN_INFO" and c.get("value") for c in ctx.cookies("https://www.youtube.com"))
+def logged_in(ctx, restore: bool = True) -> bool:
+    return wv.keep_login(ctx, PROFILE, lambda c: any(
+        k["name"] == "LOGIN_INFO" and k.get("value") for k in c.cookies("https://www.youtube.com")), restore)
 
 
 def youtube_login(wait_s: int = 900) -> bool:
@@ -1136,8 +1137,9 @@ def youtube_login(wait_s: int = 900) -> bool:
         pg.goto("https://accounts.google.com/ServiceLogin?service=youtube&continue=https://studio.youtube.com/")
         end = time.time() + wait_s
         while time.time() < end:
-            if logged_in(ctx) and "studio.youtube.com" in pg.url:
+            if logged_in(ctx, restore=False) and "studio.youtube.com" in pg.url:
                 time.sleep(5)
+                logged_in(ctx, restore=False)               # keep a copy of the fresh sign-in
                 ctx.close()
                 return True
             time.sleep(2)

@@ -259,7 +259,7 @@ def send_message(
             contact = resolve_contact(receiver)
         except ContactError as e:
             return str(e)
-        if confirm.pending_title():
+        if confirm.pending_title() and confirm.pending_key() != f"message:{contact.handle}":
             return ("There is already a confirmation waiting on screen. "
                     "Answer that one before sending another message.")
         preview = message_text if len(message_text) <= 120 else message_text[:117] + "…"

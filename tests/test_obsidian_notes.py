@@ -78,15 +78,14 @@ class ObsidianNotesTests(unittest.TestCase):
             self.assertIn("could not connect", obsidian_notes.obsidian_notes({"action": "connect"}))
         self.assertIn("Workout.md", obsidian_notes.obsidian_notes({"action": "recent"}))
 
-    def test_create_waits_for_confirmation_and_can_be_undone(self):
+    def test_create_writes_at_once_and_can_be_undone(self):
         self.connect()
         note = self.root / "School" / "Exam Plan.md"
         params = {"action": "create", "query": "School/Exam Plan", "content": "Review chapter 3"}
         result, callbacks = self.prepare_edit(params)
-        self.assertIn("CONFIRMATION_PENDING", result)
-        self.assertFalse(note.exists())
-        self.assertEqual(len(callbacks), 1)
-        self.assertIn("Created", callbacks[0]())
+        self.assertFalse(callbacks)                     # no "shall I save it?" step
+        self.assertNotIn("CONFIRMATION_PENDING", result)
+        self.assertIn("Created the note 'Exam Plan'", result)
         self.assertEqual(note.read_text(), "Review chapter 3")
         self.assertIn("Undone", undo.undo_last())
         self.assertFalse(note.exists())
@@ -100,8 +99,7 @@ class ObsidianNotesTests(unittest.TestCase):
         self.assertEqual(existing.read_text(), "Leg day volume and reps")
 
         new = self.root / "New.md"
-        _, callbacks = self.prepare_edit({"action": "create", "query": "New", "content": "Initial"})
-        callbacks[0]()
+        self.prepare_edit({"action": "create", "query": "New", "content": "Initial"})
         new.write_text("Edited in Obsidian")
         self.assertIn("changed", undo.undo_last())
         self.assertEqual(new.read_text(), "Edited in Obsidian")
@@ -111,17 +109,19 @@ class ObsidianNotesTests(unittest.TestCase):
         path = self.root / "Workout.md"
         previews = []
         player = type("Player", (), {"show_content": lambda self, title, text: previews.append((title, text))})()
-        _, callbacks = self.prepare_edit({"action": "append", "query": "Workout", "content": "3 sets of squats"}, player)
-        self.assertNotIn("squats", path.read_text())
+        result, callbacks = self.prepare_edit({"action": "append", "query": "Workout", "content": "3 sets of squats"}, player)
+        self.assertFalse(callbacks)
+        self.assertIn("Appended to the note 'Workout'", result)
         self.assertIn("3 sets of squats", previews[-1][1])
-        callbacks[0]()
         self.assertEqual(path.read_text(), "Leg day volume and reps\n3 sets of squats")
         self.assertIn("Undone", undo.undo_last())
         self.assertEqual(path.read_text(), "Leg day volume and reps")
 
-        _, callbacks = self.prepare_edit({"action": "replace", "query": "Workout",
-                                          "old_text": "volume", "new_text": "total volume"}, player)
+        result, callbacks = self.prepare_edit({"action": "replace", "query": "Workout",
+                                               "old_text": "volume", "new_text": "total volume"}, player)
+        self.assertIn("CONFIRMATION_PENDING", result)   # replacing text still waits for the user
         self.assertIn("WITH:\ntotal volume", previews[-1][1])
+        self.assertEqual(path.read_text(), "Leg day volume and reps")
         callbacks[0]()
         self.assertEqual(path.read_text(), "Leg day total volume and reps")
         self.assertIn("Undone", undo.undo_last())
@@ -130,7 +130,8 @@ class ObsidianNotesTests(unittest.TestCase):
     def test_edit_aborts_if_obisidian_changed_note_while_confirming(self):
         self.connect()
         path = self.root / "Workout.md"
-        _, callbacks = self.prepare_edit({"action": "append", "query": "Workout", "content": "Later"})
+        _, callbacks = self.prepare_edit({"action": "replace", "query": "Workout",
+                                          "old_text": "volume", "new_text": "total volume"})
         path.write_text("Changed while reviewing")
         self.assertIn("changed while", callbacks[0]())
         self.assertEqual(path.read_text(), "Changed while reviewing")
@@ -162,12 +163,15 @@ class ObsidianNotesTests(unittest.TestCase):
             self.assertFalse(callbacks)
         self.assertEqual((outside / "Private.md").read_text(), "external")
 
-    def test_pending_confirmation_blocks_second_edit(self):
+    def test_pending_confirmation_blocks_second_replace_but_not_an_append(self):
         self.connect()
         with patch.object(obsidian_notes.confirm, "pending_title", return_value="EDIT NOTE?"):
-            result = obsidian_notes.obsidian_notes({"action": "append", "query": "Workout", "content": "More"})
-        self.assertIn("already a confirmation", result)
-        self.assertEqual((self.root / "Workout.md").read_text(), "Leg day volume and reps")
+            result = obsidian_notes.obsidian_notes({"action": "replace", "query": "Workout",
+                                                    "old_text": "volume", "new_text": "load"})
+            self.assertIn("already a confirmation", result)
+            self.assertEqual((self.root / "Workout.md").read_text(), "Leg day volume and reps")
+            obsidian_notes.obsidian_notes({"action": "append", "query": "Workout", "content": "More"})
+        self.assertEqual((self.root / "Workout.md").read_text(), "Leg day volume and reps\nMore")
 
 
     def test_links_point_at_existing_notes_not_new_ones(self):
@@ -181,7 +185,7 @@ class ObsidianNotesTests(unittest.TestCase):
             "action": "create", "query": "Neural Nets",
             "content": "Builds on [[machine learning]].", "link_to": "physics"})
         self.assertIn("existing note Machine Learning Notes.md", result)
-        callbacks[0]()
+        self.assertFalse(callbacks)
         text = (self.root / "Neural Nets.md").read_text()
         self.assertIn("[[Machine Learning Notes]]", text)
         self.assertIn("[[Physics]]", text)
@@ -197,7 +201,7 @@ class ObsidianNotesTests(unittest.TestCase):
     def test_link_action_appends_link_to_existing_note_once(self):
         self.connect()
         _, callbacks = self.prepare_edit({"action": "link", "query": "workout", "link_to": "Physics"})
-        callbacks[0]()
+        self.assertFalse(callbacks)
         self.assertEqual((self.root / "Workout.md").read_text(),
                          "Leg day volume and reps\nRelated: [[Physics]]\n")
         result, callbacks = self.prepare_edit({"action": "link", "query": "Workout", "link_to": "physics"})

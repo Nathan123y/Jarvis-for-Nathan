@@ -503,7 +503,7 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
             return "Please specify the email body."
         if len(body) > _MAX_DRAFT:
             return "This draft is too long to review in the Jarvis content panel. Keep it under 3,500 characters."
-        if confirm.pending_title():
+        if confirm.pending_title() and confirm.pending_key() != f"gmail-send:{to}":
             return "A confirmation is already on screen. Please answer it before sending another email."
 
         from_address = _email_address(service.users().getProfile(userId="me").execute().get("emailAddress", ""))

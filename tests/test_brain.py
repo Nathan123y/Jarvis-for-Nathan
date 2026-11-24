@@ -39,6 +39,33 @@ class CheckInTests(unittest.TestCase):
                   "All sorted. Anything else?"):
             self.assertTrue(brain.ends_with_check_in(s), s)
 
+    def test_doubting_the_user_counts_as_a_check_in(self):
+        for s in ("I've searched your school Gmail. Are you certain about the sender's name?",
+                  "Still nothing from him. Did the email address happen to be different?",
+                  "Found five. Would you like a summary of them?"):
+            self.assertTrue(brain.ends_with_check_in(s), s)
+
+    def test_generic_ai_phrasing_is_spotted(self):
+        # Lines Jarvis really said on 11-23, each a different way of sounding like a chatbot.
+        for s in ("It sounds like you're certainly staying active, Nathan!",
+                  "I understand, Nathan; you'd like to change the title",
+                  "Thank you for confirming the spelling. I've checked again.",
+                  "Just remember that I don't provide medical advice or diagnoses.",
+                  "You should definitely speak to a healthcare professional about your diet.",
+                  "Perhaps you could check that the email address is correct?",
+                  "Right, I'm about to create the 'Part 2' note."):
+            self.assertTrue(brain.generic_phrasing(s), s)
+        self.assertIn("filler thanks", brain.generic_nudge(brain.generic_phrasing(
+            "Thank you for clarifying that.")))
+
+    def test_in_character_replies_pass(self):
+        for s in ("Nothing from Connor in any of the three inboxes, sir.",
+                  "Done, sir. 'Final Exam' is in, linked to EE98.",
+                  "Of course, sir. Text from Mom: \"great!\"",
+                  "As you wish, sir. For the record, it's due Wednesday.",
+                  "Around 3,300 a day, sir. Keep protein near 160 grams."):
+            self.assertEqual(brain.generic_phrasing(s), "", s)
+
     def test_real_questions_pass(self):
         for s in ("Done, the lights are off.",
                   "I've drafted it to Sam. Should I go ahead and send it?",

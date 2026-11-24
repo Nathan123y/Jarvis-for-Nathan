@@ -1938,6 +1938,54 @@ def _one_browser(fn):
     return held
 
 
+COOKIE_BACKUP = ".jarvis_cookies.json"     # inside each profile folder (git-ignored with it)
+
+
+def keep_login(ctx, profile: Path, has_session: Callable, restore: bool = True) -> bool:
+    """Is this profile signed in? A good answer also saves a copy of its cookies; a bad one
+    puts the last copy back first.
+
+    Chrome keeps its own cookie store, and an update can throw that away: 158 changed how
+    cookies are encrypted and dropped every older one, so YouTube, Instagram and TikTok all
+    came up logged out at once on 2026-11-23 with nothing posted. Canvas survived it only
+    because it kept a copy like this (plugins/canvas_school.py). A copy the site has since
+    expired still fails at the upload page ("sent us to the login page"), as before."""
+    backup = Path(profile) / COOKIE_BACKUP
+    if has_session(ctx):
+        try:
+            tmp = backup.with_suffix(".tmp")
+            tmp.write_text(json.dumps(ctx.cookies()), encoding="utf-8")
+            tmp.chmod(0o600)
+            tmp.replace(backup)
+        except Exception:
+            pass
+        return True
+    if not restore:
+        return False
+    try:
+        saved = json.loads(backup.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    now = time.time()
+    keep = []
+    for c in saved if isinstance(saved, list) else []:
+        if not isinstance(c, dict) or not c.get("name") or not c.get("domain"):
+            continue
+        expires = c.get("expires")
+        if expires is None:
+            c["expires"] = -1
+        elif expires != -1 and expires <= now:
+            continue
+        keep.append(c)
+    if not keep:
+        return False
+    try:
+        ctx.add_cookies(keep)
+    except Exception:
+        return False
+    return has_session(ctx)
+
+
 def _tiktok_context(p, visible: bool):
     PROFILE.mkdir(parents=True, exist_ok=True)
     args = ["--disable-blink-features=AutomationControlled"]
@@ -1947,8 +1995,9 @@ def _tiktok_context(p, visible: bool):
                                                 viewport={"width": 1280, "height": 900}, ignore_default_args=["--enable-automation"])
 
 
-def logged_in(ctx) -> bool:
-    return any(c["name"] == "sessionid" and c.get("value") for c in ctx.cookies("https://www.tiktok.com"))
+def logged_in(ctx, restore: bool = True) -> bool:
+    return keep_login(ctx, PROFILE, lambda c: any(
+        k["name"] == "sessionid" and k.get("value") for k in c.cookies("https://www.tiktok.com")), restore)
 
 
 def tiktok_login(wait_s: int = 900) -> bool:
@@ -1960,8 +2009,9 @@ def tiktok_login(wait_s: int = 900) -> bool:
         pg.goto("https://www.tiktok.com/login")
         end = time.time() + wait_s
         while time.time() < end:
-            if logged_in(ctx):
+            if logged_in(ctx, restore=False):
                 time.sleep(3)
+                logged_in(ctx, restore=False)               # keep a copy of the fresh sign-in
                 ctx.close()
                 return True
             time.sleep(2)
@@ -2092,8 +2142,9 @@ def _ig_context(p, visible: bool):
                                                 viewport={"width": 1280, "height": 900}, ignore_default_args=["--enable-automation"])
 
 
-def ig_logged_in(ctx) -> bool:
-    return any(c["name"] == "sessionid" and c.get("value") for c in ctx.cookies("https://www.instagram.com"))
+def ig_logged_in(ctx, restore: bool = True) -> bool:
+    return keep_login(ctx, IG_PROFILE, lambda c: any(
+        k["name"] == "sessionid" and k.get("value") for k in c.cookies("https://www.instagram.com")), restore)
 
 
 def ig_login(wait_s: int = 900) -> bool:
@@ -2107,8 +2158,9 @@ def ig_login(wait_s: int = 900) -> bool:
         print("login window open", flush=True)
         end = time.time() + wait_s
         while time.time() < end:
-            if ig_logged_in(ctx):
+            if ig_logged_in(ctx, restore=False):
                 time.sleep(5)
+                ig_logged_in(ctx, restore=False)            # keep a copy of the fresh sign-in
                 ctx.close()
                 return True
             time.sleep(2)
