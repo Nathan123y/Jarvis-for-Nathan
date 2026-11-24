@@ -102,18 +102,21 @@ def save_assistant_config(assistant_name: str, user_name: str) -> None:
 # ── Assistant voice ──────────────────────────────────────────────────────────
 # Gemini Live prebuilt voices. Names are proper nouns — identical in every
 # language, so this list is safe to show verbatim in any locale.
-AVAILABLE_VOICES = ["Algenib", "Charon", "Algieba", "Iapetus", "Schedar",
-                    "Sadaltager", "Rasalgethi", "Orus", "Umbriel", "Puck",
+AVAILABLE_VOICES = ["Algieba", "Charon", "Sadaltager", "Umbriel", "Iapetus",
+                    "Algenib", "Schedar", "Rasalgethi", "Orus", "Puck",
                     "Fenrir", "Kore", "Aoede", "Gacrux"]
-# Algenib is Gemini's low, gravelly male voice: the nearest fit for an older
-# English butler. The accent and manner come from the persona prompt
+# Algieba is the deepest Gemini voice: measured 11-23 reading the same line as a
+# deep English butler, Algieba 111 Hz, Charon 115, Sadaltager 118, Umbriel 120,
+# Algenib 129 (and wobbly), Orus 161. The user asked for "deeper british voices,
+# like alfred". The accent and manner come from the persona prompt
 # (core/prompt.txt); a prebuilt voice cannot be cloned from a film actor.
-# (Gacrux, the previous default, is a female voice.)
-DEFAULT_VOICE    = "Algenib"
-# British voices from outside Gemini (core/voice_out.py has their settings):
-# Gemini still hears and thinks, these read its words. Free, no key. JARVIS is
-# a stock Microsoft voice tuned to the pitch and pace of the film's JARVIS.
-EXTERNAL_VOICES  = ["JARVIS", "Alfred", "Ryan", "Daniel"]
+# (Gacrux, an earlier default, is a female voice.)
+DEFAULT_VOICE    = "Algieba"
+# Voices from outside Gemini (core/voice_out.py has their settings): Gemini
+# still hears and thinks, these read its words. The Microsoft/Kokoro ones are
+# free but the user found them robotic; "Eleven" is ElevenLabs with the user's
+# own key (paid beyond ~10 minutes a month).
+EXTERNAL_VOICES  = ["JARVIS", "Alfred", "Ryan", "Daniel", "Eleven"]
 ALL_VOICES       = EXTERNAL_VOICES + AVAILABLE_VOICES
 
 

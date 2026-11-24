@@ -164,5 +164,81 @@ class FallbackChainTests(unittest.TestCase):
                              b"offline")
 
 
+
+class FakeResponse:
+    def __init__(self, status=200, content=b"", payload=None):
+        self.status_code, self.content, self._payload = status, content, payload or {}
+        self.text = content.decode("latin-1") if isinstance(content, bytes) else str(content)
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(self.status_code)
+
+
+class ElevenLabsTests(unittest.TestCase):
+    def setUp(self):
+        vo._eleven_ids.clear()
+        self.addCleanup(vo._eleven_ids.clear)
+
+    def settings(self, key="sk_test"):
+        return patch.object(vo, "eleven_settings", return_value={
+            "key": key, "voice": "Butler", "model": vo.ELEVEN_MODEL})
+
+    def test_without_a_key_the_voice_stays_off(self):
+        with self.settings(key=""):
+            v = vo.VoiceOut(lambda _: None, log=lambda *_: None)
+            self.assertFalse(v.set_voice("Eleven"))
+
+    def test_speech_is_raw_24k_pcm_for_the_named_voice_with_context(self):
+        sent = {}
+        pcm = (np.sin(np.linspace(0, 300, 12000)) * 12000).astype("<i2").tobytes()
+
+        def get(url, headers, timeout):
+            return FakeResponse(payload={"voices": [{"name": "Butler - deep British", "voice_id": "v" * 20}]})
+
+        def post(url, params, headers, json, timeout):
+            sent.update(url=url, params=params, body=json, key=headers["xi-api-key"])
+            return FakeResponse(content=pcm)
+
+        with self.settings(), patch("requests.get", get), patch("requests.post", post):
+            out = vo._eleven_say("Quite so, sir.", {"previous_text": "Done."})
+        self.assertTrue(sent["url"].endswith("/text-to-speech/" + "v" * 20))
+        self.assertEqual(sent["params"], {"output_format": "pcm_24000"})
+        self.assertEqual(sent["body"]["previous_text"], "Done.")
+        self.assertEqual(sent["key"], "sk_test")
+        self.assertGreater(len(out), 0)
+
+    def test_a_refused_key_hands_back_to_gemini_at_once(self):
+        gave_up = []
+
+        async def refused(text, voice):
+            raise vo.VoiceUnavailable("ElevenLabs said no (401)")
+
+        async def go():
+            with self.settings():
+                v = vo.VoiceOut(lambda _: None, log=lambda *_: None, synth=refused,
+                                on_give_up=gave_up.append)
+                v.set_voice("Eleven")
+                v.gemini_audio(b"\0" * 4800)
+                v.feed("Only one sentence. ")
+                v.end_turn()
+                await settle()
+                return v
+        v = run(go())
+        self.assertFalse(v.active)
+        self.assertEqual(gave_up, ["Eleven"])
+
+    def test_no_robotic_fallback_for_elevenlabs(self):
+        with patch.object(vo, "_eleven_say", side_effect=RuntimeError("timeout")), \
+             patch.object(vo, "kokoro_available", return_value=True), \
+             patch.object(vo, "_kokoro_say", return_value=b"robot") as kokoro:
+            with self.assertRaises(RuntimeError):
+                run(vo.synthesize("Done, sir.", vo.VOICES["Eleven"], log=lambda *_: None))
+            kokoro.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

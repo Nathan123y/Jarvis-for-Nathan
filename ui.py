@@ -2911,7 +2911,8 @@ class CustomizeOverlay(QWidget):
         _tips = {"JARVIS": "British (Microsoft Thomas), tuned to the film JARVIS's pitch and pace",
                  "Alfred": "British (Microsoft Thomas), lower and slower: an older butler",
                  "Ryan": "British (Microsoft Ryan), brighter and friendlier",
-                 "Daniel": "British, runs offline on this Mac (Kokoro)"}
+                 "Daniel": "British, runs offline on this Mac (Kokoro)",
+                 "Eleven": "ElevenLabs voice: needs your ElevenLabs key (paid beyond ~10 min a month)"}
         # A grid, not a single row: there are more voices than fit across.
         voice_row = QGridLayout(); voice_row.setSpacing(4)
         _cells = [(_v, 0, _i) for _i, _v in enumerate(EXTERNAL_VOICES)] + \
