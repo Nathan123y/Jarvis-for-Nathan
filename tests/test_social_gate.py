@@ -71,7 +71,7 @@ if __name__ == "__main__":
 class ChromeTests(unittest.TestCase):
     def test_which_chrome_is_running(self):
         prof = Path("/x/memory/tiktok_profile")
-        ours = f"/Chrome --user-data-dir={prof} --remote-debugging-port=9301 --no-first-run"
+        ours = f"/Chrome --user-data-dir={prof} --remote-debugging-port=9301 --no-first-run --disable-backgrounding-occluded-windows"
         old = "/Chrome --user-data-dir=/x/memory/tiktok_profile_old_20261124 --remote-debugging-port=9301"
         with patch.object(gate, "_alive", return_value=True):
             with patch.object(gate, "_commands", return_value=[ours, ours + " --type=renderer"]):

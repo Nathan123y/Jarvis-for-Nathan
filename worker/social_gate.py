@@ -273,7 +273,8 @@ def running(profile: Path) -> str:
     """"ours" = our Chrome is up on its port, "other" = something else holds the profile, "" = nothing."""
     flag, port = f"--user-data-dir={profile} ", port_for(profile)       # the space: not tiktok_profile_old_...
     mine = [c for c in _commands() if flag in c + " " and "--type=" not in c]
-    if any(f"--remote-debugging-port={port}" in c for c in mine) and _alive(port):
+    if any(f"--remote-debugging-port={port}" in c and "--disable-backgrounding-occluded-windows" in c for c in mine) \
+            and _alive(port):                   # an older launch without the keep-working flags gets replaced
         return "ours"
     return "other" if mine else ""
 
@@ -296,7 +297,10 @@ def launch(profile: Path, size=(1280, 900), home: str = "about:blank") -> None:
     port = port_for(profile)
     subprocess.Popen([CHROME, f"--user-data-dir={profile}", f"--remote-debugging-port={port}", "--no-first-run",
                       "--no-default-browser-check", f"--window-size={size[0]},{size[1] + 120}",
-                      "--window-position=-2400,0", home],
+                      "--window-position=-2400,0",
+                      # keep working while hidden (Cmd+H) or covered: macOS otherwise pauses a hidden Chrome's pages
+                      "--disable-backgrounding-occluded-windows", "--disable-renderer-backgrounding",
+                      "--disable-background-timer-throttling", home],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     end = time.time() + 60
     while time.time() < end:
@@ -330,6 +334,15 @@ def _ensure_window(port: int, home: str) -> None:
             time.sleep(2)
     except Exception:
         pass
+
+
+def hide(profile: Path) -> None:
+    """Hide the account's Chrome (like Cmd+H) so it stays out of the way; it keeps working hidden."""
+    r = subprocess.run(["pgrep", "-f", f"--user-data-dir={profile} .*--remote-debugging-port={port_for(profile)}"],
+                       capture_output=True, text=True)
+    for pid in r.stdout.split()[:1]:
+        subprocess.run(["osascript", "-e", f'tell application "System Events" to set visible of (first process whose '
+                        f'unix id is {pid}) to false'], capture_output=True, timeout=10)
 
 
 def place_window(pg, on_screen: bool) -> None:
@@ -393,6 +406,8 @@ class KeeperService:
             try:
                 if running(profile) != "ours" and ensure(profile, take_over=False):
                     self.log(f"gate: opened the {NAMES[plat]} Chrome")
+                    time.sleep(3)
+                    hide(profile)
             except Exception as exc:
                 self.log(f"gate: couldn't open the {NAMES[plat]} Chrome: {exc}")
 
