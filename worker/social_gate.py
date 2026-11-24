@@ -204,24 +204,32 @@ def on_failure(pg, platform: str, log: Callable = print) -> None:
 
 # ── a normal Chrome ──────────────────────────────────────────────────────────
 class _RealContext:
-    """Playwright's BrowserContext for one of the always-open account Chromes. close() only lets go of it: the
-    Chrome stays open (logins stay warm and the user can see it), extra tabs are shut, and a window brought on
-    screen for a sign-in goes back to its parking spot."""
+    """Playwright's BrowserContext for one of the always-open account Chromes, limited to the bot's OWN tab: .pages is
+    just that tab, and close() only closes it (or blanks it if it's the last one) and lets go. Other tabs in the
+    window (a form the user is filling in, a console page) are never touched. On 11-24 an upload reused the first tab
+    and closed the rest, which threw away a half-filled YouTube audit form."""
 
     def __init__(self, browser, profile: Path, park_on_close: bool):
         self._browser, self._profile, self._park = browser, profile, park_on_close
         self._ctx = browser.contexts[0]
+        self._page = self._ctx.new_page()
 
     def __getattr__(self, name):
         return getattr(self._ctx, name)
 
+    @property
+    def pages(self):
+        return [self._page]
+
     def close(self) -> None:
         try:
-            pages = self._ctx.pages
-            for extra in pages[1:]:
-                extra.close()
-            if self._park and pages:
-                place_window(pages[0], on_screen=False)
+            if self._park:
+                place_window(self._page, on_screen=False)
+            others = [x for x in self._ctx.pages if x != self._page]
+            if others:
+                self._page.close()
+            else:                                   # the window's last tab: keep the window, blank the tab
+                self._page.goto("about:blank")
         except Exception:
             pass
         try:
@@ -349,7 +357,7 @@ def real_chrome(p, profile: Path, visible: bool, size=(1280, 900)):
     _ensure_window(port_for(profile), HOMES.get(platform_of(profile), "about:blank"))
     browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{port_for(profile)}", timeout=60000)
     ctx = _RealContext(browser, profile, park_on_close=visible)
-    pg = ctx.pages[0] if ctx.pages else ctx.new_page()
+    pg = ctx.pages[0]
     if visible:
         place_window(pg, on_screen=True)
     elif not frozen(platform_of(profile)):
