@@ -84,6 +84,21 @@ class ReplyTests(unittest.TestCase):
         self.assertEqual(wi.classify("Interview invitation", "thank you for applying")[0], "interview")
         self.assertIsNone(wi.classify("Security code for your application", "")[1])
 
+    def test_a_no_that_the_preview_cuts_off_is_read_in_full(self):
+        subject = "Marvell | Design for Test Intern, BS - Summer 2027"
+        self.assertEqual(wi.classify(subject, "Thank you for taking the time to apply ... After careful")[0], "other")
+        body = ("Hi Nathan, Thank you for taking the time to apply for the Design for Test Intern role at Marvell. "
+                "After careful consideration, we have decided to move forward with other candidates. We encourage "
+                "you to check our careers site for next steps in your search.")
+        self.assertEqual(wi.classify_body(subject, body)[0], "rejection")
+        self.assertIsNone(wi.classify("Verify your candidate account", "")[1])
+        import base64
+        html = b"<html><style>p{color:red}</style><p>After careful consideration, we&#39;ve decided to pursue other candidates.</p></html>"
+        payload = {"mimeType": "multipart/mixed", "parts": [{"mimeType": "text/html",
+                                                              "body": {"data": base64.urlsafe_b64encode(html).decode()}}]}
+        self.assertIn("decided to pursue other candidates", wi.body_text(payload))
+        self.assertNotIn("color", wi.body_text(payload))
+
     def test_company_match(self):
         self.assertTrue(wi.company_in("Muon Space", "Muon Space <no-reply@greenhouse.io>", "Thanks", ""))
         self.assertTrue(wi.company_in("DoorDash", "no-reply@doordash.com", "", ""))
@@ -148,6 +163,22 @@ class ReplyMatchTests(unittest.TestCase):
         wi.check_replies(st, service, sent.append)
         self.assertIn("one of your 3 Lightmatter applications", sent[0])
         self.assertNotIn("Analog", sent[0])
+
+
+class NewsletterTests(unittest.TestCase):
+    def test_a_newsletter_naming_the_company_is_not_a_reply(self):
+        st = {"jobs": {"m": {"id": "m", "company": "Marvell", "title": "DFT Intern", "status": "applied", "applied_at": 1}},
+              "replies_seen": []}
+        service = MagicMock()
+        api = service.users.return_value.messages.return_value
+        api.list.return_value.execute.return_value = {"messages": [{"id": "n1"}]}
+        api.get.return_value.execute.return_value = {
+            "payload": {"headers": [{"name": "From", "value": "Market Brief <news@brief.com>"},
+                                    {"name": "Subject", "value": "Wall Street bounces back"}]},
+            "snippet": "Marvell shares rose 4% after earnings"}
+        sent = []
+        self.assertEqual(wi.check_replies(st, service, sent.append), 0)
+        self.assertEqual(sent, [])
 
 
 class NoneAnswerTests(unittest.TestCase):

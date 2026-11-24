@@ -76,7 +76,7 @@ CONFIRMATION = re.compile(r"received your application|thank you for (?:applying|
                           r"application (?:was )?received|application (?:confirmation|submitted)|"
                           r"confirm(?:ation of|ing) your application", re.I)
 REPLY_KINDS = (                      # first match wins
-    ("security", re.compile(r"security code|verification code|verify your email", re.I), None),
+    ("security", re.compile(r"security code|verification code|verify your (?:email|candidate account|account)|reset your password", re.I), None),
     ("interview", re.compile(r"interview|schedule a (?:call|time|chat)|availability|next steps?|phone screen|recruiter call", re.I),
      "🎉 {company} wants to talk: interview / next steps"),
     ("coding test", re.compile(r"assessment|hackerrank|codesignal|coding challenge|technical (?:test|challenge)|online test", re.I),
@@ -421,6 +421,33 @@ def classify(subject: str, snippet: str) -> tuple[str, Optional[str]]:
     return "other", "✉️ {company} emailed you about your application"
 
 
+def body_text(payload: dict) -> str:
+    """An email's words: the plain-text part, or the HTML one with its tags taken out (Marvell sends only HTML)."""
+    import base64
+    from worker.campaign.mail import _text
+    plain = _text(payload)
+    if plain:
+        return plain
+
+    def html(p: dict) -> str:
+        if p.get("mimeType", "").startswith("text/html") and (p.get("body") or {}).get("data"):
+            return base64.urlsafe_b64decode(p["body"]["data"] + "==").decode("utf-8", "replace")
+        return next((h for h in (html(q) for q in p.get("parts") or []) if h), "")
+    raw = re.sub(r"(?is)<(style|script)\b.*?</\1>", " ", html(payload))
+    return unescape(re.sub(r"<[^>]+>", " ", raw))
+
+
+def classify_body(subject: str, body: str) -> tuple[str, Optional[str]]:
+    """The whole email, for when its preview says nothing yet: Marvell's no's cut off at "After careful"."""
+    text = " ".join(body.split())[:4000]
+    kind, line = classify(subject, text)
+    if kind == "interview" and not re.search(r"interview", subject, re.I):
+        no = next((k for k in REPLY_KINDS if k[0] == "rejection"))
+        if no[1].search(text):            # a no that mentions "next steps" or "availability" is still a no
+            return no[0], no[2]
+    return kind, line
+
+
 def company_in(job_company: str, sender: str, subject: str, snippet: str) -> bool:
     name = re.sub(r"[^a-z0-9 ]", "", job_company.lower()).strip()
     if not name:
@@ -488,11 +515,19 @@ def check_replies(st: dict, service, notify: Callable[[str], None]) -> int:
         name, addr = parseaddr(h.get("from", ""))
         subject, snippet = h.get("subject", ""), unescape(msg.get("snippet", ""))
         kind, line = classify(subject, snippet)
+        if kind == "other":
+            try:
+                full = api.get(userId="me", id=m["id"], format="full").execute()
+                kind, line = classify_body(subject, body_text(full.get("payload", {})) or snippet)
+            except Exception:
+                pass
         if not line:
             continue
         job, could_be = reply_job(applied, f"{name} {addr}", subject, snippet, kind)
         if not job:
             continue
+        if kind == "other" and not company_in(job["company"], f"{name} {addr}", subject, ""):
+            continue                      # a newsletter that mentions the company's stock isn't the company
         job.setdefault("replies", []).append({"at": time.time(), "kind": kind, "subject": subject[:140]}
                                              | ({"unsure_of_role": True} if could_be > 1 else {}))
         if kind != "received":
