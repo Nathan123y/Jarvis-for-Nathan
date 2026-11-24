@@ -100,7 +100,8 @@ def market(now: Optional[datetime] = None) -> dict:
     while not trading_day(nxt):
         nxt += timedelta(days=1)
     opens = datetime.combine(nxt, time(9, 30), NY)
-    day = "today" if nxt == d else "tomorrow" if nxt == d + timedelta(days=1) else opens.astimezone().strftime("%A")
+    here, there = now.astimezone().date(), opens.astimezone().date()       # "today"/"tomorrow" on the viewer's own clock
+    day = "today" if there == here else "tomorrow" if there == here + timedelta(days=1) else opens.astimezone().strftime("%A")
     why = " (holiday)" if d.weekday() < 5 and not trading_day(d) else ""
     return {"open": False, "label": "Market closed" + why, "detail": f"opens {day} at {local(opens)}",
             "first_entry": local(datetime.combine(nxt, time(9, 45), NY))}
