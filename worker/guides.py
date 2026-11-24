@@ -58,6 +58,8 @@ DEFAULTS = {"enabled": True,
             "tiktok": True,                             # off = Shorts and tall copies skip TikTok (off since 11-15)
             "instagram": True,                          # off = they skip Instagram too. It was missing here, so the stored
                                                         # "off" was dropped and GTA kept going to the stories' page (11-23)
+            "youtube_api": False,                       # upload through the YouTube Data API (worker/youtube_api.py)
+                                                        # instead of Studio; on after the API audit (unaudited = private)
             "followups": 2,                             # new Shorts queued about each upload that passes followup_views
             "followup_views": 500,
             "vertical_copy": True,                      # the long video is also cut tall for TikTok and Instagram, so
@@ -1226,6 +1228,14 @@ def youtube_upload(rec: dict, cfg: Optional[dict] = None, log: Callable = print,
     from worker import social_gate as gate
     if not dry_run:
         gate.check("youtube", "gta", rec.get("path"))   # cap, gap, duplicate, frozen: raises Blocked
+    if cfg.get("youtube_api") and not dry_run:          # the official API (on once Google's audit lets it go public)
+        from worker import youtube_api
+        if youtube_api.connected():
+            link = youtube_api.upload(rec["path"], rec["title"], rec.get("description") or "", list(rec.get("tags") or []),
+                                      want, privacy=str(cfg.get("visibility") or "public"),
+                                      short=rec.get("kind") != "guide", log=log)
+            gate.record("youtube", rec.get("path"))
+            return link
     with wv.BROWSER, sync_playwright() as p:
         ctx = _context(p, visible=False)
         pg = ctx.pages[0] if ctx.pages else ctx.new_page()
