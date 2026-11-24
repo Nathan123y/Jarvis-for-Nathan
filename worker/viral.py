@@ -2310,7 +2310,14 @@ def ig_post(video: Path, caption: str, ai_label: bool = True, log: Callable = pr
             _ig_click(pg, ["Post"])                         # newer menus ask Post / Live / Ad
             pg.wait_for_timeout(1000)
             pg.locator("input[type=file]").last.set_input_files(str(video), timeout=60000)
-            pg.wait_for_timeout(5000)
+            picker = pg.locator("text=Drag photos and videos here").first
+            try:                                            # Instagram moves on to Crop once it has read the file
+                picker.wait_for(state="hidden", timeout=30000)  # (3-8 s); on 11-24 a try stayed on the picker
+            except Exception:
+                log("viral: Instagram didn't take the video; attaching it again")
+                pg.locator("input[type=file]").last.set_input_files(str(video), timeout=60000)
+                picker.wait_for(state="hidden", timeout=45000)
+            pg.wait_for_timeout(1500)
             _ig_click(pg, ["OK"])                           # "Video posts are now shared as reels"
             try:                                            # keep the full 9:16 frame (the default crop is square)
                 pg.locator("svg[aria-label='Select crop']").first.click(timeout=15000)
