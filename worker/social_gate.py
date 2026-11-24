@@ -236,6 +236,11 @@ class _RealContext:
             self._browser.close()               # connected over CDP: this only disconnects
         except Exception:
             pass
+        if not frozen(platform_of(self._profile)):  # out of sight again (a frozen one stays up for the code)
+            try:
+                hide(self._profile)
+            except Exception:
+                pass
 
 
 PROFILES = {"tiktok": ROOT / "memory" / "tiktok_profile", "instagram": ROOT / "memory" / "instagram_profile",
