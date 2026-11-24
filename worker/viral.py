@@ -36,6 +36,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
+from worker import social_gate as gate
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -2032,8 +2034,9 @@ def _tiktok_context(p, visible: bool):
     args = ["--disable-blink-features=AutomationControlled"]
     if not visible:
         args.append("--window-position=-2400,0")          # a real window (TikTok balks at headless), kept off screen
-    return p.chromium.launch_persistent_context(str(PROFILE), channel="chrome", headless=False, args=args,
-                                                viewport={"width": 1280, "height": 900}, ignore_default_args=["--enable-automation"])
+    return gate.open_profile(p, PROFILE, visible, legacy=lambda: p.chromium.launch_persistent_context(
+        str(PROFILE), channel="chrome", headless=False, args=args, viewport={"width": 1280, "height": 900},
+        ignore_default_args=["--enable-automation"]))
 
 
 def logged_in(ctx, restore: bool = True) -> bool:
@@ -2061,9 +2064,12 @@ def tiktok_login(wait_s: int = 900) -> bool:
 
 
 @_one_browser
-def tiktok_post(video: Path, caption: str, ai_label: bool = True, log: Callable = print, dry_run: bool = False) -> str:
+def tiktok_post(video: Path, caption: str, ai_label: bool = True, log: Callable = print, dry_run: bool = False,
+                niche: Optional[str] = None) -> str:
     """Uploads through TikTok Studio in the logged-in profile. Returns a note; raises on failure (with a screenshot)."""
     from playwright.sync_api import sync_playwright
+    if not dry_run:
+        gate.check("tiktok", niche, video)               # cap, gap, topic, duplicate, frozen: raises Blocked
     with sync_playwright() as p:
         ctx = _tiktok_context(p, visible=False)
         pg = ctx.pages[0] if ctx.pages else ctx.new_page()
@@ -2071,6 +2077,8 @@ def tiktok_post(video: Path, caption: str, ai_label: bool = True, log: Callable 
         try:
             if not logged_in(ctx):
                 raise NotLoggedIn("TikTok isn't logged in (run: python3 -m worker.viral login)")
+            if not dry_run:
+                gate.browse_a_bit(pg, "https://www.tiktok.com/foryou", log=log)
             pg.goto("https://www.tiktok.com/tiktokstudio/upload?from=webapp", wait_until="domcontentloaded", timeout=60000)
             if "login" in pg.url:
                 raise NotLoggedIn("TikTok sent us to the login page")
@@ -2113,6 +2121,7 @@ def tiktok_post(video: Path, caption: str, ai_label: bool = True, log: Callable 
                 _close_modals(pg, log, posting=True)
                 try:
                     pg.wait_for_url(done, timeout=45000)
+                    gate.record("tiktok", video)
                     return "posted"
                 except Exception:
                     log(f"viral: Post click #{attempt + 1} didn't go through, trying again")
@@ -2122,7 +2131,35 @@ def tiktok_post(video: Path, caption: str, ai_label: bool = True, log: Callable 
                 pg.screenshot(path=str(shot))
             except Exception:
                 pass
+            gate.on_failure(pg, "tiktok", log)    # a security page freezes the account
             raise
+        finally:
+            ctx.close()
+
+
+WARMUP_SEARCHES = ("football what if", "nba hypothetical", "soccer funny", "sports history")
+
+
+@_one_browser
+def tiktok_warmup(log: Callable = print) -> str:
+    """A few minutes of watching the For You feed and a niche search on the new account. Watching only: never likes,
+    follows or comments (automated engagement is what platforms punish hardest)."""
+    import random
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        ctx = _tiktok_context(p, visible=False)
+        pg = ctx.pages[0] if ctx.pages else ctx.new_page()
+        try:
+            if not logged_in(ctx):
+                return "not logged in"
+            gate.browse_a_bit(pg, "https://www.tiktok.com/foryou", seconds=(120, 240), log=log)
+            q = random.choice(WARMUP_SEARCHES).replace(" ", "%20")
+            gate.browse_a_bit(pg, f"https://www.tiktok.com/search/video?q={q}", seconds=(60, 120), log=log)
+            why = gate.checkpoint_reason(pg)
+            if why:
+                gate.freeze("tiktok", why, log)
+                return f"security page: {why}"
+            return "done"
         finally:
             ctx.close()
 
@@ -2192,8 +2229,9 @@ def _ig_context(p, visible: bool):
     args = ["--disable-blink-features=AutomationControlled"]
     args.append("--window-position=-2400,0" if not visible else "--window-position=120,80")
     args.append("--window-size=1280,900")
-    return p.chromium.launch_persistent_context(str(IG_PROFILE), channel="chrome", headless=False, args=args,
-                                                viewport={"width": 1280, "height": 900}, ignore_default_args=["--enable-automation"])
+    return gate.open_profile(p, IG_PROFILE, visible, legacy=lambda: p.chromium.launch_persistent_context(
+        str(IG_PROFILE), channel="chrome", headless=False, args=args, viewport={"width": 1280, "height": 900},
+        ignore_default_args=["--enable-automation"]))
 
 
 def ig_logged_in(ctx, restore: bool = True) -> bool:
@@ -2239,9 +2277,12 @@ def _ig_click(pg, texts, timeout: int = 4000) -> bool:
 
 
 @_one_browser
-def ig_post(video: Path, caption: str, ai_label: bool = True, log: Callable = print, dry_run: bool = False) -> str:
+def ig_post(video: Path, caption: str, ai_label: bool = True, log: Callable = print, dry_run: bool = False,
+            niche: Optional[str] = None) -> str:
     """Uploads the video as a Reel through instagram.com in the logged-in profile. Raises on failure (with a screenshot)."""
     from playwright.sync_api import sync_playwright
+    if not dry_run:
+        gate.check("instagram", niche, video)
     with sync_playwright() as p:
         ctx = _ig_context(p, visible=False)
         pg = ctx.pages[0] if ctx.pages else ctx.new_page()
@@ -2253,6 +2294,10 @@ def ig_post(video: Path, caption: str, ai_label: bool = True, log: Callable = pr
             pg.wait_for_timeout(6000)
             if "login" in pg.url:
                 raise NotLoggedIn("Instagram sent us to the login page")
+            if any(u in pg.url for u in gate.LOCK_URLS):    # a security / suspended page: freeze, don't push on
+                gate.on_failure(pg, "instagram", log)
+            if not dry_run:
+                gate.browse_a_bit(pg, log=log)
             _ig_click(pg, ["Not Now", "Not now"])          # "turn on notifications" / "save login info"
             _ig_click(pg, ["OK"])                           # "You're in sleep mode" at night covers the whole page (11-19)
             pg.locator("svg[aria-label='New post'], svg[aria-label='Create']").first.click(timeout=20000)
@@ -2297,12 +2342,14 @@ def ig_post(video: Path, caption: str, ai_label: bool = True, log: Callable = pr
                 raise RuntimeError("Instagram's Share button wasn't there")
             done = pg.locator("text=/reel has been shared|post has been shared|Reel shared/i").first
             done.wait_for(state="visible", timeout=600000)
+            gate.record("instagram", video)
             return "posted"
         except Exception:
             try:
                 pg.screenshot(path=str(shot))
             except Exception:
                 pass
+            gate.on_failure(pg, "instagram", log)    # a security page freezes the account
             raise
         finally:
             ctx.close()
@@ -2548,7 +2595,9 @@ class ViralService:
                 self.log(f"viral: a waiting Instagram Reel failed: {exc!r}")
             st = load_state()
             done = st["slots"].get(today, [])
-            due = due_slots(cfg["times"], done, now, late_ok_h=6)   # room for retries: a late video beats none
+            self.warm_up(cfg, today)
+            times = gate.jittered(cfg["times"], today)         # not the same minute every day
+            due = due_slots(times, done, now, late_ok_h=6)     # room for retries: a late video beats none
             if not due:
                 return ""
             st["slots"] = {today: done + due}                  # several due at once (Mac was asleep) = one video
@@ -2556,6 +2605,20 @@ class ViralService:
             return self.produce(cfg, slots=due)
         finally:
             self._busy.release()
+
+    def warm_up(self, cfg: dict, today: str) -> None:
+        """While a new TikTok account waits for its first post day, use it like a viewer once a day."""
+        if not (cfg["post"] and cfg.get("tiktok", True)) or today >= str(cfg.get("tiktok_from") or ""):
+            return
+        st = load_state()
+        if st.get("warmup_day") == today or datetime.now().hour < 10:
+            return
+        st["warmup_day"] = today
+        save_state(st)
+        try:
+            self.log(f"viral: warming up the new TikTok ({tiktok_warmup(self.log)})")
+        except Exception as exc:
+            self.log(f"viral: TikTok warm-up didn't run: {exc}")
 
     def _recover_interrupted(self) -> None:
         """A video the last run was still making when the worker restarted: its idea goes back to the front of the
@@ -2679,6 +2742,7 @@ class ViralService:
                 raise QualityHold("; ".join(problems))
             rec["qa_ok"] = True
             self.log("viral: quality check passed")
+        rec["niche"] = "stories"                            # the gate keeps GTA off the stories' accounts
         tt = self._deliver_tiktok(rec, cfg) if tiktok_on(cfg) else "paused" if cfg["post"] else "off"
         ig_wanted = cfg["post"] and cfg.get("instagram")
         delay = float(cfg.get("ig_delay_min") or 0)
@@ -2709,7 +2773,7 @@ class ViralService:
         save_state(st)
         recs = {v["path"]: v for v in st["videos"]}
         for p in due:
-            rec = dict(recs.get(p["path"]) or {})
+            rec = dict(recs.get(p["path"]) or {}, niche="stories")
             if not rec or not Path(p["path"]).exists() or rec.get("ig_posted"):
                 continue
             ig = self.post_instagram(rec, cfg) if cfg["post"] and cfg.get("instagram") else "off"
@@ -2741,10 +2805,18 @@ class ViralService:
         """The same video as a Reel on the videos' Instagram page (a failure there never stops TikTok)."""
         try:
             tags = int(cfg.get("ig_tags") or 0)              # the stories' own settings: few tags + a "send it" line
-            ig_post(Path(rec["path"]), ig_caption(rec["caption"], tags, share=tags > 0), cfg["ai_label"], self.log)
+            ig_post(Path(rec["path"]), ig_caption(rec["caption"], tags, share=tags > 0), cfg["ai_label"], self.log,
+                    niche=rec.get("niche") or "gta")
             _mark(rec["path"], ig_posted=True)
             self.log(f"viral: posted to Instagram: {rec['title']}")
             return "posted"
+        except gate.Blocked as exc:
+            self.log(f"viral: Instagram post held: {exc}")
+            rec.setdefault("_why", {})["instagram"] = f"held ({str(exc)[:100]})"
+            return "held"
+        except gate.AccountLocked as exc:
+            rec.setdefault("_why", {})["instagram"] = f"frozen ({str(exc)[:100]})"
+            return "frozen"
         except NotLoggedIn:
             self.log("viral: Instagram isn't logged in yet (python3 -m worker.viral iglogin)")
             rec.setdefault("_why", {})["instagram"] = "not logged in (python3 -m worker.viral iglogin)"
@@ -2759,8 +2831,8 @@ class ViralService:
             return "off"
         try:
             try:
-                tiktok_post(Path(rec["path"]), rec["caption"], cfg["ai_label"], self.log)
-            except NotLoggedIn:
+                tiktok_post(Path(rec["path"]), rec["caption"], cfg["ai_label"], self.log, niche=rec.get("niche") or "gta")
+            except (NotLoggedIn, gate.Blocked, gate.AccountLocked):
                 raise
             except Exception as exc:                       # one more go: on 11-08 the Mac napped mid-upload and
                 time.sleep(90)                             # Studio never loaded. But on 11-10 TikTok took the post
@@ -2770,9 +2842,16 @@ class ViralService:
                     self.log(f"viral: TikTok upload looked like it failed ({str(exc)[:80]}) but it's up; not posting it twice")
                 else:
                     self.log(f"viral: TikTok upload failed ({str(exc)[:80]}); trying once more")
-                    tiktok_post(Path(rec["path"]), rec["caption"], cfg["ai_label"], self.log)
+                    tiktok_post(Path(rec["path"]), rec["caption"], cfg["ai_label"], self.log, niche=rec.get("niche") or "gta")
             _mark(rec["path"], posted=True)
             return "posted"
+        except gate.Blocked as exc:
+            self.log(f"viral: TikTok post held: {exc}")
+            rec.setdefault("_why", {})["tiktok"] = f"held ({str(exc)[:100]})"
+            return "held"
+        except gate.AccountLocked as exc:
+            rec.setdefault("_why", {})["tiktok"] = f"frozen ({str(exc)[:100]})"
+            return "frozen"
         except NotLoggedIn:
             rec.setdefault("_why", {})["tiktok"] = "not logged in (python3 -m worker.viral login)"
             return "not logged in"

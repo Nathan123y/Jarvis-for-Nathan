@@ -1124,8 +1124,10 @@ def _context(p, visible: bool):
     args = ["--disable-blink-features=AutomationControlled"]
     if not visible:
         args.append("--window-position=-2400,0")
-    return p.chromium.launch_persistent_context(str(PROFILE), channel="chrome", headless=False, args=args,
-                                                viewport={"width": 1400, "height": 950}, ignore_default_args=["--enable-automation"])
+    from worker import social_gate as gate
+    return gate.open_profile(p, PROFILE, visible, size=(1400, 950), legacy=lambda: p.chromium.launch_persistent_context(
+        str(PROFILE), channel="chrome", headless=False, args=args, viewport={"width": 1400, "height": 950},
+        ignore_default_args=["--enable-automation"]))
 
 
 def logged_in(ctx, restore: bool = True) -> bool:
@@ -1221,6 +1223,9 @@ def youtube_upload(rec: dict, cfg: Optional[dict] = None, log: Callable = print,
     from playwright.sync_api import sync_playwright
     cfg = cfg or settings()
     want = str(cfg["channel_id"]).strip()
+    from worker import social_gate as gate
+    if not dry_run:
+        gate.check("youtube", "gta", rec.get("path"))   # cap, gap, duplicate, frozen: raises Blocked
     with wv.BROWSER, sync_playwright() as p:
         ctx = _context(p, visible=False)
         pg = ctx.pages[0] if ctx.pages else ctx.new_page()
@@ -1290,12 +1295,14 @@ def youtube_upload(rec: dict, cfg: Optional[dict] = None, log: Callable = print,
                 return f"dry run: ready to publish as {vis.lower()} on channel {want} ({link or 'no link yet'}; screenshot {shot})"
             _publish(pg, "#done-button", log)
             pg.screenshot(path=str(shot))
+            gate.record("youtube", rec.get("path"))
             return link or "posted"
         except Exception:
             try:
                 pg.screenshot(path=str(shot))
             except Exception:
                 pass
+            gate.on_failure(pg, "youtube", log)    # a security page freezes the account
             raise
         finally:
             ctx.close()
