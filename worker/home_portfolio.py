@@ -192,6 +192,125 @@ def coin_trips(path: Path = COIN_TRADES) -> list:
     return out
 
 
+
+# ---- profit projection (the small box in the Portfolio's corner) ----
+
+LINEUP_START = date(2026, 11, 16)   # the current 10 bots and sizing started trading this day; older trades ran other rules
+REVIEW_DAY = date(2027, 1, 15)      # the agreed January review of the paper test
+PRIOR_PCT = {"drive": 4.0, "orb": 0.0}   # 2-year backtest, % gained per trade on the option: open-drive about +4%, opening-range about break-even
+PRIOR_WEIGHT = 30                   # the backtest counts as 30 trades of evidence; past 30 live trades the live results lead
+SAME_DAY_LINK = 0.7                 # trades on the same day move together: the bots all bet at 09:45 on related funds, so a
+                                    # reversal day hurts them all at once (Nov 18, Nov 23). 0 would treat trades as independent.
+DAY_FLOOR = -900.0                  # the $600 daily-loss halt plus what trades already open can still lose
+COST_CAP = 1500.0                   # max_premium_per_position
+_proj_cache: dict = {}
+
+
+def trading_days_between(a: date, b: date) -> int:
+    """Trading days after a, up to and including b."""
+    n, d = 0, a
+    while d < b:
+        d += timedelta(days=1)
+        n += trading_day(d)
+    return n
+
+
+def _poisson(rng, lam: float) -> int:
+    import math
+    l, k, p = math.exp(-lam), 0, 1.0
+    while True:
+        p *= rng.random()
+        if p <= l:
+            return k
+        k += 1
+
+
+def projection(trips: list, now: datetime, horizon_days: int = 20, paths: int = 4000) -> dict:
+    """Profit projection for the next `horizon_days` trading days and to the January review.
+
+    Per strategy family (open-drive, opening-range) the live % results per trade are blended with the 2-year backtest
+    (PRIOR_PCT, weighted as PRIOR_WEIGHT trades), keeping the live spread of wins and losses. Then a Monte Carlo of daily
+    trading: trades per day at the live rate, each trade's dollars = its % x the typical position cost (capped at the
+    $1,500 limit), each day's total floored at the daily-loss halt. Trades on one day share a common draw (SAME_DAY_LINK),
+    so good and bad days come in whole days the way they do live. Returns the median and the 10th-90th percentile range."""
+    import random
+    import statistics
+    live = [t for t in trips if t["opened"].date() >= LINEUP_START]
+    today = now.date()
+    done_days = trading_days_between(LINEUP_START - timedelta(days=1), today if now.time() >= time(16, 0) else today - timedelta(days=1))
+    key = (today.isoformat(), len(live), done_days, horizon_days)
+    if key in _proj_cache:
+        return _proj_cache[key]
+    fam = lambda t: "drive" if t["bot"].endswith("-drive") else "orb"
+    groups = {}
+    for g in PRIOR_PCT:
+        pcts = [t["pct"] for t in live if fam(t) == g]
+        n = len(pcts)
+        live_mean = statistics.fmean(pcts) if pcts else PRIOR_PCT[g]
+        blended = (n * live_mean + PRIOR_WEIGHT * PRIOR_PCT[g]) / (n + PRIOR_WEIGHT)
+        # with fewer than 5 trades there is no usable spread yet: borrow the other family's spread
+        groups[g] = {"n": n, "live_mean": live_mean, "blended": blended, "pcts": pcts}
+    pool = [t["pct"] for t in live] or [-30.0, 40.0]
+    for g, v in groups.items():
+        src = v["pcts"] if len(v["pcts"]) >= 5 else pool
+        mean = statistics.fmean(src)
+        v["samples"] = sorted(x - mean + v["blended"] for x in src)   # keep the spread, move the average to the blended one
+    costs = [min(COST_CAP, t["entry"] * t["qty"] * 100) for t in live]
+    cost = statistics.median(costs) if costs else 1000.0
+    rate = len(live) / done_days if done_days else 2.0
+    share = groups["drive"]["n"] / len(live) if live else 0.7
+    review_days = trading_days_between(today, REVIEW_DAY)
+    import zlib
+    rng = random.Random(zlib.crc32(repr(key).encode()))   # same day + same trades = the same projection, even after a restart
+
+    import math
+    link, rest = SAME_DAY_LINK, math.sqrt(1 - SAME_DAY_LINK ** 2)
+
+    def draw(sorted_samples: list, u: float) -> float:
+        """The u-quantile of a family's trade results (linear between samples), so the average stays the blended one."""
+        x = u * (len(sorted_samples) - 1)
+        i = int(x)
+        j = min(i + 1, len(sorted_samples) - 1)
+        return sorted_samples[i] + (sorted_samples[j] - sorted_samples[i]) * (x - i)
+
+    # how sure we are of the average itself: the standard error of a mean from (live trades + the backtest's weight)
+    spread = statistics.pstdev(pool) if len(pool) > 1 else 40.0
+    edge_doubt = spread / math.sqrt(len(live) + PRIOR_WEIGHT)
+
+    def run(days: int) -> list:
+        out = []
+        for _ in range(paths):
+            total, edge = 0.0, rng.gauss(0, edge_doubt)               # this path's own "true" edge, off by a typical error
+            for _ in range(days):
+                day, z = 0.0, rng.gauss(0, 1)                      # the day's shared luck
+                for _ in range(_poisson(rng, rate)):
+                    g = "drive" if rng.random() < share else "orb"
+                    u = 0.5 * (1 + math.erf((link * z + rest * rng.gauss(0, 1)) / math.sqrt(2)))
+                    day += (draw(groups[g]["samples"], u) + edge) / 100 * cost
+                total += max(day, DAY_FLOOR)
+            out.append(total)
+        out.sort()
+        return out
+
+    def summary(vals: list) -> dict:
+        q = lambda f: round(vals[min(len(vals) - 1, int(f * len(vals)))])
+        return {"median": q(0.5), "low": q(0.10), "high": q(0.90), "chance_up": round(sum(v > 0 for v in vals) / len(vals) * 100)}
+
+    wins = sum(t["pnl"] > 0 for t in live)
+    win_amt = [t["pnl"] for t in live if t["pnl"] > 0]
+    loss_amt = [t["pnl"] for t in live if t["pnl"] <= 0]
+    res = {"trades": len(live), "win_rate": round(wins / len(live) * 100) if live else None,
+           "avg_win": round(statistics.fmean(win_amt)) if win_amt else None, "avg_loss": round(statistics.fmean(loss_amt)) if loss_amt else None,
+           "per_trade_pct": round(share * groups["drive"]["blended"] + (1 - share) * groups["orb"]["blended"], 1),
+           "trades_per_day": round(rate, 1), "cost": round(cost), "horizon_days": horizon_days,
+           "next": summary(run(horizon_days)), "review_days": review_days,
+           "review": summary(run(review_days)) if review_days else None, "live_weight": round(len(live) / (len(live) + PRIOR_WEIGHT) * 100),
+           "edge_doubt": round(edge_doubt, 1)}
+    _proj_cache.clear()
+    _proj_cache[key] = res
+    return res
+
+
 def portfolio(now: Optional[datetime] = None, db: Path = DB, coin_status: Path = COIN_STATUS, coin_trades: Path = COIN_TRADES) -> dict:
     now = (now or datetime.now(NY)).astimezone(NY)
     try:
@@ -279,4 +398,4 @@ def portfolio(now: Optional[datetime] = None, db: Path = DB, coin_status: Path =
                        "holding": [p["name"] for p in positions if p["account"] == "Crypto"],
                        "note": (coin.get("notes") or [""])[-1][6:] if coin.get("notes") else ""},
             "total": round(equity + c_eq, 2), "series": series, "positions": positions, "history": hist[:40],
-            "strategies": strategies}
+            "strategies": strategies, "projection": projection(trips, now)}

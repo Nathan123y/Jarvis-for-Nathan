@@ -73,5 +73,40 @@ class PortfolioTests(unittest.TestCase):
         self.assertFalse(p["crypto"]["ok"])
 
 
+class ProjectionTests(unittest.TestCase):
+    def trips(self, pcts, start=datetime(2026, 11, 16, 9, 45, tzinfo=NY)):
+        from datetime import timedelta
+        out = []
+        for i, (bot, pct) in enumerate(pcts):
+            t = start + timedelta(days=i // 2)
+            out.append({"bot": bot, "pct": pct, "pnl": pct * 10, "entry": 10.0, "qty": 1, "opened": t, "closed": t})
+        return out
+
+    def test_a_lucky_start_is_pulled_toward_the_backtest(self):
+        lucky = self.trips([("qqq-drive", 50.0)] * 10)
+        j = hp.projection(lucky, datetime(2026, 11, 24, 17, tzinfo=NY), paths=500)
+        self.assertLess(j["per_trade_pct"], 50.0 * 10 / 40 + 4.0)      # 10 live trades vs 30 of backtest weight
+        self.assertGreater(j["per_trade_pct"], 4.0)
+        self.assertEqual(j["live_weight"], 25)
+
+    def test_losing_live_trades_make_the_projection_negative(self):
+        bad = self.trips([("qqq-drive", -30.0)] * 40)
+        j = hp.projection(bad, datetime(2026, 12, 15, 17, tzinfo=NY), paths=500)
+        self.assertLess(j["next"]["median"], 0)
+        self.assertLess(j["next"]["chance_up"], 50)
+
+    def test_the_range_brackets_the_middle_and_trades_before_the_lineup_are_ignored(self):
+        old = self.trips([("qqq-orb-day", -90.0)] * 6, start=datetime(2026, 11, 3, 9, 45, tzinfo=NY))
+        new = self.trips([("spy-drive", 20.0), ("spy-drive", -30.0), ("iwm-orb-scalp", 10.0)] * 4)
+        j = hp.projection(old + new, datetime(2026, 11, 24, 17, tzinfo=NY), paths=500)
+        self.assertEqual(j["trades"], 12)
+        n = j["next"]
+        self.assertLessEqual(n["low"], n["median"])
+        self.assertLessEqual(n["median"], n["high"])
+
+    def test_the_review_horizon_counts_trading_days_only(self):
+        self.assertEqual(hp.trading_days_between(date(2026, 11, 24), date(2026, 11, 30)), 3)   # Wed, Fri (Thanksgiving off), Mon
+
+
 if __name__ == "__main__":
     unittest.main()

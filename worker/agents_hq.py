@@ -354,7 +354,7 @@ h1{margin:0;font-size:22px;letter-spacing:-.01em}.pill{display:inline-flex;align
 .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px 20px;margin-bottom:14px}
 h2{font-size:17px;margin:0 0 12px;letter-spacing:-.01em}.sub{color:var(--mute);font-size:13px}
 .up{color:var(--up)}.down{color:var(--down)}
-.hero .acct{color:var(--mute);font-size:13px}.hero .val{font-size:40px;font-weight:700;letter-spacing:-.02em;line-height:1.15;margin:2px 0;font-variant-numeric:tabular-nums}
+.hero{position:relative}.proj{position:absolute;top:16px;right:18px;text-align:right;max-width:250px;font-size:12px;color:var(--mute);line-height:1.35}.proj .pv{font-size:20px;font-weight:700;color:var(--ink);font-variant-numeric:tabular-nums;margin:1px 0}.proj .pv.up{color:var(--up)}.proj .pv.down{color:var(--down)}.proj details{margin-top:3px}.proj summary{cursor:pointer;color:var(--blue);list-style:none}.proj summary::-webkit-details-marker{display:none}.proj .how{text-align:left;margin-top:6px;background:var(--soft);border-radius:10px;padding:8px 10px;color:var(--ink)}@media (max-width:640px){.proj{position:static;text-align:left;max-width:none;margin-top:10px;padding-top:10px;border-top:1px solid var(--line)}}.hero .acct{color:var(--mute);font-size:13px}.hero .val{font-size:40px;font-weight:700;letter-spacing:-.02em;line-height:1.15;margin:2px 0;font-variant-numeric:tabular-nums}
 .hero .chg{font-size:15px;font-weight:600;font-variant-numeric:tabular-nums}.hero .chg span{color:var(--mute);font-weight:400;margin-left:4px}
 #eqchart{height:260px;margin:14px -6px 6px}.ranges{display:flex;gap:4px;border-top:1px solid var(--line);padding-top:10px}
 .ranges button{border:0;background:transparent;color:var(--mute);font:inherit;font-size:13px;font-weight:600;padding:5px 12px;border-radius:8px;cursor:pointer}.ranges button.on{background:var(--soft);color:var(--ink)}
@@ -387,7 +387,7 @@ td{padding:10px 0;border-bottom:1px solid var(--line);vertical-align:top}tr:last
 
 <section id="pf">
  <a class="banner" id="pfwarn" hidden></a>
- <div class="card hero"><div class="acct">Options account · paper money</div><div class="val" id="val">–</div><div class="chg" id="chg"></div>
+ <div class="card hero"><div class="acct">Options account · paper money</div><div class="val" id="val">–</div><div class="chg" id="chg"></div><div class="proj" id="proj"></div>
   <div id="eqchart"></div><div class="ranges" id="ranges"><button data-r="1D">1D</button><button data-r="1W">1W</button><button data-r="1M">1M</button><button data-r="ALL" class="on">ALL</button></div></div>
  <div class="stats" id="stats"></div>
  <div class="card"><h2>Accounts</h2><div id="accts"></div></div>
@@ -445,7 +445,15 @@ function drawEquity(){if(!PF)return;const {pts,base}=rangePoints();
  document.querySelectorAll('#ranges button').forEach(b=>b.classList.toggle('on',b.dataset.r===RANGE))}
 $id('ranges').onclick=e=>{const b=e.target.closest('[data-r]');if(b){RANGE=b.dataset.r;drawEquity()}};
 
-function renderPF(){const p=PF,o=p.options,c=p.crypto;
+function renderProj(j){if(!j){$id('proj').innerHTML='';return}const n=j.next,r=j.review;
+ const open=$id('projhow')&&$id('projhow').open;
+ $id('proj').innerHTML=`<div>Projected · next ${j.horizon_days} trading days</div><div class="pv ${cls(n.median)}">${usd0(n.median,true)}</div>`+
+  `<div>likely ${usd0(n.low,true)} to ${usd0(n.high,true)} · ${n.chance_up}% chance of profit</div>`+
+  (r?`<div>By Jan 15 review (${j.review_days} days): <b class="${cls(r.median)}">${usd0(r.median,true)}</b></div>`:'')+
+  `<details id="projhow"${open?' open':''}><summary>How is this worked out?</summary><div class="how">Based on ${j.trades} trades since Nov 16: ${j.win_rate??'–'}% won, average win ${j.avg_win!=null?usd0(j.avg_win,true):'–'}, average loss ${j.avg_loss!=null?usd0(j.avg_loss,true):'–'}, about ${j.trades_per_day} trades a day at about ${usd0(j.cost)} each. `+
+  `Live results are blended with the 2-year backtest (live counts ${j.live_weight}% so far; past 30 trades it leads), giving about ${j.per_trade_pct>0?'+':''}${j.per_trade_pct}% per trade. `+
+  `Then 4,000 simulated stretches of trading: same-day trades win or lose together (the bots bet on related funds at the same time), the true edge itself may be off by about ${j.edge_doubt}% per trade, and the $600 daily loss limit applies. The range covers the middle 80%. It updates after every trade. A projection, not a promise.</div></details>`}
+function renderPF(){const p=PF,o=p.options,c=p.crypto;renderProj(p.projection);
  const m=p.market;$id('mkt').className='pill'+(m.open?' open':'');$id('mkt').innerHTML=`<i></i><b>${esc(m.label)}</b> ${esc(m.detail)}`;
  drawEquity();
  $id('stats').innerHTML=[['Total, both accounts',usd(p.total),''],['All-time return',`<span class="${cls(o.all_time)}">${usd0(o.all_time,true)}</span>`,`${pct(o.all_time_pct)} on ${usd0(o.start)}`],
