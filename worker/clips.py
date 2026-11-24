@@ -59,6 +59,7 @@ DEFAULTS = {"enabled": True,
             "live_now": True,
             "live_gap_min": 30,
             "live_max_day": 12,
+            "stale_h": 48,                  # clips waiting longer than this are set aside, not posted
             "youtube": True,                # also a YouTube Short on the GTA channel (user, 11-14: "our three accounts")
             "post": True,
             "game": "GTA 6",
@@ -509,7 +510,13 @@ class ClipService:
             today = now.date().isoformat()
             done = st["slots"].get(today, [])
             due = wv.due_slots(cfg["times"], done, now, late_ok_h=2)
-            waiting = sorted(inbox(), key=lambda f: " live-" not in f.name)   # moments from live streams go first: they date fastest
+            waiting = []
+            for f in inbox():                               # a GTA moment is old news after two days: set it aside
+                if time.time() - f.stat().st_mtime > float(cfg.get("stale_h") or 48) * 3600:
+                    self._set_aside(f, "too old to post")
+                else:
+                    waiting.append(f)
+            waiting.sort(key=lambda f: " live-" not in f.name)   # moments from live streams go first: they date fastest
             if not due:
                 waiting = [f for f in waiting if " live-" in f.name] if live_ok(cfg, st, now) else []
                 if not waiting:

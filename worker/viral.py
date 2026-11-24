@@ -79,7 +79,9 @@ DEFAULTS = {"enabled": True,
             "tiktok_from": "",                      # "YYYY-MM-DD": no TikTok posts before this day (the warm-up)
             "ig_delay_min": 90,                     # the Reel goes up this long after the TikTok, not at the same moment
             "ig_tags": 5,                           # Reels do better with a few relevant hashtags than a long list
-            "health_pause": True}                   # 3 TikToks in a row under 10 views after 2 days: pause TikTok, text
+            "health_pause": True,
+            "times_later": "",                      # a schedule that replaces "times" from times_later_from on
+            "times_later_from": ""}                 # (11-24: 1 Reel a day for the new Instagram's first week, then 2)                   # 3 TikToks in a row under 10 views after 2 days: pause TikTok, text
 CHROME_ARGS = ["--use-angle=metal", "--enable-gpu", "--ignore-gpu-blocklist"]
 
 
@@ -2599,7 +2601,8 @@ class ViralService:
             st = load_state()
             done = st["slots"].get(today, [])
             self.warm_up(cfg, today)
-            times = gate.jittered(cfg["times"], today)         # not the same minute every day
+            base = cfg["times_later"] if cfg.get("times_later") and today >= str(cfg.get("times_later_from") or "9") else cfg["times"]
+            times = gate.jittered(base, today)                 # not the same minute every day
             due = due_slots(times, done, now, late_ok_h=6)     # room for retries: a late video beats none
             if not due:
                 return ""
