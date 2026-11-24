@@ -338,7 +338,7 @@ def _ensure_window(port: int, home: str) -> None:
 
 def hide(profile: Path) -> None:
     """Hide the account's Chrome (like Cmd+H) so it stays out of the way; it keeps working hidden."""
-    r = subprocess.run(["pgrep", "-f", f"--user-data-dir={profile} .*--remote-debugging-port={port_for(profile)}"],
+    r = subprocess.run(["pgrep", "-f", "--", f"--user-data-dir={profile} .*--remote-debugging-port={port_for(profile)}"],
                        capture_output=True, text=True)
     for pid in r.stdout.split()[:1]:
         subprocess.run(["osascript", "-e", f'tell application "System Events" to set visible of (first process whose '
