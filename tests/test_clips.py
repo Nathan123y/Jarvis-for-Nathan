@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from worker import clips
 
-CFG = dict(clips.DEFAULTS)
+CFG = dict(clips.DEFAULTS, times="11:00,14:00,15:30,19:30,20:30")   # the slot tests are written around these times
 RAW = {"ok": True, "start": 12, "end": 40, "title": "He landed a JET on the yacht 🚀 #gta", "highlight": ["jet", "the yacht"],
        "hook": "He has  never flown before.", "caption": "would you bail?", "hashtags": ["#Jet", "GTA6", "yacht party"]}
 INFO = {"duration": 60.0, "w": 1920, "h": 1080, "audio": True}

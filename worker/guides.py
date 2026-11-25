@@ -54,7 +54,9 @@ DEFAULTS = {"enabled": True,
             "launch_date": "2026-11-19",                # before it: official trailers + the Extended Look only
             "time": "",                                 # the long video: off since 11-22 (7 of them got 0-15 views each,
                                                         # the Shorts get hundreds); "16:00" turns it back on
-            "short_times": "12:00,16:00,17:00,21:00",         # numbered-list shorts (YouTube Shorts + TikTok + Instagram)
+            "short_times": "",                          # the narrated fact Shorts: off since 11-25 (user: the channel should
+                                                        # be pure game footage and streamers talking, no narrator); their
+                                                        # slots went to streamer clips. "12:00,16:00,..." turns them back on
             "tiktok": True,                             # off = Shorts and tall copies skip TikTok (off since 11-15)
             "instagram": True,                          # off = they skip Instagram too. It was missing here, so the stored
                                                         # "off" was dropped and GTA kept going to the stories' page (11-23)

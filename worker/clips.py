@@ -10,7 +10,7 @@ Each clip:
      A clip with nothing worth posting is moved to inbox/skipped.
   2. ffmpeg builds the 1080x1920 video: the gameplay over a blurred copy of itself, the big hook title on from
      the first frame (yellow key words), the streamer's credit under the picture, the game's own sound.
-  3. The narrator (the same Gemini voice as the daily videos) says the hook line over the first seconds.
+  3. Only with voice_hook on (off since 11-25): a narrator (the daily videos' Gemini voice) says the hook line first.
      What the streamer says is put on screen a few words at a time (Whisper, run on this Mac, times each word).
   4. It posts to TikTok and Instagram through the same logged-in Chrome profiles as the daily videos.
 
@@ -49,9 +49,9 @@ W, H = 1080, 1920
 # big clip channels; at a third of the screen with dark space around it the Shorts got no views (11-16)
 PICTURE_Y, PICTURE_H = 470, 1080
 DEFAULTS = {"enabled": True,
-            # between the other videos' slots; five a day since 11-14 (user: "hundreds of short funny clips" for the
-            # GTA content). Hourly posting killed views in early November, so not more on one account
-            "times": "11:00,14:00,15:30,19:30,20:30",
+            # five a day (user, 11-14: "hundreds of short funny clips"); since 11-25 they also take the narrated
+            # Shorts' old slots, as the GTA channel is clips only. Hourly posting killed views in early November
+            "times": "12:00,15:00,17:00,19:30,21:00",
             "instagram": False,             # off = GTA clips never go to Instagram, even while the daily videos do (11-19)
             "tiktok": True,                 # off = the clip skips TikTok (set off 11-15: the account's views were at zero)
             # a moment caught on a live stream doesn't wait for the next time above: it's cut and posted as soon as
@@ -67,7 +67,8 @@ DEFAULTS = {"enabled": True,
             "min_seconds": 15,
             "max_seconds": 30,              # 15-30 s clips hold viewers best on all three apps
             "captions": True,               # what the streamer says, word by word, in yellow over the picture
-            "voice_hook": True,             # the narrator says one hook line over the first seconds
+            "voice_hook": False,            # True = an AI narrator says one hook line over the first seconds; off
+                                            # (user, 11-25: only the game and the streamer talking)
             "ai_label": False}              # real gameplay footage, not AI-made video
 
 
