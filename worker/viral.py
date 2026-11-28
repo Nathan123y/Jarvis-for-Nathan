@@ -2533,6 +2533,7 @@ class ViralService:
 
     STATS_EVERY = 2 * 3600
     MAX_SLOT_TRIES = 2          # 11-07 one slot retried ~12 times over 6 hours and ran into the weekly Claude limit
+    MAX_IG_REQUEUES = 7         # a video Instagram wouldn't take waits for at most this many more slots
 
     def check_stats(self, now: Optional[float] = None) -> list[str]:
         now = now or time.time()
@@ -2772,6 +2773,16 @@ class ViralService:
         self._text_result(rec, cfg, tt, ig)                 # ONE text per video, both apps (user, 11-10)
         if tt in ("posted", "paused") and ig in ("posted", "off") and (tt == "posted" or ig == "posted"):
             remove_files(rec, self.log)                     # up everywhere it goes: no need to keep it
+        elif ig in ("frozen", "held") and tt != "posted" and Path(rec["path"]).exists() \
+                and rec.get("ig_requeues", 0) < self.MAX_IG_REQUEUES:
+            # 11-26/27: a human check on Instagram dropped two finished videos from the line. A video that went up
+            # nowhere waits at the front instead, for the next slot (its quality check already passed).
+            keep = {k: v for k, v in rec.items() if not k.startswith("_")}
+            keep["ig_requeues"] = rec.get("ig_requeues", 0) + 1
+            st = load_state()
+            st["queue"] = [keep] + [v for v in st.get("queue") or [] if v.get("path") != rec["path"]]
+            save_state(st)
+            self.log(f"viral: Instagram is {ig}; \"{rec['title'][:60]}\" waits at the front of the line")
         return tt
 
     def post_pending_instagram(self, cfg: dict, now: Optional[float] = None) -> int:
