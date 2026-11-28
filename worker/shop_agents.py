@@ -69,7 +69,7 @@ def load(path: Path = NOTEBOOK) -> dict:
         nb = json.loads(path.read_text())
     except (OSError, ValueError):
         nb = {}
-    for k in ("lessons", "winners", "feed", "double_down", "avoid", "problems"):
+    for k in ("lessons", "winners", "feed", "double_down", "avoid", "problems", "focus"):
         nb.setdefault(k, [])
     nb.setdefault("picks", {})
     return nb
@@ -139,8 +139,19 @@ def designer_notes(nb: dict, spinoff: Optional[dict], variant: bool = False, tak
     return "\n".join(out)
 
 
-def next_spinoff(nb: dict, last_was_spinoff: bool, spinoffs_made: int) -> Optional[str]:
-    """After the queued spin-offs, every other daily design riffs on a winner (taking turns, best seller first)."""
+def focus(nb: dict, today: Optional[str] = None) -> list:
+    """Designs picked by hand for the daily spin-offs (e.g. the one TikTok shoppers click although it hasn't sold), each
+    until its "until" date: {"design": id, "why": "...", "until": "YYYY-MM-DD"}."""
+    today = today or datetime.now().date().isoformat()
+    return [f["design"] for f in nb.get("focus") or [] if f.get("design") and (f.get("until") or "9999") >= today]
+
+
+def next_spinoff(nb: dict, last_was_spinoff: bool, spinoffs_made: int, today: Optional[str] = None) -> Optional[str]:
+    """After the queued spin-offs, every other daily design riffs on a winner (taking turns, best seller first). While
+    there's a focus design, the daily spin-offs riff on it instead."""
+    picked = focus(nb, today)
+    if picked and not last_was_spinoff:
+        return picked[spinoffs_made % len(picked)]
     if not nb["winners"] or last_was_spinoff:
         return None
     best = sorted(nb["winners"], key=lambda w: (-w.get("sales", 0), -w.get("at", 0)))

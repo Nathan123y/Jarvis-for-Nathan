@@ -42,6 +42,15 @@ class NotebookTests(unittest.TestCase):
         self.assertIsNone(sa.next_spinoff(nb, True, 1))                        # the day after a spin-off: trends
         self.assertEqual(sa.next_spinoff(nb, False, 1), "b")
 
+    def test_a_focus_design_takes_the_spinoffs_until_its_date(self):
+        nb = sa.load(Path("/nonexistent/nb.json"))
+        nb["winners"] = [{"design": "a", "sales": 3, "at": 1}]
+        nb["focus"] = [{"design": "g", "why": "TikTok clicks", "until": "2026-12-10"}]
+        self.assertEqual(sa.next_spinoff(nb, False, 0, "2026-11-28"), "g")
+        self.assertEqual(sa.next_spinoff(nb, False, 1, "2026-11-28"), "g")
+        self.assertIsNone(sa.next_spinoff(nb, True, 1, "2026-11-28"))           # still every other day without winner_focus
+        self.assertEqual(sa.next_spinoff(nb, False, 0, "2026-12-11"), "a")      # expired: back to the best seller
+
     def test_the_analyst_rewrites_the_notebook_from_results(self):
         nb = sa.load(Path("/nonexistent/nb.json"))
         nb["lessons"] = ["old lesson"]
