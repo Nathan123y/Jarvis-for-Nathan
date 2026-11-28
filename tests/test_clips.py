@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from worker import clips
+from worker import facecam
 
 CFG = dict(clips.DEFAULTS, times="11:00,14:00,15:30,19:30,20:30")   # the slot tests are written around these times
 RAW = {"ok": True, "start": 12, "end": 40, "title": "He landed a JET on the yacht 🚀 #gta", "highlight": ["jet", "the yacht"],
@@ -131,6 +132,45 @@ class EditTests(unittest.TestCase):
             self.assertGreaterEqual(box[1], 200)            # under TikTok's top bar
             self.assertLess(box[3], 1700)                   # the credit sits just under the picture
             self.assertEqual(img.crop((0, clips.PICTURE_Y + 5, 1080, clips.PICTURE_Y + clips.PICTURE_H - 5)).getbbox(), None)
+
+
+class FacecamTests(unittest.TestCase):
+    def _stream(self, n=8):
+        """Frames of a stream: game (changing every frame) with a still webcam at x 0-300, y 280-450, bordered, and a
+        line in the streamer's room at x 220 that must not be taken for the webcam's edge."""
+        import numpy as np
+        rng = np.random.default_rng(1)
+        room = rng.integers(60, 90, (170, 300)).astype(np.uint8)
+        room[:, 218:222] = 200
+        out = []
+        for _ in range(n):
+            g = rng.integers(0, 255, (720, 1280)).astype(np.uint8)
+            g[280:450, 0:300] = room
+            g[278:280, 0:302] = 255
+            g[278:452, 300:302] = 255
+            out.append(g)
+        return out
+
+    def test_webcam_box_stops_at_the_border_not_at_a_line_in_the_room(self):
+        x, y, w, h = facecam.webcam_box(self._stream(), (110.0, 360.0, 50.0))
+        self.assertEqual(x, 0)                                  # the webcam sits on the frame's edge
+        self.assertTrue(296 <= x + w <= 304, (x, w))            # not at the room's line (220)
+        self.assertTrue(276 <= y <= 282, y)
+
+    def test_crop_fits_the_panel_inside_the_webcam_with_the_face_in_it(self):
+        x, y, w, h = facecam.cam_crop((0, 282, 298, 168), (110.0, 378.0, 62.0), clips.W / clips.CAM_H)
+        self.assertAlmostEqual(w / h, clips.W / clips.CAM_H, delta=.05)
+        self.assertTrue(x >= 0 and y >= 282 and x + w <= 298 and y + h <= 450)
+        self.assertTrue(y < 378 < y + h and x < 110 < x + w)
+
+    def test_webcam_goes_on_top_of_the_game(self):
+        p = clips.clean_plan(RAW, 60, CFG)
+        cmd = clips.edit_command(Path("in.mp4"), Path("l.png"), Path("o.mp4"), p, INFO, cam=(10, 20, 300, 140))
+        f = cmd[cmd.index("-filter_complex") + 1]
+        self.assertIn(f"crop=300:140:10:20,scale=1080:{clips.CAM_H}", f)
+        self.assertIn(f"overlay=0:{clips.PICTURE_Y}", f)
+        self.assertIn(f"overlay=0:{clips.GAME_Y}", f)
+        self.assertEqual(clips.GAME_Y + clips.GAME_H, clips.PICTURE_Y + clips.PICTURE_H)   # captions/credit stay put
 
 
 from worker import clip_scout as cs

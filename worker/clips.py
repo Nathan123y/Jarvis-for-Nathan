@@ -9,7 +9,8 @@ Each clip:
   1. Gemini watches it and picks the best 15-30 seconds, a hook title, one spoken hook line and the caption.
      A clip with nothing worth posting is moved to inbox/skipped.
   2. ffmpeg builds the 1080x1920 video: the gameplay over a blurred copy of itself, the big hook title on from
-     the first frame (yellow key words), the streamer's credit under the picture, the game's own sound.
+     the first frame (yellow key words), the streamer's credit under the picture, the game's own sound. When the
+     stream has a webcam (worker/facecam.py finds it), the streamer's face goes across the top, the game under it.
   3. Only with voice_hook on (off since 11-25): a narrator (the daily videos' Gemini voice) says the hook line first.
      What the streamer says is put on screen a few words at a time (Whisper, run on this Mac, times each word).
   4. It posts to TikTok and Instagram through the same logged-in Chrome profiles as the daily videos.
@@ -48,6 +49,10 @@ W, H = 1080, 1920
 # where a widescreen clip sits in the tall frame: zoomed in to a square over half the screen (its sides cropped), like the
 # big clip channels; at a third of the screen with dark space around it the Shorts got no views (11-16)
 PICTURE_Y, PICTURE_H = 470, 1080
+# when the stream has a facecam (user, 11-28: "make sure ur including the streamers face"), the same space is split:
+# the streamer's webcam across the top, the game under it at almost its full width
+CAM_H = 500
+GAME_Y, GAME_H = PICTURE_Y + CAM_H, PICTURE_H - CAM_H
 DEFAULTS = {"enabled": True,
             # five a day (user, 11-14: "hundreds of short funny clips"); since 11-25 they also take the narrated
             # Shorts' old slots, as the GTA channel is clips only. Hourly posting killed views in early November
@@ -67,6 +72,7 @@ DEFAULTS = {"enabled": True,
             "min_seconds": 15,
             "max_seconds": 30,              # 15-30 s clips hold viewers best on all three apps
             "captions": True,               # what the streamer says, word by word, in yellow over the picture
+            "facecam": True,                # the streamer's webcam on top, the game under it (when the stream has one)
             "voice_hook": False,            # True = an AI narrator says one hook line over the first seconds; off
                                             # (user, 11-25: only the game and the streamer talking)
             "ai_label": False}              # real gameplay footage, not AI-made video
@@ -304,6 +310,19 @@ def overlay(plan: dict, credit: str, out: Path, tall: bool = False, site: str = 
     return out
 
 
+def find_facecam(src: Path, start: float, end: float, info: dict) -> Optional[tuple[int, int, int, int]]:
+    """Where to cut the streamer's webcam from (x, y, w, h in the clip's pixels), or None when there's no webcam.
+    Looked for in a child process (worker/facecam.py): OpenCV and the captions' PyAV both carry macOS's camera
+    classes, and the long-running worker shouldn't load the two together."""
+    done = subprocess.run([sys.executable, "-m", "worker.facecam", str(src), f"{start:.2f}", f"{end:.2f}", str(info["w"]),
+                           str(info["h"]), wv.ffmpeg(), str(W / CAM_H)], capture_output=True, text=True, timeout=300,
+                          cwd=str(Path(__file__).resolve().parents[1]))
+    if done.returncode:
+        raise RuntimeError(done.stderr.strip()[-200:] or "facecam finder failed")
+    got = json.loads(done.stdout.strip().splitlines()[-1])
+    return tuple(got) if got else None
+
+
 def hook_voice(text: str, out: Path, log: Callable = print) -> Optional[Path]:
     """The narrator's one line, or None when the voice isn't free right now (the clip goes out without it)."""
     v = wv.settings()
@@ -393,8 +412,9 @@ def wav_seconds(path: Path) -> float:
 
 
 def edit_command(src: Path, layer: Path, out: Path, plan: dict, info: dict, voice: Optional[Path] = None,
-                 voice_s: float = 0, subs: Optional[Path] = None) -> list[str]:
-    """The ffmpeg call: blurred backdrop + the picture + the title layer; the clip's sound, ducked under the hook."""
+                 voice_s: float = 0, subs: Optional[Path] = None, cam: Optional[tuple] = None) -> list[str]:
+    """The ffmpeg call: blurred backdrop + the picture (or the webcam over the game, with `cam`) + the title layer;
+    the clip's sound, ducked under the hook."""
     length = plan["end"] - plan["start"]
     tall = info["h"] > info["w"]
     cmd = [wv.ffmpeg(), "-loglevel", "error", "-y", "-ss", f"{plan['start']:.2f}", "-t", f"{length:.2f}", "-i", str(src),
@@ -406,6 +426,14 @@ def edit_command(src: Path, layer: Path, out: Path, plan: dict, info: dict, voic
     cover = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}"
     if tall:
         video = f"[0:v]fps=30,{cover},setsar=1[v0]"
+    elif cam:
+        cx, cy, cw, ch = cam
+        video = (f"[0:v]fps=30,split=3[a][b][c];"
+                 f"[a]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,boxblur=6:2,scale={W}:{H},"
+                 f"eq=brightness=-0.16:saturation=1.15[bg];"
+                 f"[b]crop={cw}:{ch}:{cx}:{cy},scale={W}:{CAM_H},setsar=1[cam];"
+                 f"[c]scale={W}:{GAME_H}:force_original_aspect_ratio=increase,crop={W}:{GAME_H},setsar=1[game];"
+                 f"[bg][cam]overlay=0:{PICTURE_Y}[t];[t][game]overlay=0:{GAME_Y},setsar=1[v0]")
     else:
         video = (f"[0:v]fps=30,split[a][b];"
                  f"[a]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,boxblur=6:2,scale={W}:{H},"
@@ -448,22 +476,30 @@ def make(src: Path, cfg: Optional[dict] = None, log: Callable = print, plan_with
         if voice and voice_s > (plan["end"] - plan["start"]) * .6:   # a line that long would talk over the moment
             voice = None
         subs, length = None, plan["end"] - plan["start"]
+        cam = None
+        if cfg.get("facecam") and info["w"] > info["h"]:
+            try:
+                cam = find_facecam(src, plan["start"], plan["end"], info)
+            except Exception as exc:
+                log(f"clips: couldn't look for the webcam ({str(exc)[:90]})")
         if cfg.get("captions"):
             try:
                 chunks = caption_chunks(hear_words(src, plan["start"], plan["end"]), length, skip_before=voice_s + .3 if voice else 0)
                 subs = write_ass(chunks, subs_file, tall=info["h"] > info["w"]) if chunks else None
             except Exception as exc:
                 log(f"clips: no captions this time ({str(exc)[:90]})")
-        done = subprocess.run(edit_command(src, layer, out, plan, info, voice, voice_s, subs), capture_output=True, text=True, timeout=1800)
+        done = subprocess.run(edit_command(src, layer, out, plan, info, voice, voice_s, subs, cam), capture_output=True, text=True,
+                              timeout=1800)
         if done.returncode or not out.exists():
             raise Skip(f"ffmpeg couldn't cut it ({done.stderr.strip()[-200:]})")
     finally:
         layer.unlink(missing_ok=True)
         voice_file.unlink(missing_ok=True)
         subs_file.unlink(missing_ok=True)
-    log(f"clips: cut \"{plan['title']}\" ({plan['end'] - plan['start']:.0f}s from {src.name})")
+    log(f"clips: cut \"{plan['title']}\" ({plan['end'] - plan['start']:.0f}s from {src.name}"
+        f"{', streamer on top' if cam else ', no webcam found'})")
     return {"path": str(out), "title": plan["title"], "caption": caption_for(plan, credit, site), "credit": credit, "site": site,
-            "src": str(src), "key": fingerprint(src), "voiced": bool(voice), "captioned": bool(subs), "made": time.time()}
+            "src": str(src), "key": fingerprint(src), "voiced": bool(voice), "captioned": bool(subs), "facecam": bool(cam), "made": time.time()}
 
 
 def live_ok(cfg: dict, st: dict, now: datetime) -> bool:
