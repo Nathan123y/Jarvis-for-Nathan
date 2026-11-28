@@ -280,6 +280,86 @@ class SlotTests(unittest.TestCase):
             self.assertEqual(deliver.call_count, 1)
         self.assertEqual(clips.wv.load_state(clips.STATE)["slots"], {"2026-11-19": ["11:00"]})
 
+    def test_missed_times_are_made_up_one_by_one_and_spaced_out(self):
+        for n in "abc":
+            (self.inbox / f"{n}.mp4").write_bytes(n.encode() * 3)
+        woke = datetime(2026, 11, 19, 21, 0)                # asleep all day: 11:00 ... 20:30 all missed
+        with patch.object(clips, "make", side_effect=lambda src, cfg, log: self._rec(src)), \
+                patch.object(self.svc, "deliver", return_value="posted") as deliver:
+            self.assertEqual(self.svc.run_once(woke), "posted")
+            self.assertEqual(clips.wv.load_state(clips.STATE)["slots"], {"2026-11-19": ["11:00"]})   # one time, not all
+            self.assertEqual(self.svc.run_once(datetime(2026, 11, 19, 21, 20)), "")      # too soon after the last
+            self.assertEqual(self.svc.run_once(datetime(2026, 11, 19, 21, 41)), "posted")
+            self.assertEqual(deliver.call_count, 2)
+        self.assertEqual(clips.wv.load_state(clips.STATE)["slots"], {"2026-11-19": ["11:00", "14:00"]})
+
+    def test_a_failed_upload_is_tried_again_before_the_clip_is_given_up(self):
+        (self.inbox / "a.mp4").write_bytes(b"aaa")
+        (self.inbox / "b.mp4").write_bytes(b"bbb")
+        made = []
+
+        def make(src, cfg, log):
+            rec = self._rec(src)
+            Path(rec["path"]).write_bytes(b"video")
+            made.append(src.name)
+            return rec
+        with patch.object(clips, "make", side_effect=make), \
+                patch.object(self.svc, "deliver", side_effect=["retry", "retry", "posted"]) as deliver:
+            self.assertEqual(self.svc.run_once(self.noon), "retry")
+            st = clips.wv.load_state(clips.STATE)
+            self.assertEqual(st["slots"], {})                                  # the time stays open
+            self.assertEqual(st["pending"]["tries"], 1)
+            self.assertEqual(self.svc.run_once(datetime(2026, 11, 19, 11, 10)), "")      # waits retry_min
+            self.assertEqual(self.svc.run_once(datetime(2026, 11, 19, 11, 16)), "retry")
+            self.assertEqual(self.svc.run_once(datetime(2026, 11, 19, 11, 27)), "posted")
+            self.assertFalse(deliver.call_args_list[0].kwargs["last_try"])
+            self.assertTrue(deliver.call_args_list[2].kwargs["last_try"])     # the third try is the last
+        self.assertEqual(made, ["a.mp4"])                                      # cut once, uploaded three times
+        st = clips.wv.load_state(clips.STATE)
+        self.assertEqual(st["slots"], {"2026-11-19": ["11:00"]})
+        self.assertNotIn("pending", st)
+
+    def test_youtube_failure_asks_for_a_retry_until_the_last_try(self):
+        from worker import guides
+        src = self.inbox / "a.mp4"
+        src.write_bytes(b"aaa")
+        rec = self._rec(src)
+        Path(rec["path"]).write_bytes(b"video")
+        cfg = dict(CFG, tiktok=False, youtube=True)
+        texts = []
+        with patch.object(clips, "post_settings", return_value={"post": True, "instagram": False}), \
+                patch.object(guides, "youtube_upload", side_effect=RuntimeError("Timeout 60000ms")), \
+                patch("core.phone_alerts.send_text", side_effect=lambda t, *a, **k: texts.append(t)):
+            self.assertEqual(self.svc.deliver(rec, cfg, last_try=False), "retry")
+            self.assertEqual(texts, [])                                     # no text for a try that will be repeated
+            self.assertTrue(src.exists() and Path(rec["path"]).exists())
+            self.assertEqual(self.svc.deliver(rec, cfg, last_try=True), "failed")
+        self.assertEqual(len(texts), 1)
+        self.assertTrue((self.inbox / "skipped" / "a.mp4").exists())        # given up: never cut again
+
+    def test_a_video_youtube_is_still_checking_is_not_uploaded_again(self):
+        from worker import guides
+        src = self.inbox / "a.mp4"
+        src.write_bytes(b"aaa")
+        rec = self._rec(src)
+        with patch.object(clips, "post_settings", return_value={"post": True, "instagram": False}), \
+                patch.object(guides, "youtube_upload", side_effect=guides.StillChecking("saved as private")), \
+                patch("core.phone_alerts.send_text"):
+            self.assertEqual(self.svc.deliver(rec, dict(CFG, tiktok=False, youtube=True), last_try=False), "failed")
+
+    def test_a_retry_that_ends_after_midnight_keeps_the_new_days_times(self):
+        src = self.inbox / "a.mp4"
+        src.write_bytes(b"aaa")
+        rec = self._rec(src)
+        Path(rec["path"]).write_bytes(b"video")
+        st = clips.wv.load_state(clips.STATE)
+        st["slots"] = {"2026-11-20": ["11:00"]}
+        st["pending"] = {"rec": rec, "tries": 1, "day": "2026-11-19", "slot": "20:30", "live": False, "next": 0}
+        clips.wv.save_state(st, clips.STATE)
+        with patch.object(self.svc, "deliver", return_value="posted"):
+            self.assertEqual(self.svc.run_once(datetime(2026, 11, 20, 11, 30)), "posted")
+        self.assertEqual(clips.wv.load_state(clips.STATE)["slots"], {"2026-11-20": ["11:00"]})
+
     def test_empty_inbox_keeps_the_slot_open(self):
         self.assertEqual(self.svc.run_once(self.noon), "empty")
         self.assertEqual(clips.wv.load_state(clips.STATE)["slots"], {})

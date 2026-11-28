@@ -18,6 +18,8 @@ starts from "now" the first time, so turning this on never texts a backlog.
   memecoin   every pass   a memecoin bot buy or sell; an open coin up or down meme_move percent; a coin turning hot online
   bots       every pass   the options bots' nightly review, once it's written (weekdays ~1:35 PM)
   sales      every 10 min a new Gumroad sale
+  battery    every 2 min  the Mac on battery at 30% and again at 15% (sent even in quiet hours: when it dies at night
+                          the posts, videos and bots stop until someone plugs it in, as on 11-27)
   fantasy    every 20 min an injury / status change on your teams, a starter who must be swapped out
   morning    once a day   at morning_time (can differ by weekday): weather, calendar, Canvas, fantasy, packages, overnight news
   trading    weekdays     at trading_time: the day's paper results
@@ -59,6 +61,8 @@ CALENDAR_EVERY = 120
 FANTASY_EVERY = 1200
 GRADES_EVERY = 1800
 SALES_EVERY = 600
+BATTERY_EVERY = 120
+BATTERY_WARN = (30, 15)             # percent on battery that gets a text, once each per discharge
 PACKAGE_TEXT = {"out_for_delivery": "is out for delivery", "delivered": "was delivered",
                 "problem": "has a delivery problem"}
 APPLE_REMINDERS = "Scheduled Reminders"
@@ -509,6 +513,26 @@ class Scanner:
         return n
 
     # ── the bots: nightly review, memecoin trades ────────────────────────────
+    def battery(self, power=None) -> str:
+        """Plug the Mac in before it dies: a text at each BATTERY_WARN level while it runs on battery."""
+        if power is None:
+            from worker.runtime import read_power
+            power = read_power()
+        warned = list(self._cur().get("battery_warned") or [])
+        if power.get("ac") is not False:                    # charging (or unknown): start over next time
+            if warned:
+                self._put(battery_warned=[])
+            return ""
+        pct = power.get("percent")
+        hit = [lvl for lvl in BATTERY_WARN if isinstance(pct, int) and pct <= lvl and lvl not in warned]
+        if not hit:
+            return ""
+        self._put(battery_warned=warned + hit)
+        if not self._wants("battery"):
+            return ""
+        return self.alerts.scheduled("battery", f"🔋 Plug the Mac in: it's on battery at {pct}%. If it dies, the GTA "
+                                                f"posts, videos and bots all stop until it's charged.")
+
     def bots_review(self, read=None) -> str:
         review = (read or sources.bots_review)()
         if not review or not review.get("generated"):
@@ -732,7 +756,8 @@ class AlertService:
         self.scanner = Scanner(store, self.alerts, log=log)
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        self._last = {"email": 0.0, "canvas": 0.0, "calendar": 0.0, "fantasy": 0.0, "grades": 0.0, "sales": 0.0}
+        self._last = {"email": 0.0, "canvas": 0.0, "calendar": 0.0, "fantasy": 0.0, "grades": 0.0, "sales": 0.0,
+                      "battery": 0.0}
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, daemon=True, name="phone-alerts")
@@ -760,7 +785,7 @@ class AlertService:
         self._step("memecoin", self.scanner.memecoin)
         self._step("bots review", self.scanner.bots_review)
         for name, every in (("calendar", CALENDAR_EVERY), ("canvas", CANVAS_EVERY), ("fantasy", FANTASY_EVERY),
-                            ("grades", GRADES_EVERY), ("sales", SALES_EVERY)):
+                            ("grades", GRADES_EVERY), ("sales", SALES_EVERY), ("battery", BATTERY_EVERY)):
             if now - self._last[name] >= every:
                 self._last[name] = now
                 self._step(name, getattr(self.scanner, name))

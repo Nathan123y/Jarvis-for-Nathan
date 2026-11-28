@@ -93,6 +93,19 @@ class ScannerTests(_Base):
     def scanner(self, **cfg):
         return wa.Scanner(self.store, self.alerts(**cfg), clock=lambda: self.now, cfg=_cfg(**cfg))
 
+    def test_battery_texts_at_each_level_once_per_discharge(self):
+        s = self.scanner()
+        bat = lambda pct: {"ac": False, "percent": pct}
+        self.assertEqual(s.battery(bat(60)), "")
+        self.assertEqual(s.battery(bat(29)), "sent")
+        self.assertEqual(s.battery(bat(28)), "")                # once per level
+        self.assertEqual(s.battery(bat(14)), "sent")
+        self.assertEqual(len(self.sent), 2)
+        self.assertIn("14%", self.sent[-1])
+        s.battery({"ac": True, "percent": 20})                   # plugged in: the next discharge warns again
+        self.assertEqual(s.battery(bat(10)), "sent")             # both levels passed at once: one text
+        self.assertEqual(len(self.sent), 3)
+
     def test_reminder_seen_ahead_is_texted_when_due(self):
         s = self.scanner()
         when = datetime.fromtimestamp(NOON) + timedelta(minutes=2)

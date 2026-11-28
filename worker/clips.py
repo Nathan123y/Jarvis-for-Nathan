@@ -65,6 +65,13 @@ DEFAULTS = {"enabled": True,
             "live_gap_min": 30,
             "live_max_day": 12,
             "stale_h": 48,                  # clips waiting longer than this are set aside, not posted
+            # every planned post goes out (user, 11-28: "posting as much as we had plan so the algorithm pushes our
+            # videos"): a set time missed (the Mac asleep, Gemini down) is made up later that day, one clip per time,
+            # never two posts closer than min_gap_min; a failed upload is tried again before the clip is given up
+            "catch_up_h": 12,
+            "min_gap_min": 40,
+            "upload_tries": 3,
+            "retry_min": 10,
             "youtube": True,                # also a YouTube Short on the GTA channel (user, 11-14: "our three accounts")
             "post": True,
             "game": "GTA 6",
@@ -502,6 +509,11 @@ def make(src: Path, cfg: Optional[dict] = None, log: Callable = print, plan_with
             "src": str(src), "key": fingerprint(src), "voiced": bool(voice), "captioned": bool(subs), "facecam": bool(cam), "made": time.time()}
 
 
+def spaced_ok(cfg: dict, st: dict, now: datetime) -> bool:
+    """Long enough since the last post (catching up after a gap mustn't put clips out back to back)."""
+    return now.timestamp() - float(st.get("last_post") or 0) >= float(cfg.get("min_gap_min") or 0) * 60
+
+
 def live_ok(cfg: dict, st: dict, now: datetime) -> bool:
     """May a live moment be posted right now, outside the set times? Not too soon after the last, not too many a day."""
     sent = (st.get("live_posts") or {}).get(now.date().isoformat(), [])
@@ -545,8 +557,20 @@ class ClipService:
             st = wv.load_state(STATE)
             now = now or datetime.now()
             today = now.date().isoformat()
+            pending = st.get("pending")
+            if pending:                                     # a made clip whose upload failed: its next try comes first
+                if not Path(pending["rec"]["path"]).exists():
+                    st.pop("pending")
+                    wv.save_state(st, STATE)
+                elif now.timestamp() < float(pending.get("next") or 0):
+                    return ""
+                else:
+                    return self._send(pending["rec"], cfg, now, pending.get("day"), pending.get("slot"),
+                                      bool(pending.get("live")), int(pending.get("tries") or 0))
             done = st["slots"].get(today, [])
-            due = wv.due_slots(cfg["times"], done, now, late_ok_h=2)
+            due = wv.due_slots(cfg["times"], done, now, late_ok_h=float(cfg.get("catch_up_h") or 2))
+            if not spaced_ok(cfg, st, now):
+                return ""
             waiting = []
             for f in inbox():                               # a GTA moment is old news after two days: set it aside
                 if time.time() - f.stat().st_mtime > float(cfg.get("stale_h") or 48) * 3600:
@@ -580,14 +604,36 @@ class ClipService:
                 self._set_aside(src, str(exc))
                 return "skipped"                            # the slot stays open: the next pass takes the next clip
             st = wv.load_state(STATE)
-            st["slots"] = {today: done + due}               # several due at once = one clip
-            if " live-" in src.name:
-                st["live_posts"] = {today: (st.get("live_posts") or {}).get(today, []) + [now.timestamp()]}
             st["videos"] = (st["videos"] + [rec])[-300:]
             wv.save_state(st, STATE)
-            return self.deliver(rec, cfg)
+            # one clip fills one time (several due after a gap are made up one by one, min_gap_min apart); a live
+            # moment posted between the times fills none
+            return self._send(rec, cfg, now, today, due[0] if due else None, not due and " live-" in src.name, 0)
         finally:
             self._busy.release()
+
+    def _send(self, rec: dict, cfg: dict, now: datetime, day: Optional[str], slot: Optional[str], live: bool,
+              tries: int) -> str:
+        """Upload a made clip. A failed upload keeps the video and its time open and is tried again in retry_min
+        minutes (upload_tries in all); only then is the clip given up and its time counted as used."""
+        last = tries + 1 >= int(cfg.get("upload_tries") or 1)
+        out = self.deliver(rec, cfg, last_try=last)
+        st = wv.load_state(STATE)
+        if out == "retry":
+            st["pending"] = {"rec": rec, "tries": tries + 1, "day": day, "slot": slot, "live": live,
+                             "next": now.timestamp() + float(cfg.get("retry_min") or 10) * 60}
+            self.log(f"clips: upload try {tries + 1} of {cfg.get('upload_tries')} failed; trying again in "
+                     f"{cfg.get('retry_min')} minutes")
+        else:
+            st.pop("pending", None)
+            for key, item, on in (("slots", slot, bool(slot)), ("live_posts", now.timestamp(), live)):
+                if on and day:                              # only the newest day is kept (a retry may end after midnight)
+                    days = dict(st.get(key) or {})
+                    days[day] = (days.get(day) or []) + [item]
+                    st[key] = {max(days): days[max(days)]}
+            st["last_post"] = now.timestamp()
+        wv.save_state(st, STATE)
+        return out
 
     def _scout(self, st: dict) -> None:
         """Top the inbox up from Twitch and YouTube when it's time (worker/clip_scout.py)."""
@@ -614,7 +660,9 @@ class ClipService:
             self.log(f"clips: couldn't move {src.name} aside: {exc}")
         self.log(f"clips: skipped {src.name}: {why}")
 
-    def deliver(self, rec: dict, cfg: dict) -> str:
+    def deliver(self, rec: dict, cfg: dict, last_try: bool = True) -> str:
+        """Post a made clip everywhere it goes. "retry" (nothing texted, nothing moved) when only YouTube is on, its
+        upload failed and this wasn't the last try."""
         pcfg = post_settings(cfg)
         tt = self._poster._deliver_tiktok(rec, pcfg) if cfg.get("tiktok", True) else "off"
         ig = self._poster.post_instagram(rec, pcfg) if pcfg["post"] and pcfg.get("instagram") else "off"
@@ -632,6 +680,10 @@ class ClipService:
                 yt = "failed"
                 rec.setdefault("_why", {})["youtube"] = str(exc)[:110]
                 self.log(f"clips: the YouTube Short failed: {exc}")
+                if exc.__class__.__name__ == "StillChecking":   # it IS on the channel (private): another try would double it
+                    last_try = True
+        if yt == "failed" and not last_try and tt == "off" and ig == "off":
+            return "retry"
         self._mark(rec, posted=tt == "posted", ig_posted=ig == "posted", youtube=rec.get("youtube", ""))
         if pcfg["post"] and not cfg.get("tiktok", True):        # YouTube (and Instagram if it's on): its own short text
             try:
